@@ -1,0 +1,32 @@
+node_modules/
+dist/
+.vite/
+*.log
+# Sample RAW files are downloaded outside the repo (see spikes/README.md)
+samples/
+# Python (services/culler)
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+services/culler/models/
+*.sqlite
+*.sqlite-*
+# Secrets: deploy/compose.example.yml has the culler read its API key from culler.env
+.env
+.env.*
+*.env
+!*.example
+# Test and tool output
+coverage/
+test-results/
+playwright-report/
+e2e/out/
+*.tsbuildinfo
+*.part
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

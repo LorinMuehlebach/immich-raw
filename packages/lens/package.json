@@ -1,0 +1,9 @@
+{
+  "name": "@immich-raw/lens",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "build:lensfun": "node scripts/build-lensfun.mjs"
+  }
+}

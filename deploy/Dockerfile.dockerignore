@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.vite
+.git
+*.log
+samples
+services/**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+services/culler/models

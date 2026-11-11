@@ -1,0 +1,10 @@
+# Build context for deploy/Dockerfile: the image runs `npm ci` and `npm run build` itself.
+.git
+**/node_modules
+**/dist
+**/.vite
+**/.venv
+**/__pycache__
+services/culler/models
+samples
+*.log

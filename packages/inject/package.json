@@ -1,0 +1,12 @@
+{
+  "name": "@immich-raw/inject",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && vite build --mode userscript"
+  },
+  "exports": {
+    "./raw": "./src/raw.ts",
+    "./routes": "./src/routes.ts"
+  }
+}

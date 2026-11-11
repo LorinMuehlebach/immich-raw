@@ -1,0 +1,14 @@
+{
+  "name": "@spike/decode-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "node --expose-gc bench.mjs"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "1.6.0",
+    "libraw-wasm": "1.6.0",
+    "playwright-core": "1.65.0",
+    "vite": "8.3.7"
+  }
+}

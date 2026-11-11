@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>M0 WebGL2 proxy</title>
+    <style>
+      body { font: 13px/1.4 system-ui, sans-serif; margin: 16px; background: #222; color: #ddd; }
+      canvas { max-width: 100%; display: block; margin-top: 8px; }
+      label { display: inline-block; margin-right: 16px; }
+      pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>M0 WebGL2 proxy</h1>
+    <p>Decodes a sample at half size, uploads it as an RGBA16F proxy (≤ 2560 px) and renders
+      WB + exposure + filmic curve. <code>?file=name</code> picks the sample.</p>
+    <label>Temp ratio <input id="wb" type="range" min="-1" max="1" step="0.01" value="0" /></label>
+    <label>Exposure <input id="ev" type="range" min="-3" max="3" step="0.01" value="0" /></label>
+    <label>Contrast <input id="contrast" type="range" min="-1" max="1" step="0.01" value="0" /></label>
+    <pre id="log"></pre>
+    <canvas id="c"></canvas>
+    <script type="module" src="./gpu.js"></script>
+  </body>
+</html>

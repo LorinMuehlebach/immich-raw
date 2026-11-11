@@ -1,0 +1,32 @@
+# Add this service to the docker-compose.yml you run Immich with.
+# It needs no published port: your reverse proxy sends /immich-raw/ to it (see the snippets).
+
+services:
+  immich-raw:
+    container_name: immich_raw
+    # Either build from a checkout of this repository...
+    build:
+      context: /path/to/immich-raw
+      dockerfile: deploy/Dockerfile
+    # ...or use an image you built with: docker build -f deploy/Dockerfile -t immich-raw .
+    # image: immich-raw:latest
+    restart: always
+
+  # Optional: stacks similar photos, puts the best one in front and tags why the others lost.
+  # Needs an Immich API key of the user whose library it works on (see deploy/README.md), in a
+  # file next to this one:  culler.env  ->  IMMICH_API_KEY=...
+  immich-culler:
+    container_name: immich_culler
+    build:
+      context: /path/to/immich-raw/services/culler
+    env_file: culler.env
+    environment:
+      IMMICH_URL: http://immich-server:2283
+    volumes:
+      - culler-data:/data
+    cpus: 2
+    mem_limit: 2g
+    restart: always
+
+volumes:
+  culler-data:

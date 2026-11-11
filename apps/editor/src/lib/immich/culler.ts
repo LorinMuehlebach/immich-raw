@@ -1,0 +1,180 @@
+// Client for the culler service (services/culler), served next to Immich at /immich-raw/culler/.
+// The service is optional: when it isn't installed the proxy answers 404 or 502 with an HTML
+// page, every call here returns null, and the editor hides its controls.
+import { authHeaders } from './api.ts';
+
+const BASE = `${import.meta.env.BASE_URL}culler/api/v1`;
+const ABSENT = new Set([404, 502, 503, 504]);
+
+export type CullRole = 'best' | 'runner-up' | 'rejected';
+export type CullReason = 'lighting' | 'blur' | 'eyes';
+
+export interface CullMetrics {
+  evVsBest?: number;
+  clipHiPct?: number;
+  clipLoPct?: number;
+  lighting?: number;
+  sharpPct?: number | null;
+  faces?: number;
+  closed?: number;
+}
+
+/** What the service last decided for one photo. */
+export interface CullInfo {
+  groupId: string;
+  frameId: string;
+  role: CullRole | null;
+  reason: CullReason | null;
+  rank: number | null;
+  groupSize: number | null;
+  pinned: boolean;
+  metrics: CullMetrics;
+  runId?: string | null;
+}
+
+export type RunScope = { kind: 'day'; date: string } | { kind: 'album'; id: string } | { kind: 'assets'; ids: string[] };
+
+export interface RunCounts {
+  photos: number;
+  frames: number;
+  groups: number;
+  runnerUps: number;
+  rejected: Record<CullReason, number>;
+  released: number;
+  pending: number;
+  excluded: number;
+  changes: number;
+  errors?: number;
+}
+
+export interface CullRun {
+  id: string;
+  origin: string;
+  scope: Record<string, unknown>;
+  dryRun: boolean;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  phase: string | null;
+  done: number;
+  total: number;
+  summary: (Partial<RunCounts> & { notes?: string[] }) | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  undoneAt: string | null;
+  sourceRun: string | null;
+}
+
+export interface CullerStatus {
+  ok: boolean;
+  tagRoot: string;
+  eyes: boolean | null;
+  owner?: string | null;
+  watcher?: { enabled: boolean; autoApply: boolean };
+}
+
+export class CullerError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+let fetchImpl: FetchLike = (input, init) => fetch(input, init);
+
+/** Tests swap in a fake fetch. */
+export function setCullerFetch(f: FetchLike): void {
+  fetchImpl = f;
+  status = null;
+}
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T | null> {
+  const headers: Record<string, string> = { Accept: 'application/json', ...authHeaders() };
+  if (method !== 'GET') {
+    headers['Content-Type'] = 'application/json';
+    headers['X-Raw-Editor'] = '1';
+  }
+  let res: Response;
+  try {
+    res = await fetchImpl(`${BASE}${path}`, {
+      method,
+      credentials: 'same-origin',
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    return null; // network error: treat like a missing service
+  }
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json');
+  if (!res.ok) {
+    if (ABSENT.has(res.status) && !isJson) return null;
+    const message = isJson ? (((await res.json()) as { message?: string }).message ?? res.statusText) : res.statusText;
+    throw new CullerError(res.status, message);
+  }
+  return isJson ? ((await res.json()) as T) : null;
+}
+
+let status: Promise<CullerStatus | null> | null = null;
+
+/** The service's state for the logged-in user, or null when it isn't installed (cached). */
+export function cullerStatus(refresh = false): Promise<CullerStatus | null> {
+  if (!status || refresh) {
+    status = call<CullerStatus>('GET', '/me').catch((e) => {
+      console.warn('Culler: not available', e);
+      return null;
+    });
+  }
+  return status;
+}
+
+export async function lookupCull(ids: string[]): Promise<Record<string, CullInfo> | null> {
+  if (!ids.length) return {};
+  const out: Record<string, CullInfo> = {};
+  for (let i = 0; i < ids.length; i += 2000) {
+    const res = await call<{ items: Record<string, CullInfo> }>('POST', '/assets/lookup', { ids: ids.slice(i, i + 2000) });
+    if (!res) return null;
+    Object.assign(out, res.items);
+  }
+  return out;
+}
+
+const runId = (r: { runId: string } | null): string => {
+  if (!r) throw new CullerError(502, 'the culler service is not reachable');
+  return r.runId;
+};
+
+export const startRun = async (scope: RunScope, dryRun: boolean): Promise<string> => runId(await call('POST', '/runs', { scope, dryRun }));
+export const applyRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/apply`));
+export const undoRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/undo`));
+export const makeBest = async (groupId: string, assetId: string): Promise<string> =>
+  runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/best`, { assetId }));
+
+export async function getRun(id: string): Promise<CullRun | null> {
+  return call<CullRun>('GET', `/runs/${encodeURIComponent(id)}`);
+}
+
+export async function listRuns(limit = 20): Promise<CullRun[]> {
+  return (await call<{ runs: CullRun[] }>('GET', `/runs?limit=${limit}`))?.runs ?? [];
+}
+
+/** The newest applied run that changed something and can still be undone. */
+export async function lastUndoableRun(): Promise<CullRun | null> {
+  const runs = await listRuns(50);
+  return runs.find((r) => !r.dryRun && r.status === 'done' && !r.undoneAt && r.origin !== 'undo' && (r.summary?.changes ?? 0) > 0) ?? null;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Polls until the run has finished; reports progress on the way. */
+export async function waitForRun(id: string, onProgress?: (run: CullRun) => void, signal?: AbortSignal, intervalMs = 1000): Promise<CullRun> {
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const run = await getRun(id);
+    if (!run) throw new CullerError(502, 'the culler service is not reachable');
+    onProgress?.(run);
+    if (run.status === 'done' || run.status === 'failed') return run;
+    await sleep(intervalMs);
+  }
+}

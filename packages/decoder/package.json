@@ -1,0 +1,9 @@
+{
+  "name": "@immich-raw/decoder",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "libraw-wasm": "1.6.0"
+  }
+}

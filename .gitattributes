@@ -1,0 +1,20 @@
+# LF in the repository and in checkouts, on every OS.
+* text=auto eol=lf
+
+*.wasm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.onnx binary
+*.task binary
+*.dng binary
+*.arw binary
+*.nef binary
+*.cr3 binary
+*.raf binary
+
+# Generated files: no diffs in reviews.
+apps/editor/public/lensfun/lensfun.json -diff linguist-generated
+package-lock.json linguist-generated
+services/culler/uv.lock linguist-generated
