@@ -55,4 +55,10 @@
     display: flex;
     gap: 6px;
   }
+  @media (pointer: coarse) {
+    .toggle {
+      padding: 12px 12px;
+      font-size: 13px;
+    }
+  }
 </style>

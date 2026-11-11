@@ -145,6 +145,17 @@
   .row:focus-within .del {
     display: block;
   }
+  /* No hover on touch screens: the delete button stays visible. */
+  @media (hover: none) {
+    .del {
+      display: block;
+    }
+  }
+  @media (pointer: coarse) {
+    .row {
+      height: 38px;
+    }
+  }
   .edit {
     width: 100%;
     font: inherit;

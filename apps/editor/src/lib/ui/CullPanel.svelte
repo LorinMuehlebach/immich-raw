@@ -165,6 +165,7 @@
     left: 8px;
     z-index: 20;
     width: 340px;
+    max-width: calc(100vw - 16px);
     margin-bottom: 6px;
     padding: 10px 12px;
     background: var(--panel-2);

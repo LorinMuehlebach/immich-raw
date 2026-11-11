@@ -226,6 +226,17 @@
     background: #fff;
     box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
   }
+  /* Touch: a finger-sized grab area around the same small square. */
+  @media (pointer: coarse) {
+    .handle {
+      width: 36px;
+      height: 36px;
+      margin: -18px 0 0 -18px;
+    }
+    .handle::after {
+      inset: 13px;
+    }
+  }
   .nw { left: 0; top: 0; cursor: nwse-resize; }
   .n { left: 50%; top: 0; cursor: ns-resize; }
   .ne { left: 100%; top: 0; cursor: nesw-resize; }

@@ -83,6 +83,33 @@ select {
   padding: 3px 6px;
 }
 
+/* Touch screens: bigger targets. `:root` lifts these above the components' own padding. */
+@media (pointer: coarse) {
+  html {
+    /* No double-tap page zoom: double-taps reset sliders (see lib/touch.ts). */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button {
+    padding: 7px 12px;
+  }
+  button.icon {
+    padding: 7px 9px;
+  }
+  :root button.small {
+    padding: 6px 10px;
+  }
+  select {
+    padding: 6px 8px;
+  }
+  /* iOS zooms the page into any text field or menu smaller than 16px. */
+  :root input:not([type='range']):not([type='checkbox']):not([type='radio']),
+  :root select,
+  :root textarea {
+    font-size: 16px;
+  }
+}
+
 kbd {
   font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
   border: 1px solid var(--line);

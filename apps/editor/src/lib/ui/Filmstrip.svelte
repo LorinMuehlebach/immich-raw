@@ -19,17 +19,20 @@
     canCull?: boolean;
     /** What the culler decided for the photo being edited. */
     onCurrentCull?: (info: CullInfo | null) => void;
+    /** Start collapsed until the user opens it (phones, where the photo needs the room). */
+    startCollapsed?: boolean;
   }
 
-  let { ctx, current, onSelect, onNeighbours, canCull = false, onCurrentCull }: Props = $props();
+  let { ctx, current, onSelect, onNeighbours, canCull = false, onCurrentCull, startCollapsed = false }: Props = $props();
 
   const COLLAPSED_KEY = 'raw-editor.filmstrip.collapsed';
   const STACKS_KEY = 'raw-editor.filmstrip.stacksCollapsed';
-  const readFlag = (key: string) => {
+  const readFlag = (key: string, fallback = false) => {
     try {
-      return localStorage.getItem(key) === '1';
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : v === '1';
     } catch {
-      return false;
+      return fallback;
     }
   };
   const writeFlag = (key: string, on: boolean) => {
@@ -42,7 +45,7 @@
 
   let items = $state<AssetResponseDto[]>([]);
   let loading = $state(true);
-  let collapsed = $state(readFlag(COLLAPSED_KEY));
+  let collapsed = $state(readFlag(COLLAPSED_KEY, untrack(() => startCollapsed)));
   let loadedCtx: string | null | undefined = undefined;
 
   let culler = $state<CullerStatus | null>(null);
@@ -428,5 +431,38 @@
   }
   .slot:hover .pick:not(:disabled) {
     display: block;
+  }
+  /* No hover on touch screens: the star stays visible. */
+  @media (hover: none) {
+    .pick:not(:disabled) {
+      display: block;
+    }
+  }
+  @media (pointer: coarse) {
+    .head {
+      height: 34px;
+    }
+    .toggle {
+      padding: 8px 8px;
+      font-size: 12px;
+    }
+    .headbtn {
+      height: 28px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .pick {
+      width: 26px;
+      height: 26px;
+      border-radius: 13px;
+      line-height: 26px;
+      font-size: 14px;
+    }
+    .gcount {
+      height: 20px;
+      min-width: 20px;
+      line-height: 20px;
+      border-radius: 10px;
+    }
   }
 </style>

@@ -142,6 +142,9 @@
 <style>
   svg {
     width: 100%;
+    /* Square, but not taller than a phone panel when the panel spans the screen. */
+    max-width: 340px;
+    margin: 0 auto;
     aspect-ratio: 1;
     display: block;
     border: 1px solid #111;

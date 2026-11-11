@@ -82,4 +82,9 @@
     color: var(--text-dim);
     opacity: 0.6;
   }
+  @media (pointer: coarse) {
+    .step {
+      padding: 9px 8px;
+    }
+  }
 </style>

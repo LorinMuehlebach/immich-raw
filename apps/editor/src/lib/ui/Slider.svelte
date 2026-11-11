@@ -190,4 +190,37 @@
   input[type='range']:hover::-webkit-slider-thumb {
     background: #fff;
   }
+  /* Touch: taller rows and a thumb a finger can hold; vertical swipes still scroll the panel. */
+  @media (pointer: coarse) {
+    .row {
+      grid-template-columns: 92px 1fr 56px;
+      height: 38px;
+      gap: 10px;
+    }
+    .value,
+    .num {
+      width: 56px;
+      padding: 6px 4px;
+    }
+    input[type='range'] {
+      height: 32px;
+      touch-action: pan-y;
+    }
+    input[type='range']::-webkit-slider-runnable-track {
+      height: 4px;
+    }
+    input[type='range']::-webkit-slider-thumb {
+      width: 22px;
+      height: 22px;
+      margin-top: -9px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+    }
+    input[type='range'].custom-track::-webkit-slider-thumb {
+      margin-top: -9px;
+    }
+    input[type='range']::-moz-range-thumb {
+      width: 22px;
+      height: 22px;
+    }
+  }
 </style>
