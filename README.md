@@ -61,8 +61,10 @@ original is deleted (to the trash, or permanently).
 - **Stored data:** the edit settings live in Immich's asset metadata on the RAW. The original file is
   cached in the browser, so reopening a photo is fast.
 - **Culler (optional):** a separate small service that groups bursts of similar shots into stacks,
-  puts the best one on top and tags why the others lost (lighting, blur, closed eyes). See
-  [Optional: the culler](#optional-the-culler-auto-stack-and-best-pick).
+  puts the best one on top and tags why the others lost (lighting, blur, closed eyes). For RAW files
+  it measures exposure on the RAW file itself, because Immich's RAW previews are auto-brightened. See
+  [Optional: the culler](#optional-the-culler-auto-stack-and-best-pick) and
+  [docs/culler.md](docs/culler.md).
 
 ## Features
 
@@ -242,14 +244,21 @@ If both the proxy script and the userscript are active, only one button appears.
 ### Optional: the culler (auto-stack and best pick)
 
 The culler groups bursts and similar shots into Immich stacks and puts the best photo of each group
-on top. It tags the others with the reason they lost: lighting, blur or closed eyes. You start it
-from the editor's filmstrip (**Auto-stack…**), or let it sort new uploads automatically. It runs
-small AI models (CLIP, YuNet, MediaPipe) on the server's CPU. The models are downloaded when the
-image is built.
+on top. It tags the others with the reason they lost: lighting, blur or closed eyes. It works on
+RAWs, JPEGs and RAW + JPEG pairs. It sorts new uploads automatically, and you can run it on a day or
+an album from the editor's filmstrip (**Auto-stack…**), with a preview first and undo afterwards. It
+runs small AI models (CLIP, YuNet, MediaPipe) on the server's CPU. The models are downloaded when the
+image is built (about 1.8 GB). How it decides, all settings and the command line:
+[docs/culler.md](docs/culler.md).
 
 1. In Immich, create an API key for the user whose library it should sort: **Account Settings → API
-   Keys**, with all permissions. Put it in a file `culler.env` next to your compose file, and keep that
-   file private:
+   Keys**. It needs these permissions:
+   - `asset.read`, `asset.view`, `asset.download`, `asset.update`
+   - `album.read`, `user.read`
+   - `stack.create`, `stack.read`, `stack.update`, `stack.delete`
+   - `tag.create`, `tag.read`, `tag.asset`
+
+   Put the key in a file `culler.env` next to your compose file, and keep that file private:
 
    ```sh
    IMMICH_API_KEY=your-key-here
@@ -265,7 +274,8 @@ image is built.
        env_file: culler.env
        environment:
          IMMICH_URL: http://immich-server:2283
-         # CULLER_WATCH: "true"      # sort new uploads automatically
+         # CULLER_WATCH: "false"        # don't sort new uploads automatically
+         # CULLER_AUTO_APPLY: "false"   # only suggest (dry runs) for new uploads
        volumes:
          - culler-data:/data
        cpus: 2
@@ -280,9 +290,14 @@ image is built.
    route. The nginx and Caddy snippets in [deploy/](deploy/) already contain it.
 4. Run `docker compose up -d --build immich-culler`.
 
-Without the culler, the editor simply hides its controls. Thresholds and the tag name can be changed in
-`/data/culler.toml`. Its sections and defaults are in
-[services/culler/src/culler/config.py](services/culler/src/culler/config.py).
+Without the culler, the editor simply hides its controls.
+- **New uploads:** on its first start, the culler only sorts photos uploaded from then on. Sort older
+  days or albums from the editor.
+- **Tags:** the losers get tags under `Culling/` (for example `Culling/Rejected/Blur`).
+- **Reject flag:** the culler also sets it (rating −1), but Immich 3.4 empties it again a moment
+  later, so the tags are what to search for.
+- **Settings:** thresholds and the tag name can be changed in `/data/culler.toml`; see
+  [docs/culler.md](docs/culler.md#settings).
 
 ### Updating
 
@@ -315,6 +330,10 @@ the editor with hot reload on http://localhost:5173/immich-raw/, using the test 
 - `npm test`: unit tests (vitest); `npm run check`: type checks.
 - `node e2e/smoke.mjs <out-dir>`: end-to-end test (open, edit, save, reopen, re-save).
 - `node e2e/screenshots.mjs`: regenerates the screenshots in this README.
+- Culler:
+  - `cd services/culler && uv run pytest`: its unit tests;
+  - `node e2e/culler-up.mjs`: starts it next to the test Immich;
+  - `node e2e/cull.mjs <out-dir>`: its end-to-end test, on RAW and JPEG bursts.
 - [e2e/README.md](e2e/README.md) describes the test setup; [deploy/README.md](deploy/README.md) the
   deployment files.
 

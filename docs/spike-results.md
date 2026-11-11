@@ -120,5 +120,24 @@ Things learned along the way:
 - **Button styling:** copying the icon buttons' `className` makes a text link look dim and wrap. The M1 button
   should be an icon button with a tooltip, like Immich's own.
 
+### Culler (`spikes/immich-api/cull-check.mjs`, Immich 3.4.0)
+
+What the culler (services/culler) relies on. Measured 2026-11-11.
+
+| Check | Result |
+|---|---|
+| `filter.createdAt` in `/search/metadata` | Is the upload time: the watcher finds new uploads with it. |
+| Search results with `filter` | Include stacked members, but carry no `stack`, `tags` or `exifInfo` (unless `withExif`). `GET /assets/{id}` has them. |
+| `PUT /tags` with `A/B/C` | Creates the parents too and returns the leaf tags. |
+| `PUT /assets {ids, rating: -1}` | Accepted, readable right away, but **empty again ~2 s later**. Immich rewrites the sidecar and re-reads the metadata, and its reader only accepts 1–5 (`metadata.service.ts`: `validateRange(exifTags.Rating, 1, 5)`). Same for RAW files. |
+| Stack left with one photo | Not deleted: the culler deletes it itself. |
+| Removing a stack's primary | 400 "Cannot remove stack's primary asset". |
+| `updateStack` to a non-member | 400 "Primary asset must be in the stack". |
+| `size=fullsize` thumbnail | Same as `preview` (2161×1440 for a 61 MP RAW) unless full-size previews are turned on. |
+| Bulk metadata (`PUT`/`DELETE /assets/metadata`) | Works. |
+| Webhook workflow step | Fires once per photo for both `AssetCreate` and `AssetMetadataExtraction`. Body `{type, trigger, data: {asset: {id, ownerId, …}}}`, plus the configured header. |
+| **RAW previews** (test DNGs, see `e2e/raw-burst.mjs`) | Immich renders them with LibRaw's automatic brightness: the preview of a frame 1.5 stops darker measured exactly like the normal one (0.00 EV), and +1.7 EV showed only +0.69 EV. Decoding the RAW with `no_auto_bright` gives −1.50 / +1.70 EV. **Decision:** the culler measures RAW exposure on the RAW file. |
+| API key permissions | All the culler's calls work with `asset.read/view/download/update`, `album.read`, `user.read`, `stack.*` (create, read, update, delete), `tag.create/read/asset`. |
+
 ## Still open
 - Browser-reserved shortcuts (Ctrl+Shift+C/V): needs real key presses in a headed browser.

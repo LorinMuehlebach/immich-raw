@@ -46,3 +46,17 @@ one button appears.
 Open a RAW in Immich's viewer. An iris icon appears at the left of the toolbar. Clicking it opens
 `/immich-raw/?asset=…`. In the browser's developer tools, `crossOriginIsolated` should be `true` on
 the editor page.
+
+## 5. Optional: the culler
+
+The culler stacks bursts, puts the best shot in front and tags why the others lost.
+
+1. Add the `immich-culler` service from [compose.example.yml](compose.example.yml), with an Immich
+   API key in `culler.env`. The key's permissions are listed in
+   [docs/culler.md](../docs/culler.md#settings).
+2. The nginx and Caddy snippets already route `/immich-raw/culler/` to it. That route must come
+   before `/immich-raw/`.
+3. Check: `https://<your-immich>/immich-raw/culler/api/v1/health` answers `{"ok": true, …}`, and the
+   editor's filmstrip shows **Auto-stack…**.
+
+The [README](../README.md#optional-the-culler-auto-stack-and-best-pick) has the step-by-step setup.
