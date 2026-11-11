@@ -44,7 +44,8 @@ What it does for Immich traffic:
   (below) for the button.
 
 The editor sends `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy` and
-`Cross-Origin-Resource-Policy` headers. Don't strip them: the RAW decoder doesn't work without them.
+`Cross-Origin-Resource-Policy` headers. The editor no longer needs them (it also runs on plain HTTP),
+but leave them in: a future multi-threaded decoder would.
 
 ### Button without proxy changes: the userscript
 
@@ -63,8 +64,9 @@ one button appears.
 ## Check
 
 Open a RAW in Immich's viewer. An iris icon appears at the left of the toolbar. Clicking it opens
-`/immich-raw/?asset=…`. In the browser's developer tools, `crossOriginIsolated` should be `true` on
-the editor page.
+`/immich-raw/?asset=…` and shows the photo after a few seconds. On HTTPS the editor page is also
+cross-origin isolated (`crossOriginIsolated` is `true` in the developer tools). Nothing needs that
+yet, but it shows the headers come through.
 
 ## Optional: the culler
 

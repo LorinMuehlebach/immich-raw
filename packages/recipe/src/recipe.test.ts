@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PARAMS } from './params.ts';
 import { canonicalJson, defaultRecipe, isDefaultRecipe, normalizeRecipe, recipeHash } from './recipe.ts';
 
@@ -58,6 +58,21 @@ describe('recipeHash', () => {
     const b = defaultRecipe();
     b.basic.exposure = 0.5;
     expect(await recipeHash(a)).not.toBe(await recipeHash(b));
+  });
+
+  it('is the same without WebCrypto (plain HTTP pages)', async () => {
+    const r = defaultRecipe();
+    r.basic.exposure = 0.73;
+    r.crop.angle = -1.25;
+    const expected = await recipeHash(r); // WebCrypto
+    expect(expected).toMatch(/^[0-9a-f]{64}$/);
+    vi.stubGlobal('crypto', undefined);
+    try {
+      expect(globalThis.crypto).toBeUndefined();
+      expect(await recipeHash(r)).toBe(expected);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

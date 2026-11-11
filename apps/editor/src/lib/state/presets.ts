@@ -1,6 +1,7 @@
 // Develop presets, stored in this browser (IndexedDB). Immich has no per-user storage the
 // editor could use, so presets travel between browsers via JSON export/import.
 import { applyPatch, patchGroups, pickGroups, type GroupId, type Recipe, type SettingsPatch } from '@immich-raw/recipe';
+import { newId } from '../id.ts';
 
 export const DEFAULT_FOLDER = 'User Presets';
 export const LIGHTROOM_FOLDER = 'Lightroom Presets';
@@ -117,14 +118,6 @@ export class IndexedDbPresetStorage implements PresetStorage {
     );
   }
 }
-
-const newId = (): string => {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-};
 
 /** Keeps only the recipe paths the setting groups know about. */
 export function sanitizePatch(patch: unknown): SettingsPatch {

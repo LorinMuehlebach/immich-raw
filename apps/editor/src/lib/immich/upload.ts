@@ -1,5 +1,6 @@
 // Upload through XMLHttpRequest instead of the SDK: we need upload progress and the
 // x-immich-checksum header.
+import { sha1 } from '@noble/hashes/legacy.js';
 import { apiUrl, authHeaders } from './api.ts';
 
 export interface UploadOptions {
@@ -18,11 +19,25 @@ export interface UploadResult {
   status: 'created' | 'duplicate';
 }
 
+/** Base64 SHA-1 of a file, the checksum Immich uses to find duplicates. */
 export async function sha1Base64(blob: Blob): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-1', await blob.arrayBuffer());
+  // WebCrypto exists only on secure pages (HTTPS, localhost).
+  const digest = globalThis.crypto?.subtle ? new Uint8Array(await crypto.subtle.digest('SHA-1', await blob.arrayBuffer())) : await sha1Js(blob);
   let binary = '';
-  for (const b of new Uint8Array(digest)) binary += String.fromCharCode(b);
+  for (const b of digest) binary += String.fromCharCode(b);
   return btoa(binary);
+}
+
+const SHA1_CHUNK = 4 * 1024 * 1024;
+
+/** SHA-1 in JavaScript, 4 MB at a time with a pause in between, so a 60 MB DNG doesn't freeze the page. */
+export async function sha1Js(blob: Blob, chunk = SHA1_CHUNK): Promise<Uint8Array> {
+  const hash = sha1.create();
+  for (let at = 0; at < blob.size; at += chunk) {
+    hash.update(new Uint8Array(await blob.slice(at, at + chunk).arrayBuffer()));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return hash.digest();
 }
 
 export function uploadAsset(opts: UploadOptions, onProgress?: (fraction: number) => void): Promise<UploadResult> {

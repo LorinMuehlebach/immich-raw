@@ -48,7 +48,8 @@ server {
   gzip_min_length 1024;
   gzip_comp_level 6;
 
-  # The RAW decoder (WASM with threads) needs a cross-origin isolated page.
+  # Cross-origin isolation for the editor. Not required (the decoder runs single-threaded, also on
+  # plain HTTP, where browsers ignore these headers), but kept for a future multi-threaded build.
   # add_header in a location replaces the server-level ones, so every location repeats them.
   set $coop "same-origin";
   set $coep "require-corp";

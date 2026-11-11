@@ -18,3 +18,5 @@
 apps/editor/public/lensfun/lensfun.json -diff linguist-generated
 package-lock.json linguist-generated
 services/culler/uv.lock linguist-generated
+packages/libraw/lib/*.js -diff linguist-generated
+packages/libraw/lib/*.d.ts linguist-generated

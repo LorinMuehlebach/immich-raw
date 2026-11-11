@@ -34,18 +34,40 @@ export function cfaComponents(width: number, tileWidth: number, patternWidth = 2
 // Tile pixels, reused between calls.
 let tileBuf = new Uint16Array(0);
 
-/** Copies tile `index` into `dst`, replicating the last column/row past the image edge. */
-function extractTile(data: Uint16Array, width: number, height: number, layout: TileLayout, index: number, dst: Uint16Array): void {
+/**
+ * Copies tile `index` of an image with `channels` samples per pixel, replicating the last
+ * column/row past the image edge. Writes into `dst` when given, else into a new array of
+ * tileWidth * tileHeight * channels samples. Lets the app hand single tiles to workers.
+ */
+export function extractTile(
+  data: Uint16Array,
+  width: number,
+  height: number,
+  layout: TileLayout,
+  index: number,
+  channels = 1,
+  dst?: Uint16Array,
+): Uint16Array {
   const { tileWidth: tw, tileHeight: th } = layout;
+  const out = dst ?? new Uint16Array(tw * th * channels);
   const x0 = (index % layout.across) * tw;
   const y0 = Math.floor(index / layout.across) * th;
   const inside = Math.min(tw, width - x0);
   for (let r = 0; r < th; r++) {
-    const src = Math.min(y0 + r, height - 1) * width + x0;
-    const row = r * tw;
-    dst.set(data.subarray(src, src + inside), row);
-    if (inside < tw) dst.fill(data[src + inside - 1]!, row + inside, row + tw);
+    const src = (Math.min(y0 + r, height - 1) * width + x0) * channels;
+    const row = r * tw * channels;
+    out.set(data.subarray(src, src + inside * channels), row);
+    if (inside === tw) continue;
+    if (channels === 1) out.fill(data[src + inside - 1]!, row + inside, row + tw);
+    else for (let x = inside; x < tw; x++) out.copyWithin(row + x * channels, row + (inside - 1) * channels, row + inside * channels);
   }
+  return out;
+}
+
+/** Lossless JPEG of one CFA tile cut out with extractTile: the second half of encodeCfaTile. */
+export function encodeCfaTileData(tile: Uint16Array, tileWidth: number, tileHeight: number, components: number): Uint8Array {
+  if (tileWidth % components) throw new Error(`Tile width ${tileWidth} is not a multiple of ${components} components`);
+  return encodeLosslessJpeg(tile, tileWidth / components, tileHeight, components, 16);
 }
 
 /** Internal: encodeCfaTile with an explicit component count (for measurements). */
@@ -53,11 +75,10 @@ export function encodeCfaTileWith(raw: Pick<CfaRaw, 'data' | 'width' | 'height'>
   const layout = tileLayout(raw.width, raw.height, tile);
   if (!(index >= 0 && index < layout.count)) throw new Error(`Tile ${index} out of range (0..${layout.count - 1})`);
   if (raw.data.length < raw.width * raw.height) throw new Error('CFA data is shorter than width * height');
-  if (layout.tileWidth % components) throw new Error(`Tile width ${layout.tileWidth} is not a multiple of ${components} components`);
   const n = layout.tileWidth * layout.tileHeight;
   if (tileBuf.length < n) tileBuf = new Uint16Array(n);
-  extractTile(raw.data, raw.width, raw.height, layout, index, tileBuf);
-  return encodeLosslessJpeg(tileBuf, layout.tileWidth / components, layout.tileHeight, components, 16);
+  extractTile(raw.data, raw.width, raw.height, layout, index, 1, tileBuf);
+  return encodeCfaTileData(tileBuf, layout.tileWidth, layout.tileHeight, components);
 }
 
 /**

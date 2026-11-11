@@ -72,7 +72,7 @@ services:
     environment:
       CULLER_URL: http://culler:8080
     ports:
-      - '127.0.0.1:8089:80'
+      - '${E2E_BIND:-127.0.0.1}:8089:80'
     depends_on:
       - immich-server
     restart: unless-stopped
@@ -80,7 +80,7 @@ services:
   proxy:
     image: docker.io/library/nginx:1.29-alpine
     ports:
-      - '127.0.0.1:8088:80'
+      - '${E2E_BIND:-127.0.0.1}:8088:80'
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ${RAW_EDITOR_DIR:-../apps/editor/dist}:/usr/share/nginx/immich-raw:ro

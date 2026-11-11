@@ -2,16 +2,24 @@
 // Usage: node e2e/probe-dng.mjs <lossless|lossy> <asset-id | copy:<raw file>>...
 //   copy:<file> uploads a copy of the file (one extra byte, so Immich sees a new asset) and
 //   uses that; with REPLACE=1 such copies are then replaced by their DNG for real.
+//   INSECURE=1 opens the editor from a plain-HTTP origin that isn't a secure context.
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { chromium } from 'playwright-core';
+import { API_BASE as BASE, INSECURE, PAGE_BASE, browserArgs, expectedConsoleError, loginOnPageOrigin } from './insecure.mjs';
 
-const BASE = process.env.IMMICH_URL ?? 'http://127.0.0.1:8088';
 const [mode, ...targets] = process.argv.slice(2);
-const browser = await chromium.launch({ channel: 'msedge', headless: true, args: ['--enable-gpu', '--use-angle=d3d11'] });
+const LOGIN = { email: 'admin@example.com', password: 'raw-editor-e2e' };
+const browser = await chromium.launch({ channel: 'msedge', headless: true, args: ['--enable-gpu', '--use-angle=d3d11', ...browserArgs] });
 const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-await ctx.request.post(`${BASE}/api/auth/login`, { data: { email: 'admin@example.com', password: 'raw-editor-e2e' } });
+await ctx.request.post(`${BASE}/api/auth/login`, { data: LOGIN });
+// INSECURE=1: the editor runs on a plain-HTTP origin that isn't a secure context (insecure.mjs).
+if (INSECURE) {
+  const secure = await loginOnPageOrigin(ctx, LOGIN);
+  console.log(`pages on ${PAGE_BASE}: isSecureContext = ${secure}`);
+  if (secure !== false) throw new Error('INSECURE=1, but the editor page is a secure context');
+}
 
 async function uploadCopy(path) {
   const bytes = Buffer.concat([readFileSync(path), Buffer.from([0])]);
@@ -47,8 +55,8 @@ for (const target of targets) {
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-  await page.goto(`${BASE}/immich-raw/?asset=${id}&debug`);
+  page.on('console', (m) => m.type() === 'error' && !expectedConsoleError(m.text()) && errors.push(m.text()));
+  await page.goto(`${PAGE_BASE}/immich-raw/?asset=${id}&debug`);
   await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
   if (isCopy && process.env.EDIT === '1') {
     // Edit and save first, so there is a render stacked on top and a recipe to carry over.

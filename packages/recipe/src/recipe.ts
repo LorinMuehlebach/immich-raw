@@ -1,5 +1,6 @@
 // The edit recipe: everything needed to re-render a RAW. Stored on the RAW asset in
 // Immich under RECIPE_KEY; the rendered JPEG carries RENDER_KEY pointing back to it.
+import { sha256 } from '@noble/hashes/sha2.js';
 import { normalizeMasks, type Mask } from './masks.ts';
 import { ALL_PARAMS, PARAMS, clampParam, getPath, setPath, type Band, type Wheel } from './params.ts';
 
@@ -384,8 +385,10 @@ export function canonicalJson(value: unknown): string {
 /** SHA-256 (hex) of the render-relevant recipe; equal hashes mean identical renders. */
 export async function recipeHash(r: Recipe): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalJson(renderRelevant(r)));
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  // WebCrypto exists only on secure pages (HTTPS, localhost); on plain HTTP the JS SHA-256
+  // gives the same hash.
+  const digest = globalThis.crypto?.subtle ? new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)) : sha256(bytes);
+  return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export function cloneRecipe(r: Recipe): Recipe {

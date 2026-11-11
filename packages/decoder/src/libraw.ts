@@ -1,13 +1,13 @@
 // libraw-wasm wrapper. Each decode runs in its own LibRaw instance (= its own worker),
 // disposed afterwards: WASM memory never shrinks, so reusing a worker would keep the
 // peak (up to ~1.5 GB at 61 MP) alive for the whole session.
-import type LibRawType from 'libraw-wasm';
+import type LibRawType from '@immich-raw/libraw';
 import { camXyzFromRgbCam, hasCamXyz } from './color.ts';
 import type { DecoderInfo, LinearImage, RawMeta, SensorData } from './types.ts';
 
-// libraw-wasm is loaded unbundled from its own folder (the app copies node_modules/
-// libraw-wasm/dist there). Its worker, pthread workers and libraw.wasm are found relative
-// to that script at runtime, and libraw.wasm stays a separate, replaceable file (LGPL).
+// libraw-wasm (our single-threaded build in packages/libraw) is loaded unbundled from its own
+// folder (the app copies packages/libraw/lib there). Its worker and libraw.wasm are found
+// relative to that script at runtime, and libraw.wasm stays a separate, replaceable file (LGPL).
 let librawUrl = '/immich-raw/libraw/index.js';
 let librawModule: Promise<typeof LibRawType> | null = null;
 
@@ -40,7 +40,8 @@ const BASE_SETTINGS = {
 /** AHD for Bayer sensors; quality 2 for X-Trans (3-pass Markesteijn takes ~33 s at 40 MP). */
 const demosaicFor = (isXTrans: boolean) => (isXTrans ? { userQual: 2, name: 'markesteijn-1pass' } : { userQual: 3, name: 'AHD' });
 
-export const DECODER = { name: 'libraw-wasm', version: '1.6.0', libraw: '0.22.1' };
+// '+nothread': built without pthreads (packages/libraw/build), same pixels as the npm 1.6.0.
+export const DECODER = { name: 'libraw-wasm', version: '1.6.0+nothread', libraw: '0.22.1' };
 
 interface RawWasmMeta {
   width: number;

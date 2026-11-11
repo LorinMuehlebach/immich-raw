@@ -20,8 +20,14 @@ function runtimeDependencies(): string[] {
 describe('third-party notices', () => {
   it('list every runtime dependency', () => {
     const deps = runtimeDependencies();
-    expect(deps).toContain('libraw-wasm');
+    expect(deps).toContain('@noble/hashes');
     expect(deps.filter((name) => !notices.includes(name))).toEqual([]);
+  });
+
+  it('point to how the shipped LibRaw is built (LGPL)', () => {
+    expect(notices).toContain('packages/libraw/build');
+    expect(notices).toContain('no-pthreads.patch');
+    expect(notices).toContain('Written offer');
   });
 
   it('link every licence text in licenses/', () => {
