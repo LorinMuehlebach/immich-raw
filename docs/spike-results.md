@@ -139,5 +139,37 @@ What the culler (services/culler) relies on. Measured 2026-11-11.
 | **RAW previews** (test DNGs, see `e2e/raw-burst.mjs`) | Immich renders them with LibRaw's automatic brightness: the preview of a frame 1.5 stops darker measured exactly like the normal one (0.00 EV), and +1.7 EV showed only +0.69 EV. Decoding the RAW with `no_auto_bright` gives −1.50 / +1.70 EV. **Decision:** the culler measures RAW exposure on the RAW file. |
 | API key permissions | All the culler's calls work with `asset.read/view/download/update`, `album.read`, `user.read`, `stack.*` (create, read, update, delete), `tag.create/read/asset`. |
 
+### AI masks: model choice (2026-11-11)
+
+Candidates had to have a permissive licence (MIT, Apache-2.0, BSD; no non-commercial weights),
+run in onnxruntime-web, and be downloadable from a CDN that sends CORS headers (the editor is
+cross-origin isolated). Quality was judged on the five samples, a public-domain group photo (NPS,
+Bunsen Peak) and a CC BY portrait, with the scripts in [spikes/ai-masks/](../spikes/ai-masks/)
+(Python and onnxruntime 1.31 for quality, onnxruntime-web 1.31.1 in Node for WASM speed).
+
+| Masks | Tried | Result | Decision |
+|---|---|---|---|
+| Subject, Background | IS-Net general int8 (44 MB); ormbg int8 (44 MB, Apache-2.0); BiRefNet_lite fp16 (115 MB, MIT) | IS-Net: clean fruit, colour checker and ferry, 5 s/1 thread. ormbg: took two houses for the subject, 10 s. BiRefNet_lite: needs an 800 MB buffer at 1024 px, failed | **IS-Net** |
+| Sky, Landscape | DETR-ResNet50 panoptic int8 (44 MB, Apache-2.0); UperNet ConvNeXt-Tiny ADE20K (238 MB, MIT) | DETR: patchy sky, river taken for sky, houses and tree canopy missed. UperNet: full sky with clouds, houses, river, grass, trees, mountains, ground; 4.4 s/1 thread at 512 px | **UperNet**; ADE20K has no snow: snow is found by colour inside ground/mountain/vegetation |
+| People + parts | MediaPipe selfie multiclass (16 MB) + face landmarker (3.8 MB), Apache-2.0 | One pass over a whole group is too coarse (256 px); 256 px tiles over each group from UperNet's person class give clean hair, face skin, body skin and clothes for all 13 hikers. The landmarker's own face detector misses small faces: cropping each face-skin patch first found 18 faces. Lips, teeth, iris, eye whites and brows follow from the landmarks | **MediaPipe**, tiled |
+| Objects | SlimSAM-77 int8 (14 MB, Apache-2.0) | Clicks select the lemon and a dead tree well. This export takes no box prompt, and turning a box into points picked the wrong parts. IS-Net on the box (plus 10 %) picks the ferry, a hiker and a solar roof | **SlimSAM for clicks, IS-Net for boxes** |
+
+onnxruntime-web 1.31.1 WASM in Node (same machine as above), one run each:
+
+| Model | 1 thread (plain HTTP) | 4 threads (HTTPS, isolated) | Peak memory |
+|---|---|---|---|
+| IS-Net 1024² | 13.4 s | 4.0 s | 0.8 GB |
+| UperNet 512² | 20.9 s | 5.7 s | 1.3 GB |
+| SlimSAM encoder 1024² | 9.6 s | 3.9 s | 2.0 GB |
+
+WebGPU is used when the browser offers it. Every model runs once per photo; its output is kept
+in IndexedDB, so reopening the photo or changing the mask doesn't run it again.
+
+Lightroom's XMP codes for AI masks are not documented by Adobe. The ones used (MaskSubType 1 subject,
+2 sky, 3 + MaskSubCategoryID for a part of everyone, 0 + 50001-50008 for landscape categories) come
+from a Lightroom Classic plugin that recorded them from real catalogs (Automaat/lightroom-mcp).
+
 ## Still open
+- Lightroom's AI mask codes checked against a real sidecar written with AI masks (the importer
+  uses codes recorded by a third-party plugin).
 - Browser-reserved shortcuts (Ctrl+Shift+C/V): needs real key presses in a headed browser.

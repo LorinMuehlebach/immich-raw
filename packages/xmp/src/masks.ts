@@ -19,16 +19,23 @@
 import {
   BRUSH_FEATHER,
   LOCAL_PARAMS,
+  MAX_AI,
   MAX_BRUSHES,
   MAX_BRUSH_POINTS,
   MAX_COLOR_SAMPLES,
   MAX_COMPONENTS,
   MAX_MASKS,
+  PERSON_PART_LABELS,
   clampParam,
   defaultAdjustments,
+  newAiComponent,
   normalizeMasks,
   shortId,
+  type AiComponent,
+  type AiTarget,
   type BrushComponent,
+  type LandscapeClass,
+  type PersonPart,
   type BrushStroke,
   type ColorSample,
   type LocalAdjustments,
@@ -87,8 +94,94 @@ export const BRUSH_FEATHER_BY_CENTER_WEIGHT: [number, number][] = [
   [1, 0],
 ];
 
-/** Lightroom's AI selections (Mask/Image) by MaskSubType. */
-const AI_KINDS: Record<string, string> = { '1': 'Select Subject', '2': 'Select Sky', '3': 'Select People' };
+/**
+ * Lightroom's AI selections (crs:What "Mask/Image"). Lightroom stores what was selected, not
+ * the pixels, and so do we: the editor finds it again in the photo. The codes, as Lightroom
+ * writes them:
+ * - MaskSubType 1: Subject; 2: Sky.
+ * - MaskSubType 3 + MaskSubCategoryID: a part of everyone (PERSON_PART_IDS).
+ * - MaskSubType 0 + MaskSubCategoryID 50001-50008: a Landscape category (LANDSCAPE_IDS);
+ *   + 2-13 (with InstanceIDs): a part of one person; without a category: Background.
+ */
+const PERSON_PART_IDS: Record<number, PersonPart> = {
+  2: 'faceSkin',
+  3: 'iris',
+  4: 'bodySkin',
+  5: 'hair',
+  6: 'lips',
+  7: 'facialHair',
+  8: 'eyeSclera',
+  9: 'eyebrows',
+  11: 'clothes',
+  12: 'teeth',
+  13: 'person',
+};
+const LANDSCAPE_IDS: Record<number, LandscapeClass> = {
+  50001: 'architecture',
+  50002: 'mountains',
+  50003: 'artificialGround',
+  50004: 'naturalGround',
+  50005: 'vegetation',
+  50006: 'sky',
+  50007: 'water',
+  50008: 'snow',
+};
+/** When the codes are missing: the mask's name (English Lightroom names). */
+const AI_NAMES: [RegExp, AiTarget][] = [
+  [/\bsubject\b/i, 'subject'],
+  [/\bsky\b/i, 'sky'],
+  [/\bbackground\b/i, 'background'],
+  [/\b(people|person)\b/i, 'people'],
+];
+
+function aiFromImage(e: XmpStruct, notes: string[]): Built {
+  const sub = num(e, 'MaskSubType');
+  const cat = num(e, 'MaskSubCategoryID');
+  const name = text(e.MaskName) ?? '';
+  if (/\bobject/i.test(name)) return { skip: 'Select Objects (AI)' };
+  if (sub === 1) return { comp: newAiComponent('subject') };
+  if (sub === 2) return { comp: newAiComponent('sky') };
+  if (sub === 3) {
+    const part = Number.isNaN(cat) ? 'person' : PERSON_PART_IDS[cat];
+    return part ? { comp: newAiComponent('people', 'add', { parts: [part] }) } : { skip: `People part ${cat} (AI)` };
+  }
+  if (sub === 0 || Number.isNaN(sub)) {
+    const landscape = LANDSCAPE_IDS[cat];
+    if (landscape) return { comp: newAiComponent('landscape', 'add', { classes: [landscape] }) };
+    const part = PERSON_PART_IDS[cat];
+    if (part) {
+      // One person's part: Lightroom names people by an id of its own, which means nothing here.
+      notes.push(`${PERSON_PART_LABELS[part]} of one person applies to everyone`);
+      return { comp: newAiComponent('people', 'add', { parts: [part] }) };
+    }
+    if (sub === 0 && Number.isNaN(cat)) return { comp: newAiComponent('background') };
+  }
+  const byName = AI_NAMES.find(([re]) => re.test(name))?.[1];
+  if (byName && Number.isNaN(sub)) return { comp: newAiComponent(byName) };
+  return { skip: Number.isNaN(cat) ? 'AI selection' : `AI selection ${sub}/${cat}` };
+}
+
+/**
+ * Lightroom writes each People part and Landscape category as a part of its own; parts
+ * added one after the other become one (they add up anyway), so they fit our limits.
+ */
+function mergeAi(comps: MaskComponent[]): MaskComponent[] {
+  const out: MaskComponent[] = [];
+  for (const c of comps) {
+    const prev = out[out.length - 1];
+    const joinable = (x: MaskComponent | undefined): x is AiComponent =>
+      x?.kind === 'ai' && (x.target === 'people' || x.target === 'landscape') && !x.invert && !x.person;
+    // Adding A then B adds A or B, and subtracting both subtracts A or B; intersections don't join.
+    const sameOp = (prev?.mode === 'add' && c.mode === 'add') || (prev?.mode === 'subtract' && c.mode === 'subtract');
+    if (joinable(prev) && joinable(c) && prev.target === c.target && sameOp) {
+      if (c.target === 'people') prev.parts = [...new Set([...(prev.parts ?? []), ...(c.parts ?? [])])];
+      else prev.classes = [...new Set([...(prev.classes ?? []), ...(c.classes ?? [])])];
+      continue;
+    }
+    out.push(c);
+  }
+  return out;
+}
 
 /** A per-dab radius change bigger than this starts a new stroke (pen pressure). */
 const RADIUS_STEP = 0.1;
@@ -327,10 +420,8 @@ function shapeComponent(e: XmpStruct, what: string, container: MaskContainer, fr
       const r = isStruct(e.CorrectionRangeMask) ? e.CorrectionRangeMask : e;
       return { built: rangeComponent(r, frame, notes) ?? { skip: 'empty Range Mask' } };
     }
-    case 'Mask/Image': {
-      const kind = AI_KINDS[text(e.MaskSubType) ?? ''] ?? 'AI selection';
-      return { built: { skip: `${kind} (AI)` } };
-    }
+    case 'Mask/Image':
+      return { built: aiFromImage(e, notes) };
     default:
       return { built: { skip: what ? what.replace(/^Mask\//, '') : 'unknown mask type' } };
   }
@@ -488,7 +579,7 @@ function convertCorrection(c: XmpStruct, container: MaskContainer, index: number
     name,
     visible: flag(c, 'CorrectionActive') !== false,
     amount: clamp(num(c, 'CorrectionAmount', 1) * 100, 0, 200),
-    components: comps,
+    components: mergeAi(comps),
     adjust: localAdjustments(c, container, out),
   };
 }
@@ -530,15 +621,19 @@ export function importMasks(crs: Pick<CrsSettings, 'structs'>, ctx?: CropContext
   const over: string[] = [];
   let components = 0;
   let brushes = 0;
+  let ai = 0;
   for (const { mask, container } of converted) {
     const nb = mask.components.filter((c) => c.kind === 'brush').length;
+    const na = mask.components.filter((c) => c.kind === 'ai').length;
     if (masks.length >= MAX_MASKS) over.push(mask.name);
     else if (components + mask.components.length > MAX_COMPONENTS) out.warnings.push(`Mask "${mask.name}" skipped: more than ${MAX_COMPONENTS} mask parts in total`);
     else if (brushes + nb > MAX_BRUSHES) out.warnings.push(`Mask "${mask.name}" skipped: more than ${MAX_BRUSHES} brushes in total`);
+    else if (ai + na > MAX_AI) out.warnings.push(`Mask "${mask.name}" skipped: more than ${MAX_AI} AI selections in total`);
     else {
       masks.push(mask);
       components += mask.components.length;
       brushes += nb;
+      ai += na;
       imported[container] = (imported[container] ?? 0) + 1;
     }
   }

@@ -5,6 +5,7 @@
   import type { CullInfo } from './lib/immich/culler.ts';
   import { PresetStore } from './lib/state/presets.ts';
   import { editor } from './lib/state/editor.svelte.ts';
+  import AiDownloadDialog from './lib/ui/AiDownloadDialog.svelte';
   import BasicPanel from './lib/ui/BasicPanel.svelte';
   import CalibrationPanel from './lib/ui/CalibrationPanel.svelte';
   import EffectsPanel from './lib/ui/EffectsPanel.svelte';
@@ -521,6 +522,7 @@
 </div>
 
 <ConvertDngDialog />
+<AiDownloadDialog />
 
 {#if leaving}
   <UnsavedDialog fileName={editor.asset?.originalFileName ?? 'This photo'} busy={leaveSaving} onSave={leaveSave} onDiscard={leaveDiscard} onCancel={() => (leaving = null)} />

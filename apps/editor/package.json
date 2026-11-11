@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@immich-raw/ai": "*",
     "@immich/sdk": "3.4.0",
     "@jsquash/jpeg": "1.6.0",
     "@immich-raw/decoder": "*",

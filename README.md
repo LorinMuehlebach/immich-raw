@@ -27,9 +27,10 @@ presets (`.xmp`) and sidecar files can be imported.
 
 ![The editor with Auto tone and a few sliders applied](docs/images/2-editor.jpg)
 
-**3. Make local adjustments with masks:** linear and radial gradients, a brush, and colour and
-luminance ranges, each with its own exposure, contrast, colour and sharpness sliders. Here a gradient
-darkens the sky; the red overlay shows where it applies.
+**3. Make local adjustments with masks:** linear and radial gradients, a brush, colour and
+luminance ranges, and AI masks (subject, sky, background, people, landscape, objects), each with its
+own exposure, contrast, colour and sharpness sliders. Here a gradient darkens the sky; the red
+overlay shows where it applies.
 
 ![A linear gradient mask over the sky](docs/images/3-masks.jpg)
 
@@ -61,6 +62,12 @@ original is deleted (to the trash, or permanently).
   userscript) adds to Immich's pages.
 - **Stored data:** the edit settings live in Immich's asset metadata on the RAW. The original file is
   cached in the browser, so reopening a photo is fast.
+- **AI masks:** small models run in a background worker in the browser (ONNX Runtime, with WebGPU
+  when the browser has it, and MediaPipe). The first AI mask asks before downloading its models from
+  Hugging Face and Google (about 45 to 240 MB each, 316 MB for all kinds); they are then kept in the
+  browser. The photo is not uploaded anywhere. Like Lightroom, an edit stores what an AI mask selects
+  (Subject, Sky, which People parts), not its pixels: the mask is found again when the photo is
+  opened, and on another photo when it is copied or saved in a preset.
 - **Culler (optional):** a separate small service that groups bursts of similar shots into stacks,
   puts the best one on top and tags why the others lost (lighting, blur, closed eyes). For RAW files
   it measures exposure on the RAW file itself, because Immich's RAW previews are auto-brightened. See
@@ -91,7 +98,18 @@ original is deleted (to the trash, or permanently).
   - linear (M) and radial (Shift+M) gradients;
   - brush (K; Alt erases, `[` and `]` change the size);
   - colour ranges (click a colour, Shift+click to add one);
-  - luminance ranges.
+  - luminance ranges;
+  - AI masks:
+    - Subject, Sky and Background;
+    - People: everyone or one person; the whole person or any of face skin, body skin,
+      eyebrows, eye whites, iris and pupil, lips, teeth, hair, facial hair and clothes;
+    - Landscape: sky, water, vegetation, mountains, architecture, natural and artificial ground,
+      and snow (snow is found by colour, as the scene model has no snow class);
+    - Objects: drag a box around something, or click it (Shift+click adds points).
+
+    The first use of each kind takes a while (see [Under the hood](#under-the-hood)): about 5 to 20
+    seconds per photo depending on the computer, a few seconds with WebGPU, and it is remembered
+    for the photo.
 
   Mask parts can be added, subtracted or intersected, and O shows the overlay.
 - **Workflow:**
@@ -102,7 +120,10 @@ original is deleted (to the trash, or permanently).
   - copy/paste settings;
   - a filmstrip of the album, person or search you came from.
 - **Lightroom XMP sidecar import** on first open: basic, curves, colour mixer, B&W, colour grading,
-  calibration, detail, lens corrections, transform, effects, crop and masks. AI masks are skipped.
+  calibration, detail, lens corrections, transform, effects, crop and masks, including AI masks
+  (Subject, Sky, Background, People parts, Landscape), which are found again in the photo. AI
+  Objects and one person's parts can't be told apart in the file: objects are skipped, and a part
+  of one person applies to everyone. Lightroom presets with AI masks (Adaptive presets) work the same.
 - **Convert to DNG** (lossless or lossy), described above.
 
 The editor shows its keyboard shortcuts in the right-hand panel.
@@ -384,6 +405,8 @@ the editor with hot reload on http://localhost:5173/immich-raw/, using the test 
 
 - `npm test`: unit tests (vitest); `npm run check`: type checks.
 - `node e2e/smoke.mjs <out-dir>`: end-to-end test (open, edit, save, reopen, re-save).
+- `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>`: the AI masks on one photo (needs internet for
+  the models).
 - `node e2e/screenshots.mjs`: regenerates the screenshots in this README.
 - Culler:
   - `cd services/culler && uv run pytest`: its unit tests;
@@ -396,6 +419,7 @@ Project layout:
 
 - `apps/editor/`: the Svelte editor.
 - `packages/`:
+  - `ai`: AI masks (the models, the worker that runs them, turning their output into masks);
   - `decoder`: libraw-wasm;
   - `pipeline`: WebGL2 renderer, colour maths;
   - `recipe`: edit settings;

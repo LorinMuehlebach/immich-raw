@@ -2,7 +2,7 @@
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
 import { canonicalJson, defaultRecipe, type BrushComponent, type Recipe } from '@immich-raw/recipe';
-import { BrushRasterizer, packBrushAtlas } from './brush.ts';
+import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
 import { toGlMat3 } from './color/index.ts';
 import { buildCurveLut, isCurveNeutral, LUT_SIZE } from './curves.ts';
 import { estimateDehaze } from './dehaze.ts';
@@ -22,6 +22,15 @@ export interface SourceImage {
 }
 
 export type ViewMode = 'edit' | 'crop';
+
+/**
+ * An AI selection map (see setAiMasks): 8-bit coverage over the decoded image, in sensor
+ * orientation and before lens corrections. `version` changes whenever the map does.
+ */
+export interface AiMaskMap extends MaskMap {
+  data: Uint8Array;
+  version: string;
+}
 
 /**
  * Lightroom's Alt-drag views: highlight clipping on black, shadow clipping on white, and the
@@ -104,6 +113,8 @@ const GUIDED_MID_EPS = 0.08;
 const TEXTURE_SIGMA = 0.0015; // fraction of the frame diagonal
 const DEHAZE_RADIUS = 0.015;
 const TILE = 2048;
+/** Atlas cache key before anything was uploaded (no real key looks like this). */
+const NO_KEY = '<none>';
 // Must cover the widest filter: noise reduction reaches NR_REACH (126) full-resolution pixels.
 const APRON = 128;
 
@@ -119,9 +130,16 @@ export class Renderer {
   private cpuSource: SourceImage | null = null;
   private brushRaster = new BrushRasterizer();
   private brushTex: WebGLTexture | null = null;
-  private brushKey = '';
+  /** What the brush atlas was built from; NO_KEY = nothing uploaded yet. */
+  private brushKey = NO_KEY;
   private brushCells = new Map<string, [number, number, number, number]>();
   private brushHalf: [number, number] = [0, 0];
+  /** AI selection maps by component id (computed outside the renderer). */
+  private aiMaps = new Map<string, AiMaskMap>();
+  private aiTex: WebGLTexture | null = null;
+  private aiKey = NO_KEY;
+  private aiCells = new Map<string, [number, number, number, number]>();
+  private aiHalf: [number, number] = [0, 0];
   /** Proxy size in pixels (sensor orientation). */
   proxyWidth = 0;
   proxyHeight = 0;
@@ -198,7 +216,9 @@ export class Renderer {
     const gl = this.gl;
     this.camera = camera;
     this.cpuSource = img;
-    this.brushKey = '';
+    this.brushKey = NO_KEY;
+    this.aiMaps = new Map();
+    this.aiKey = NO_KEY;
     const scale = Math.max(1, Math.max(img.width, img.height) / PROXY_MAX);
     const pw = Math.max(1, Math.round(img.width / scale));
     const ph = Math.max(1, Math.round(img.height / scale));
@@ -234,6 +254,14 @@ export class Renderer {
     gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     return tex;
+  }
+
+  /**
+   * The AI selection maps of the loaded photo, by component id. AI components without a map
+   * are left out of the render until it arrives.
+   */
+  setAiMasks(maps: Map<string, AiMaskMap>): void {
+    this.aiMaps = new Map(maps);
   }
 
   /** Sets the lens profile / measured CA for the loaded photo. */
@@ -365,25 +393,23 @@ export class Renderer {
     if (key !== this.brushKey) {
       this.brushKey = key;
       this.brushRaster.retain(new Set(brushes.map((c) => c.id)));
-      const atlas = packBrushAtlas(brushes.map((c) => ({ id: c.id, map: this.brushRaster.rasterize(c, fx, fy) })));
-      if (!atlas) {
-        this.ctx.setShared('uBrush', null);
-        this.brushCells = new Map();
-      } else {
-        const gl = this.gl;
-        this.brushTex ??= gl.createTexture()!;
-        gl.bindTexture(gl.TEXTURE_2D, this.brushTex);
-        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, atlas.width, atlas.height, 0, gl.RED, gl.UNSIGNED_BYTE, atlas.data);
-        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        this.ctx.setShared('uBrush', this.brushTex);
-        this.brushCells = atlas.cells;
-        this.brushHalf = [0.5 / atlas.width, 0.5 / atlas.height];
-      }
+      const atlas = packBrushAtlas(brushes.map((c) => ({ id: c.id, map: this.brushRaster.rasterize(c, fx, fy) })), this.maxTextureSize);
+      this.brushTex = this.uploadAtlas(this.brushTex, atlas);
+      // No atlas: a texture of zeros, so nothing reads an unbound sampler.
+      this.ctx.setShared('uBrush', atlas ? this.brushTex : this.dummy);
+      this.brushCells = atlas?.cells ?? new Map();
+      if (atlas) this.brushHalf = [0.5 / atlas.width, 0.5 / atlas.height];
+    }
+
+    const ai = recipe.masks.flatMap((m) => m.components.filter((c) => c.kind === 'ai' && this.aiMaps.has(c.id)).map((c) => c.id));
+    const aiKey = ai.map((id) => `${id}:${this.aiMaps.get(id)!.version}`).join('|');
+    if (aiKey !== this.aiKey) {
+      this.aiKey = aiKey;
+      const atlas = packMaskAtlas(ai.map((id) => ({ id, map: this.aiMaps.get(id)! })), this.maxTextureSize);
+      this.aiTex = this.uploadAtlas(this.aiTex, atlas);
+      this.ctx.setShared('uAiMask', atlas ? this.aiTex : this.dummy);
+      this.aiCells = atlas?.cells ?? new Map();
+      if (atlas) this.aiHalf = [0.5 / atlas.width, 0.5 / atlas.height];
     }
 
     const colors = new Map<string, [number, number][]>();
@@ -411,7 +437,57 @@ export class Renderer {
         }
       }
     }
-    return { brushCells: this.brushCells, brushHalfTexel: this.brushHalf, colors };
+    return { brushCells: this.brushCells, brushHalfTexel: this.brushHalf, colors, aiCells: this.aiCells, aiHalfTexel: this.aiHalf };
+  }
+
+  /** Uploads an 8-bit atlas into `tex` (created when needed); null atlas: returns tex unchanged. */
+  private uploadAtlas(tex: WebGLTexture | null, atlas: { width: number; height: number; data: Uint8Array } | null): WebGLTexture | null {
+    if (!atlas) return tex;
+    const gl = this.gl;
+    tex ??= gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, atlas.width, atlas.height, 0, gl.RED, gl.UNSIGNED_BYTE, atlas.data);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  /** Mask-frame point -> where it lies in the decoded image (normalised, green channel). */
+  maskToSource(mx: number, my: number, recipe: Recipe): [number, number] {
+    const f = this.maskFrame();
+    return lensSourcePoint(this.lensFor(recipe), [mx / f[0], my / f[1]], 1);
+  }
+
+  /**
+   * The whole photo rendered with `recipe` (meant for one without crop or lens corrections),
+   * upright, at most `maxSide` pixels on the long edge, from the preview proxy. What AI masks
+   * are computed from. tToS maps the image (0..1) to the decoded image (0..1).
+   */
+  renderSmall(recipe: Recipe, maxSide: number): { image: ImageData; tToS: Affine } {
+    if (this.isLost) throw new Error('Graphics context lost');
+    const gl = this.gl;
+    const { camera, proxy } = this.requireSource();
+    const frame = this.frameFor(recipe, 'edit');
+    const k = Math.min(1, maxSide / Math.max(frame.width, frame.height));
+    const w = Math.max(8, Math.round(frame.width * k));
+    const h = Math.max(8, Math.round(frame.height * k));
+    const an = this.analyze(recipe, frame);
+    const full = this.frameFor(recipe, 'edit', camera.fullWidth, camera.fullHeight);
+    const T = this.chainTargets('small', w, h);
+    try {
+      this.chain(recipe, frame, an, { tex: proxy.tex, rect: [0, 0, 1, 1], texScale: [1, 1] }, T, [0, 0], [w, h], w / Math.max(1, full.width), false);
+      const px = new Uint8ClampedArray(w * h * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, T.fin.fb);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      for (let i = 3; i < px.length; i += 4) px[i] = 255;
+      return { image: new ImageData(px, w, h), tToS: frame.tToS };
+    } finally {
+      this.freeChain('small');
+    }
   }
 
   /** Normalised source coordinates -> mask frame (the longer side is 1). */
@@ -911,6 +987,12 @@ export class Renderer {
     if (this.brushTex) this.gl.deleteTexture(this.brushTex);
     this.brushTex = null;
     this.ctx.setShared('uBrush', null);
+    if (this.aiTex) this.gl.deleteTexture(this.aiTex);
+    this.aiTex = null;
+    this.aiMaps = new Map();
+    this.aiKey = NO_KEY;
+    this.brushKey = NO_KEY;
+    this.ctx.setShared('uAiMask', null);
     this.releaseZoom();
     this.ctx.deleteTarget(this.proxy);
     this.t = {};

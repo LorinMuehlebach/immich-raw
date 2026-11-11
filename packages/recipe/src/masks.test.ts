@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_COMPONENTS, MAX_MASKS, isMaskActive, newComponent, newMask, normalizeMasks } from './masks.ts';
+import { MAX_COMPONENTS, MAX_MASKS, MAX_OBJECT_POINTS, aiComponents, aiCount, aiLabel, isMaskActive, newAiComponent, newComponent, newMask, normalizeMasks } from './masks.ts';
 import { defaultRecipe, normalizeRecipe } from './recipe.ts';
 
 describe('masks', () => {
@@ -76,5 +76,49 @@ describe('masks', () => {
     expect(old.masks).toEqual([]);
     const withLens = normalizeRecipe({ schema: 1, lens: { profile: true, distortion: 30, removeCA: false } });
     expect([withLens.lens.profile, withLens.lens.distortion, withLens.lens.removeCA]).toEqual([true, 30, false]);
+  });
+  it('round-trips AI components and keeps no pixels', () => {
+    const m = newMask('People', newAiComponent('people', 'add', { parts: ['lips', 'faceSkin'], person: { x: 0.3, y: 0.2 } }));
+    m.components.push(newAiComponent('landscape', 'subtract', { classes: ['water', 'sky'] }));
+    m.components.push(newAiComponent('object', 'intersect', { box: [0.1, 0.2, 0.4, 0.5] }));
+    m.components.push(newAiComponent('subject'));
+    const back = normalizeMasks(JSON.parse(JSON.stringify([m])));
+    // Lists come back in Lightroom's order, so the same selection always has the same JSON.
+    expect(back[0]!.components[0]).toMatchObject({ kind: 'ai', target: 'people', parts: ['faceSkin', 'lips'], person: { x: 0.3, y: 0.2 } });
+    expect(back[0]!.components[1]).toMatchObject({ target: 'landscape', classes: ['sky', 'water'] });
+    expect(back[0]!.components[2]).toMatchObject({ target: 'object', box: [0.1, 0.2, 0.4, 0.5] });
+    expect(back[0]!.components[3]).toEqual({ id: m.components[3]!.id, mode: 'add', invert: false, kind: 'ai', target: 'subject' });
+    expect(aiCount(back)).toBe(4);
+    expect(aiComponents(back).map((c) => c.target)).toEqual(['people', 'landscape', 'object', 'subject']);
+  });
+
+  it('cleans up AI components', () => {
+    const out = normalizeMasks([
+      {
+        components: [
+          { kind: 'ai', target: 'people', parts: ['nose', 'hair', 'hair'], person: 'x' },
+          { kind: 'ai', target: 'unicorns' },
+          { kind: 'ai', target: 'landscape', classes: ['lava'] },
+          { kind: 'ai', target: 'object' },
+          { kind: 'ai', target: 'object', box: [0.6, 0.6, 0.2, 0.1], points: Array.from({ length: 400 }, (_, i) => i / 400) },
+          { kind: 'ai', target: 'sky', parts: ['hair'], classes: ['sky'] },
+        ],
+      },
+    ]);
+    const cs = out[0]!.components;
+    expect(cs).toHaveLength(3);
+    expect(cs[0]).toMatchObject({ target: 'people', parts: ['hair'], person: null });
+    expect(cs[1]).toMatchObject({ target: 'object', box: [0.2, 0.1, 0.6, 0.6] });
+    expect(cs[1]!.kind === 'ai' && cs[1]!.points!.length).toBe(MAX_OBJECT_POINTS * 2);
+    // Fields that don't belong to the target are dropped.
+    expect(cs[2]).toEqual({ id: expect.any(String), mode: 'add', invert: false, kind: 'ai', target: 'sky' });
+  });
+
+  it('names AI selections like Lightroom', () => {
+    expect(aiLabel({ target: 'subject' })).toBe('Subject');
+    expect(aiLabel({ target: 'people', parts: ['person'] })).toBe('People');
+    expect(aiLabel({ target: 'people', parts: ['faceSkin'], person: { x: 0, y: 0 } })).toBe('Person – Face Skin');
+    expect(aiLabel({ target: 'people', parts: ['faceSkin', 'lips', 'teeth'] })).toBe('People – Face Skin + Lips + …');
+    expect(aiLabel({ target: 'landscape', classes: ['sky', 'water'] })).toBe('Landscape – Sky + Water');
   });
 });
