@@ -61,6 +61,22 @@ services:
       - immich-server
     restart: unless-stopped
 
+  # The immich-raw image as users run it, in front of Immich (the drop-in setup in README.md):
+  #   docker compose -f e2e/docker-compose.immich.yml --profile gateway up -d --build gateway
+  # Immich with the button is then also on http://127.0.0.1:8089.
+  gateway:
+    profiles: [gateway]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      CULLER_URL: http://culler:8080
+    ports:
+      - '127.0.0.1:8089:80'
+    depends_on:
+      - immich-server
+    restart: unless-stopped
+
   proxy:
     image: docker.io/library/nginx:1.29-alpine
     ports:

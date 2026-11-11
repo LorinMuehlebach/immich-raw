@@ -53,6 +53,11 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   `IMMICH_HELMET_FILE=true docker compose -f e2e/docker-compose.immich.yml up -d`
 - Serve another folder at `/immich-raw/`:
   `RAW_EDITOR_DIR=/some/dir docker compose -f e2e/docker-compose.immich.yml up -d`
+- The published image in front of Immich (the README's quick setup), built from this checkout, on
+  http://127.0.0.1:8089:
+  `docker compose -f e2e/docker-compose.immich.yml --profile gateway up -d --build gateway`.
+  The test scripts run against it with `IMMICH_URL=http://127.0.0.1:8089`, e.g.
+  `IMMICH_URL=http://127.0.0.1:8089 node e2e/smoke.mjs <out-dir>`.
 
 ## Stop and reset
 

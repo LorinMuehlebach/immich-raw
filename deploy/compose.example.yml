@@ -1,24 +1,33 @@
-# Add this service to the docker-compose.yml you run Immich with.
-# It needs no published port: your reverse proxy sends /immich-raw/ to it (see the snippets).
+# Add these services to the docker-compose.yml you run Immich with (see README.md, "Installation").
 
 services:
   immich-raw:
     container_name: immich_raw
-    # Either build from a checkout of this repository...
-    build:
-      context: /path/to/immich-raw
-      dockerfile: deploy/Dockerfile
-    # ...or use an image you built with: docker build -f deploy/Dockerfile -t immich-raw .
-    # image: immich-raw:latest
+    image: ghcr.io/lorinmuehlebach/immich-raw:latest
+    # To build it from a checkout of this repository instead:
+    # build:
+    #   context: /path/to/immich-raw
+    #   dockerfile: deploy/Dockerfile
+    # Quick setup: immich-raw takes Immich's port and passes everything on to Immich. Remove the
+    # `ports:` lines of immich-server. Advanced setup (your proxy sends only /immich-raw/ here):
+    # leave the port out.
+    ports:
+      - '2283:80'
+    # environment:
+    #   IMMICH_URL: http://immich-server:2283     # where Immich is (this is the default)
+    #   CULLER_URL: http://immich-culler:8080     # where the optional culler is (the default)
+    depends_on:
+      - immich-server
     restart: always
 
   # Optional: stacks similar photos, puts the best one in front and tags why the others lost.
-  # Needs an Immich API key of the user whose library it works on (see deploy/README.md), in a
-  # file next to this one:  culler.env  ->  IMMICH_API_KEY=...
+  # Needs an Immich API key of the user whose library it works on (permissions: docs/culler.md),
+  # in a file next to this one:  culler.env  ->  IMMICH_API_KEY=...
   immich-culler:
     container_name: immich_culler
-    build:
-      context: /path/to/immich-raw/services/culler
+    image: ghcr.io/lorinmuehlebach/immich-raw-culler:latest
+    # build:
+    #   context: /path/to/immich-raw/services/culler
     env_file: culler.env
     environment:
       IMMICH_URL: http://immich-server:2283
