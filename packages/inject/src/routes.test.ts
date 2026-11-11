@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { editorUrl, isSafeReturnPath, parseViewerRoute } from './routes.ts';
+import { editorUrl, isExcludedPath, isSafeReturnPath, pageContext, parseViewerRoute } from './routes.ts';
 
 const A = '06d70775-6b65-4af4-8cfc-60a93afa9c3d';
 const B = 'a95b288d-caf0-49ac-a428-a47db8e05d4a';
@@ -64,5 +64,21 @@ describe('isSafeReturnPath', () => {
     expect(isSafeReturnPath('/\\host')).toBe(false);
     expect(isSafeReturnPath('https://host/x')).toBe(false);
     expect(isSafeReturnPath('photos')).toBe(false);
+  });
+});
+
+describe('pageContext', () => {
+  it('names the album or person page a selection was made on', () => {
+    expect(pageContext(`/albums/${B}`)).toBe(`album:${B}`);
+    expect(pageContext(`/albums/${B.toUpperCase()}/`)).toBe(`album:${B}`);
+    expect(pageContext(`/people/${A}`)).toBe(`person:${A}`);
+    expect(pageContext('/photos')).toBe('timeline');
+    expect(pageContext('/search?query=x')).toBe('timeline');
+  });
+
+  it('knows the pages without buttons', () => {
+    expect(isExcludedPath('/share/abc')).toBe(true);
+    expect(isExcludedPath('/trash')).toBe(true);
+    expect(isExcludedPath('/photos')).toBe(false);
   });
 });

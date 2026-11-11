@@ -7,6 +7,7 @@ export const TAG = {
   BitsPerSample: 258,
   Compression: 259,
   PhotometricInterpretation: 262,
+  ImageDescription: 270,
   Make: 271,
   Model: 272,
   StripOffsets: 273,
@@ -14,9 +15,14 @@ export const TAG = {
   SamplesPerPixel: 277,
   RowsPerStrip: 278,
   StripByteCounts: 279,
+  XResolution: 282,
+  YResolution: 283,
   PlanarConfiguration: 284,
+  ResolutionUnit: 296,
   Software: 305,
   DateTime: 306,
+  Artist: 315,
+  Predictor: 317,
   TileWidth: 322,
   TileLength: 323,
   TileOffsets: 324,
@@ -26,6 +32,7 @@ export const TAG = {
   XMP: 700,
   CFARepeatPatternDim: 33421,
   CFAPattern: 33422,
+  Copyright: 33432,
   ExifIFD: 34665,
   GPSInfo: 34853,
   DNGVersion: 50706,
@@ -70,6 +77,9 @@ export const EXIF_TAG = {
   ExposureBiasValue: 37380,
   FocalLength: 37386,
   SubSecTimeOriginal: 37521,
+  ColorSpace: 40961,
+  PixelXDimension: 40962,
+  PixelYDimension: 40963,
   FocalLengthIn35mmFilm: 41989,
   BodySerialNumber: 42033,
   LensMake: 42035,
@@ -88,8 +98,11 @@ export const GPS_TAG = {
 
 export const COMPRESSION_NONE = 1;
 export const COMPRESSION_JPEG = 7;
+/** Adobe Deflate: zlib streams. */
+export const COMPRESSION_DEFLATE = 8;
 export const COMPRESSION_LOSSY_JPEG = 34892;
 export const PHOTOMETRIC_RGB = 2;
 export const PHOTOMETRIC_YCBCR = 6;
 export const PHOTOMETRIC_CFA = 32803;
 export const PHOTOMETRIC_LINEAR_RAW = 34892;
+export const PREDICTOR_HORIZONTAL = 2;

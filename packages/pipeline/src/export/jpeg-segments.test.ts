@@ -104,6 +104,12 @@ const FULL: ExifFields = {
   gps: { latitude: 47.3769, longitude: -8.5417, altitude: -12.5 },
   software: 'immich-raw@0.1.0',
   imageDescription: 'Zürich lake',
+  artist: 'Jane Doe',
+  copyright: '© 2024 Jane Doe',
+  resolution: 300,
+  colorSpace: 'sRGB',
+  pixelWidth: 6000,
+  pixelHeight: 4000,
 };
 
 describe('insertExif', () => {
@@ -117,8 +123,17 @@ describe('insertExif', () => {
     expect(ifd0.get(TAGS.Model)?.value).toBe('ILCE-7RM5');
     expect(ifd0.get(TAGS.Software)?.value).toBe('immich-raw@0.1.0');
     expect(ifd0.get(TAGS.ImageDescription)?.value).toBe('Zürich lake');
+    expect(ifd0.get(TAGS.Artist)).toEqual({ type: 2, count: 9, value: 'Jane Doe' });
+    // UTF-8 inside ASCII, like ImageDescription: '©' is two bytes.
+    expect(ifd0.get(TAGS.Copyright)).toEqual({ type: 2, count: 17, value: '© 2024 Jane Doe' });
+    expect(ifd0.get(TAGS.XResolution)).toEqual({ type: 5, count: 1, value: [[300, 1]] });
+    expect(ifd0.get(TAGS.YResolution)).toEqual({ type: 5, count: 1, value: [[300, 1]] });
+    expect(ifd0.get(TAGS.ResolutionUnit)).toEqual({ type: 3, count: 1, value: [2] });
 
     expect(exif.get(TAGS.ExifVersion)?.value).toEqual(text('0232'));
+    expect(exif.get(TAGS.ColorSpace)).toEqual({ type: 3, count: 1, value: [1] });
+    expect(exif.get(TAGS.PixelXDimension)).toEqual({ type: 4, count: 1, value: [6000] });
+    expect(exif.get(TAGS.PixelYDimension)).toEqual({ type: 4, count: 1, value: [4000] });
     expect(exif.get(TAGS.ExposureTime)?.value).toEqual([[1, 250]]);
     const [fn, fd] = (exif.get(TAGS.FNumber)!.value as [number, number][])[0]!;
     expect(fn / fd).toBeCloseTo(2.8, 6);
@@ -163,6 +178,47 @@ describe('insertExif', () => {
     expect([...ifd0.keys()]).toEqual([TAGS.Orientation, TAGS.ExifIFD]);
     expect([...exif.keys()]).toEqual([TAGS.ExifVersion]);
     expect(gps).toBeNull();
+  });
+
+  it('writes fractional resolutions and skips invalid resolution and dimensions', () => {
+    const fractional = readTiff(tiffOf(insertExif(makeJpeg(DQT), { resolution: 240.5 })));
+    expect(fractional.ifd0.get(TAGS.XResolution)?.value).toEqual([[481, 2]]);
+    expect(fractional.ifd0.get(TAGS.ResolutionUnit)?.value).toEqual([2]);
+
+    const { ifd0, exif } = readTiff(tiffOf(insertExif(makeJpeg(DQT), { resolution: 0, pixelWidth: 12.5, pixelHeight: -1, artist: '', copyright: '' })));
+    expect([...ifd0.keys()]).toEqual([TAGS.Orientation, TAGS.ExifIFD]);
+    expect([...exif.keys()]).toEqual([TAGS.ExifVersion]);
+  });
+
+  it('keeps IFD0 and Exif IFD tags in ascending order with all fields', () => {
+    const { ifd0, exif } = readTiff(tiffOf(insertExif(makeJpeg(DQT), FULL)));
+    expect([...ifd0.keys()]).toEqual([
+      TAGS.ImageDescription,
+      TAGS.Make,
+      TAGS.Model,
+      TAGS.Orientation,
+      TAGS.XResolution,
+      TAGS.YResolution,
+      TAGS.ResolutionUnit,
+      TAGS.Software,
+      TAGS.Artist,
+      TAGS.Copyright,
+      TAGS.ExifIFD,
+      TAGS.GPSIFD,
+    ]);
+    expect([...exif.keys()]).toEqual([
+      TAGS.ExposureTime,
+      TAGS.FNumber,
+      TAGS.ISOSpeedRatings,
+      TAGS.ExifVersion,
+      TAGS.DateTimeOriginal,
+      TAGS.OffsetTimeOriginal,
+      TAGS.FocalLength,
+      TAGS.ColorSpace,
+      TAGS.PixelXDimension,
+      TAGS.PixelYDimension,
+      TAGS.LensModel,
+    ]);
   });
 
   it('writes the APP1 length field correctly', () => {

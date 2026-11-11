@@ -18,6 +18,15 @@ export interface ExifFields {
   gps?: { latitude: number; longitude: number; altitude?: number };
   software?: string;
   imageDescription?: string;
+  artist?: string;
+  copyright?: string;
+  /** Print resolution in pixels per inch (X/YResolution, ResolutionUnit inches). */
+  resolution?: number;
+  /** Exif ColorSpace. */
+  colorSpace?: 'sRGB';
+  /** Exif PixelXDimension / PixelYDimension: the size of the encoded image. */
+  pixelWidth?: number;
+  pixelHeight?: number;
 }
 
 const T = { BYTE: 1, ASCII: 2, SHORT: 3, LONG: 4, RATIONAL: 5, UNDEFINED: 7 } as const;
@@ -36,7 +45,12 @@ export const TAGS = {
   Make: 0x010f,
   Model: 0x0110,
   Orientation: 0x0112,
+  XResolution: 0x011a,
+  YResolution: 0x011b,
+  ResolutionUnit: 0x0128,
   Software: 0x0131,
+  Artist: 0x013b,
+  Copyright: 0x8298,
   ExifIFD: 0x8769,
   GPSIFD: 0x8825,
   ExposureTime: 0x829a,
@@ -46,6 +60,9 @@ export const TAGS = {
   DateTimeOriginal: 0x9003,
   OffsetTimeOriginal: 0x9011,
   FocalLength: 0x920a,
+  ColorSpace: 0xa001,
+  PixelXDimension: 0xa002,
+  PixelYDimension: 0xa003,
   LensModel: 0xa434,
   GPSVersionID: 0x0000,
   GPSLatitudeRef: 0x0001,
@@ -166,8 +183,17 @@ export function buildTiff(exif: ExifFields): Uint8Array {
   if (exif.model) ifd0.push(ascii(TAGS.Model, exif.model));
   if (exif.software) ifd0.push(ascii(TAGS.Software, exif.software));
   if (exif.imageDescription) ifd0.push(ascii(TAGS.ImageDescription, exif.imageDescription));
+  if (exif.artist) ifd0.push(ascii(TAGS.Artist, exif.artist));
+  if (exif.copyright) ifd0.push(ascii(TAGS.Copyright, exif.copyright));
+  if (exif.resolution !== undefined && Number.isFinite(exif.resolution) && exif.resolution > 0) {
+    const ppi = toRational(exif.resolution);
+    ifd0.push(rationals(TAGS.XResolution, [ppi]), rationals(TAGS.YResolution, [ppi]), short(TAGS.ResolutionUnit, 2)); // inches
+  }
 
   const exifIfd: Entry[] = [bytes(TAGS.ExifVersion, T.UNDEFINED, [0x30, 0x32, 0x33, 0x32])]; // "0232"
+  if (exif.colorSpace === 'sRGB') exifIfd.push(short(TAGS.ColorSpace, 1));
+  if (isDimension(exif.pixelWidth)) exifIfd.push(long(TAGS.PixelXDimension, exif.pixelWidth));
+  if (isDimension(exif.pixelHeight)) exifIfd.push(long(TAGS.PixelYDimension, exif.pixelHeight));
   if (exif.exposureTime && exif.exposureTime > 0) exifIfd.push(rationals(TAGS.ExposureTime, [toRational(exif.exposureTime)]));
   if (exif.fNumber && exif.fNumber > 0) exifIfd.push(rationals(TAGS.FNumber, [toRational(exif.fNumber, 1000)]));
   if (exif.iso && exif.iso > 0) exifIfd.push(short(TAGS.ISOSpeedRatings, exif.iso));
@@ -215,6 +241,8 @@ export function buildTiff(exif: ExifFields): Uint8Array {
   if (gpsIfd) writeIfd(out, gpsOffset, gpsIfd);
   return out;
 }
+
+const isDimension = (n: number | undefined): n is number => n !== undefined && Number.isInteger(n) && n > 0 && n <= 0xffffffff;
 
 function setLong(entries: Entry[], tag: number, value: number): void {
   const e = entries.find((x) => x.tag === tag)!;

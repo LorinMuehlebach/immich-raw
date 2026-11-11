@@ -30,9 +30,34 @@ export async function downloadOriginal(asset: OriginalRef, onProgress?: (fractio
   return bytes;
 }
 
+/** An original without the cache (e.g. a JPEG in a batch export), with the same stall timeout. */
+export function downloadUncached(id: string, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
+  return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress);
+}
+
+/** A download gives up when Immich sends nothing for this long (e.g. the server stopped answering). */
+const STALL_MS = 60_000;
+
 async function fetchWithProgress(url: string, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
-  const res = await fetch(url, { credentials: 'same-origin', headers: authHeaders() });
+  const abort = new AbortController();
+  let timer = 0;
+  const poke = () => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => abort.abort(new Error('The download stalled: Immich sent nothing for a minute.')), STALL_MS);
+  };
+  poke();
+  try {
+    return await readBody(await fetch(url, { credentials: 'same-origin', headers: authHeaders(), signal: abort.signal }), poke, onProgress);
+  } catch (e) {
+    throw abort.signal.aborted ? abort.signal.reason : e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readBody(res: Response, poke: () => void, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
   if (!res.ok) throw new Error(`Could not download the original (HTTP ${res.status}).`);
+  poke();
   const total = Number(res.headers.get('Content-Length')) || 0;
   if (!res.body) {
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -47,6 +72,7 @@ async function fetchWithProgress(url: string, onProgress?: (fraction: number) =>
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    poke();
     if (out && received + value.length <= out.length) out.set(value, received);
     else {
       if (out) {

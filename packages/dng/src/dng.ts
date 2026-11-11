@@ -79,7 +79,7 @@ function checkMatrix(name: string, m: number[] | undefined): void {
   if (m && (m.length !== 9 || m.some((v) => !Number.isFinite(v)))) throw new Error(`${name} must have 9 finite values`);
 }
 
-const DATE_RE = /^\d{4}:\d\d:\d\d \d\d:\d\d:\d\d$/;
+export const DATE_RE = /^\d{4}:\d\d:\d\d \d\d:\d\d:\d\d$/;
 
 /**
  * Smallest repeat pattern (rows x cols, dividing the CFA pattern) that reproduces the black
@@ -107,7 +107,8 @@ function dms(deg: number): { d: number; m: number; s: number } {
   return { d: Math.floor(total / 36_000_000), m: Math.floor((total % 36_000_000) / 600_000), s: (total % 600_000) / 10000 };
 }
 
-function exifIfd(exif: NonNullable<DngMetadata['exif']>): Ifd {
+/** Exif IFD for the given values (also used by the RGB TIFF writer). Throws on badly formatted dates. */
+export function exifIfd(exif: NonNullable<DngMetadata['exif']>): Ifd {
   const ifd = new Ifd();
   const E = EXIF_TAG;
   if (exif.exposureTime !== undefined && exif.exposureTime > 0) {
@@ -149,7 +150,8 @@ function exifIfd(exif: NonNullable<DngMetadata['exif']>): Ifd {
   return ifd;
 }
 
-function gpsIfd(gps: NonNullable<DngMetadata['gps']>): Ifd {
+/** GPS IFD (also used by the RGB TIFF writer). Throws on positions outside +-90 / +-180 degrees. */
+export function gpsIfd(gps: NonNullable<DngMetadata['gps']>): Ifd {
   if (!(Math.abs(gps.latitude) <= 90 && Math.abs(gps.longitude) <= 180)) throw new Error(`Bad GPS position ${gps.latitude}, ${gps.longitude}`);
   const ifd = new Ifd();
   ifd.bytes(GPS_TAG.GPSVersionID, BYTE, new Uint8Array([2, 3, 0, 0]));

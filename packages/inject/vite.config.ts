@@ -6,7 +6,7 @@ const USERSCRIPT_HEADER = `// ==UserScript==
 // @name         immich-raw: Edit RAW button
 // @namespace    https://github.com/LorinMuehlebach/immich-raw
 // @version      0.1.0
-// @description  Adds an "Edit RAW" button to Immich's photo viewer.
+// @description  Adds an "Edit RAW" button to Immich's photo viewer and an export button for selected photos.
 // @match        https://immich.example.com/*
 // @grant        none
 // @run-at       document-end

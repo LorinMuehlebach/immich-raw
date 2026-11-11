@@ -13,6 +13,23 @@ export interface ViewerRoute {
   context: string;
 }
 
+/** Shared links, trash and the locked folder, where the editor's buttons don't appear. */
+export function isExcludedPath(pathname: string): boolean {
+  return EXCLUDED.test(pathname);
+}
+
+const ALBUM_PAGE = new RegExp(`^/albums/(${UUID})(?:/|$)`, 'i');
+const PERSON_PAGE = new RegExp(`^/people/(${UUID})(?:/|$)`, 'i');
+
+/** The page a selection was made on: album:<id>, person:<id> or timeline (everything else). */
+export function pageContext(pathname: string): string {
+  const album = ALBUM_PAGE.exec(pathname);
+  if (album) return `album:${album[1]!.toLowerCase()}`;
+  const person = PERSON_PAGE.exec(pathname);
+  if (person) return `person:${person[1]!.toLowerCase()}`;
+  return 'timeline';
+}
+
 export function parseViewerRoute(pathname: string): ViewerRoute | null {
   if (EXCLUDED.test(pathname)) return null;
   const match = VIEWER.exec(pathname);
