@@ -169,7 +169,7 @@ describe('crsToPatch: sidecar', () => {
   });
 
   it('maps lens corrections and summarises masks and other skipped settings', () => {
-    expect(result.unmapped).toEqual(expect.arrayContaining(['MaskGroupBasedCorrections']));
+    expect(result.unmapped).not.toContain('MaskGroupBasedCorrections');
     expect(recipe.effects.vignetteAmount).toBe(-12);
     for (const k of ['AutoLateralCA', 'LensProfileEnable', 'LensProfileName', 'LensProfileSetup', 'LensProfileDistortionScale', 'RawFileName', 'PostCropVignetteAmount']) {
       expect(result.unmapped).not.toContain(k);
@@ -177,11 +177,11 @@ describe('crsToPatch: sidecar', () => {
     expect(recipe.lens.profile).toBe(true);
     expect(recipe.lens.removeCA).toBe(true);
     expect(recipe.lens.profileDistortion).toBe(100);
-    // Neither mask can be imported: one is an AI selection, the other has no shapes.
-    expect(result.warnings).toEqual(
-      expect.arrayContaining([`Mask "Sky" skipped: Select Sky (AI) can't be imported`, 'Mask "Subject" skipped: nothing to import']),
-    );
-    expect(result.groups).not.toContain('masks');
+    // The Sky mask is an AI selection (found again in the photo); the other has no shapes.
+    expect(result.warnings).toContain('Mask "Subject" skipped: nothing to import');
+    expect(result.warnings.some((w) => w.includes('"Sky"'))).toBe(false);
+    expect(result.groups).toContain('masks');
+    expect(recipe.masks.map((m) => [m.name, m.components.map((c) => (c.kind === 'ai' ? c.target : c.kind))])).toEqual([['Sky', ['sky']]]);
     expect(result.warnings.some((w) => w.startsWith('Lens Corrections'))).toBe(false);
     expect(result.unmapped).not.toContain('HueAdjustmentRed');
     expect(recipe.colorMixer.hue.red).toBe(10);

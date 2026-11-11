@@ -110,6 +110,25 @@ bool insideImage(vec2 t) {
 
 vec2 srcTex(vec2 s) { return (s - uSrcRect.xy) / uSrcRect.zw * uSrcTexScale; }
 
+// Gradients of the source texture coordinate per output pixel, for the mip level of the
+// (mipmapped) preview. Worked out from the geometry rather than with dFdx/dFdy: the GPU's own
+// derivatives are unreliable where a 2x2 pixel block sticks out of the render target (an odd
+// view height) or after the early return outside the image, and gave the photo's last row the
+// wrong mip level, a darker line when zoomed out. (Lens distortion is left out: it hardly
+// changes the scale.)
+vec2 gSrcDx;
+vec2 gSrcDy;
+void srcGradients(vec2 t) {
+  vec3 h = uGeom * vec3(t, 1.0);
+  // s = h.xy / h.z; columns 0 and 1 of uGeom are dh/dt.x and dh/dt.y.
+  vec2 sx = (uGeom[0].xy * h.z - h.xy * uGeom[0].z) / (h.z * h.z);
+  vec2 sy = (uGeom[1].xy * h.z - h.xy * uGeom[1].z) / (h.z * h.z);
+  vec2 k = uSrcTexScale / uSrcRect.zw;
+  gSrcDx = sx * k / uFramePx.x;
+  gSrcDy = sy * k / uFramePx.y;
+}
+vec4 srcAt(vec2 s) { return textureGrad(uSrc, srcTex(s), gSrcDx, gSrcDy); }
+
 float evalPoly(float c[7], float r) {
   return r * (c[0] + r * (c[1] + r * (c[2] + r * (c[3] + r * (c[4] + r * (c[5] + r * c[6]))))));
 }
@@ -119,10 +138,20 @@ vec2 radialMap(vec2 s, vec2 center, vec2 scale, float c[7]) {
   return r < 1e-9 ? s : center + (s - center) * (evalPoly(c, r) / r);
 }
 
+// Where ideal source point s lies in the decoded image (green channel): what AI masks, which
+// are computed from the decoded image, are looked up with. Same mapping as sampleLens.
+vec2 lensPoint(vec2 s) {
+  if (uLensOn == 0) return s;
+  vec2 si = 0.5 + (s - 0.5) / uLensZoom;
+  float rm = length((si - 0.5) * uManualScale);
+  if (uManualDist != 0.0) si = 0.5 + (si - 0.5) * (1.0 + uManualDist * rm * rm);
+  return uGeoOn == 1 ? radialMap(si, uGeoCenter, uGeoScale, uGeoG) : si;
+}
+
 // Camera RGB at ideal source point s, with the lens corrections; gain = vignetting.
 vec3 sampleLens(vec2 s, out float gain) {
   gain = 1.0;
-  if (uLensOn == 0) return texture(uSrc, srcTex(s)).rgb;
+  if (uLensOn == 0) return srcAt(s).rgb;
   vec2 si = 0.5 + (s - 0.5) / uLensZoom;
   vec2 d = (si - 0.5) * uManualScale;
   float rm = length(d);
@@ -137,7 +166,7 @@ vec3 sampleLens(vec2 s, out float gain) {
     sr = radialMap(sr, uCaCenter, uCaScale, uCaR);
     sb = radialMap(sb, uCaCenter, uCaScale, uCaB);
   }
-  vec3 cam = vec3(texture(uSrc, srcTex(sr)).r, texture(uSrc, srcTex(sg)).g, texture(uSrc, srcTex(sb)).b);
+  vec3 cam = vec3(srcAt(sr).r, srcAt(sg).g, srcAt(sb).b);
   if (uVigOn == 1) {
     vec2 v = (sg - uVigCenter) * uVigScale;
     float r2 = dot(v, v);
@@ -183,7 +212,7 @@ vec3 developInput(vec2 t) { return applyDehaze(developBase(t), t, uDehaze); }
 uniform int uMaskCount;
 uniform int uCompCount;
 #define MAX_COLOR_SAMPLES 16
-uniform ivec4 uCompInfo[MAX_COMP]; // kind (1 linear, 2 radial, 3 luminance, 4 brush, 5 colour), mode (0 add, 1 subtract, 2 intersect), mask slot, invert
+uniform ivec4 uCompInfo[MAX_COMP]; // kind (1 linear, 2 radial, 3 luminance, 4 brush, 5 colour, 6 AI), mode (0 add, 1 subtract, 2 intersect), mask slot, invert
 uniform vec4 uCompA[MAX_COMP];
 uniform vec4 uCompB[MAX_COMP];
 uniform vec2 uMaskFrame;           // source s -> mask frame
@@ -192,6 +221,7 @@ uniform vec4 uMaskE[MAX_MASK];     // exposure (EV), contrast, clarity, texture
 uniform vec4 uMaskC[MAX_MASK];     // temp, tint, saturation, hue (radians)
 uniform vec4 uMaskD[MAX_MASK];     // dehaze, sharpness, colour overlay a, b
 uniform sampler2D uBrush;          // brush coverage maps, packed (brush.ts)
+uniform sampler2D uAiMask;         // AI selection maps in decoded-image coordinates, packed
 uniform mat3 uMaskLms;             // working space -> OKLab LMS, for colour ranges
 uniform vec4 uColorSamples[MAX_COLOR_SAMPLES]; // sampled colours: OKLab a/L, b/L
 
@@ -243,6 +273,14 @@ float componentWeight(int i, vec2 s, vec2 m, float lum, vec3 chroma) {
     }
     // Near black the colour of a pixel is mostly noise.
     w = (1.0 - smoothstep(0.45 * a.z, a.z, d)) * smoothstep(0.03, 0.1, chroma.z);
+  } else if (info.x == 6) {
+    // a: the map's place in the atlas; b: half a texel. The map covers the decoded image,
+    // so it is looked up through the lens corrections and stays on the content.
+    vec2 p = lensPoint(s);
+    if (p.x >= 0.0 && p.y >= 0.0 && p.x <= 1.0 && p.y <= 1.0) {
+      vec2 uv = clamp(a.xy + p * a.zw, a.xy + b.xy, a.xy + a.zw - b.xy);
+      w = texture(uAiMask, uv).r;
+    }
   }
   return info.w == 1 ? 1.0 - w : w;
 }
@@ -274,6 +312,7 @@ uniform int uMaskDehaze;     // 1 when a mask uses Dehaze
 out vec4 o;
 void main() {
   vec2 t = frameT();
+  srcGradients(t);
   if (!insideImage(t)) { o = vec4(0.18, 0.18, 0.18, MID); return; }
   vec3 lin = developBase(t);
   float amount = uDehaze;
@@ -296,6 +335,7 @@ ${COMMON}
 out vec4 o;
 void main() {
   vec2 t = frameT();
+  srcGradients(t);
   float L = insideImage(t) ? log2(max(dot(developInput(t), LUMA), 1e-7)) : MID;
   o = vec4(L, L * L, 0.0, 1.0);
 }`;
@@ -713,6 +753,7 @@ uniform int uMaskSharp;     // 1 when a mask uses Sharpness
 out vec4 o;
 const vec3 W709 = vec3(0.2126, 0.7152, 0.0722);
 void main() {
+  srcGradients(frameT());
   ivec2 p = ivec2(gl_FragCoord.xy);
   ivec2 size = textureSize(uDev, 0);
   vec4 d = texelFetch(uDev, p, 0);

@@ -1,4 +1,4 @@
-import { defaultRecipe, newComponent, newMask, type LinearComponent, type LuminanceComponent, type RadialComponent } from '@immich-raw/recipe';
+import { defaultRecipe, newAiComponent, newComponent, newMask, type LinearComponent, type LuminanceComponent, type RadialComponent } from '@immich-raw/recipe';
 import { describe, expect, it } from 'vitest';
 import { componentWeight, maskFrameScale, maskUniforms, maskWeight } from './masks.ts';
 
@@ -91,5 +91,28 @@ describe('maskUniforms', () => {
   it('keeps the mask frame isotropic', () => {
     expect(maskFrameScale(6000, 4000)).toEqual([1, 4000 / 6000]);
     expect(maskFrameScale(4000, 6000)).toEqual([4000 / 6000, 1]);
+  });
+
+  it('leaves AI parts out until their map is ready', () => {
+    const r = defaultRecipe();
+    const m = newMask('Sky', newAiComponent('sky'));
+    m.components.push({ ...newAiComponent('subject', 'subtract'), invert: true });
+    m.adjust.exposure = -1;
+    r.masks = [m];
+    const none = maskUniforms(r, [1, 1]);
+    expect([none.uMaskCount, none.uCompCount]).toEqual([1, 0]);
+    const ready = maskUniforms(r, [1, 1], null, {
+      brushCells: new Map(),
+      brushHalfTexel: [0, 0],
+      colors: new Map(),
+      aiCells: new Map([[m.components[1]!.id, [0.5, 0, 0.5, 1]]]),
+      aiHalfTexel: [0.01, 0.02],
+    });
+    expect(ready.uCompCount).toBe(1);
+    expect([...ready.uCompInfo.slice(0, 4)]).toEqual([6, 1, 0, 1]);
+    expect([...ready.uCompA.slice(0, 4)]).toEqual([0.5, 0, 0.5, 1]);
+    expect([...ready.uCompB.slice(0, 2)].map((v) => Math.round(v * 100) / 100)).toEqual([0.01, 0.02]);
+    // The CPU copy has no map to read: an AI part selects nothing there.
+    expect(maskWeight(m, [0.5, 0.5])).toBe(0);
   });
 });

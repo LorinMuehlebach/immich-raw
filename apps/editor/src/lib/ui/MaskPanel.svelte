@@ -3,24 +3,36 @@
   // local sliders. Gradients are drawn on the photo, brushes painted, colours picked there
   // (see MaskOverlay).
   import {
+    AI_TARGET_LABELS,
     BRUSH_DENSITY,
     BRUSH_FEATHER,
     BRUSH_FLOW,
     BRUSH_SIZE,
     COLOR_REFINE,
     COMPONENT_LABELS,
+    LANDSCAPE_CLASSES,
+    LANDSCAPE_LABELS,
     MAX_COLOR_SAMPLES,
     LOCAL_PARAMS,
     LUMINANCE_SMOOTH,
     MASK_AMOUNT,
+    PERSON_PARTS,
+    PERSON_PART_LABELS,
     RADIAL_FEATHER,
+    aiLabel,
     getPath,
+    type AiComponent,
+    type AiTarget,
     type ComponentKind,
+    type LandscapeClass,
     type LocalKey,
     type MaskComponent,
     type MaskMode,
     type ParamSpec,
+    type PersonPart,
+    type Recipe,
   } from '@immich-raw/recipe';
+  import { applyAffine, type PersonInfo } from '@immich-raw/ai';
   import { editor } from '../state/editor.svelte.ts';
   import Section from './Section.svelte';
   import Slider from './Slider.svelte';
@@ -40,6 +52,19 @@
   const RANGE_HI: ParamSpec = { path: 'hi', label: 'Range to', min: 0, max: 100, default: 100, step: 1, decimals: 0, signed: false };
   const MODE_LABEL: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
   const KINDS: ComponentKind[] = ['brush', 'linear', 'radial', 'color', 'luminance'];
+  const AI_TARGETS: AiTarget[] = ['subject', 'sky', 'background', 'people', 'landscape', 'object'];
+  const AI_TITLE: Record<AiTarget, string> = {
+    subject: 'Select Subject: the main subject of the photo (AI)',
+    sky: 'Select Sky (AI)',
+    background: 'Select Background: everything but the subject (AI)',
+    people: 'People: whole people or parts such as skin, hair, eyes or lips (AI)',
+    landscape: 'Landscape: sky, water, vegetation, mountains, buildings, ground or snow (AI)',
+    object: 'Objects: drag a box around something on the photo, or click it (AI)',
+  };
+  /** Menu label of an AI target (People and Landscape open their choices). */
+  const aiMenuLabel = (t: AiTarget) => `${AI_TARGET_LABELS[t]}${t === 'people' || t === 'landscape' ? '…' : ''} (AI)`;
+  const AI_STATE_TEXT: Record<string, string> = { working: 'working…', empty: 'not found', failed: 'failed' };
+  const MB = (bytes: number) => `${Math.round(bytes / 1e6)} MB`;
   const BRUSH_ROWS = [
     { key: 'size', spec: BRUSH_SIZE },
     { key: 'feather', spec: BRUSH_FEATHER },
@@ -51,10 +76,16 @@
     radial: 'Drag on the photo to draw the radial gradient (Shift: circle).',
     brush: 'Paint on the photo. Alt erases; [ and ] change the size.',
     color: 'Click the colour to select on the photo, or drag to average an area.',
+    object: 'Drag a box around the object on the photo, or click it.',
   };
 
   const sel = $derived(editor.selectedMask);
   const comp = $derived(editor.selectedComponent);
+
+  // A People part's "who" list needs the people found in the photo.
+  $effect(() => {
+    if (comp?.kind === 'ai' && comp.target === 'people' && comp.person) void editor.ai.findPeople();
+  });
   let renaming = $state<string | null>(null);
   let nameText = $state('');
 
@@ -75,9 +106,57 @@
   }
 
   function addPart(e: Event & { currentTarget: HTMLSelectElement }, mode: MaskMode) {
-    const kind = e.currentTarget.value as ComponentKind | '';
+    const value = e.currentTarget.value;
     e.currentTarget.value = '';
-    if (kind && sel) editor.startMask(kind, mode, sel.id);
+    if (!value || !sel) return;
+    if (value.startsWith('ai:')) editor.startAiMask(value.slice(3) as AiTarget, mode, sel.id);
+    else editor.startMask(value as ComponentKind, mode, sel.id);
+  }
+
+  const toggle = <T,>(list: T[], item: T, on: boolean): T[] => (on ? [...list, item] : list.filter((x) => x !== item));
+  const ordered = <T extends string>(all: T[], list: T[]) => all.filter((x) => list.includes(x));
+  const partLabel = (c: MaskComponent) => (c.kind === 'ai' ? aiLabel(c) : COMPONENT_LABELS[c.kind]);
+
+  /** Index in ai.people of the person an AI part selects (-1 = everyone). */
+  function whoIndex(c: AiComponent, people: PersonInfo[] | null): number {
+    if (!c.person || !people?.length) return -1;
+    const photo = editor.ai.current();
+    const s = editor.renderer?.maskToSource(c.person.x, c.person.y, $state.snapshot(editor.recipe) as Recipe);
+    if (!s || !photo) return -1;
+    // Compare in the analysis image, where the people were found.
+    const t = applyAffine(photo.sToT, s[0], s[1]);
+    let best = -1;
+    let bd = Infinity;
+    people.forEach((p, i) => {
+      const d = Math.hypot(t[0] - p.at[0], t[1] - p.at[1]);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    });
+    return best;
+  }
+
+  /** Draws a person's face (or box) from the analysis image into a small canvas. */
+  function personThumb(canvas: HTMLCanvasElement, p: PersonInfo) {
+    const draw = (q: PersonInfo) => {
+      const img = editor.ai.current()?.image;
+      const ctx = canvas.getContext('2d');
+      if (!img || !ctx) return;
+      const [x0, y0, x1, y1] = q.box;
+      const side = Math.max((x1 - x0) * img.width, (y1 - y0) * img.height) * 1.3;
+      const cx = ((x0 + x1) / 2) * img.width;
+      const cy = ((y0 + y1) / 2) * img.height;
+      createImageBitmap(img, Math.max(0, Math.round(cx - side / 2)), Math.max(0, Math.round(cy - side / 2)), Math.max(1, Math.round(side)), Math.max(1, Math.round(side)))
+        .then((bmp) => {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+          bmp.close();
+        })
+        .catch(() => {});
+    };
+    draw(p);
+    return { update: draw };
   }
 
   const compValue = (c: MaskComponent, spec: ParamSpec) => getPath(c, spec.path) as number;
@@ -101,10 +180,67 @@
     <button class:active={editor.maskDraft?.kind === 'color' && !editor.maskDraft.maskId} onclick={() => editor.startMask('color')} disabled={editor.readOnly} title="Color range: select by colour">Color</button>
     <button onclick={() => editor.startMask('luminance')} disabled={editor.readOnly} title="Luminance range: select by brightness">Luminance</button>
   </div>
+  <div class="create ai">
+    <span class="lbl">AI</span>
+    {#each AI_TARGETS as t (t)}
+      <button
+        class:active={(t === 'object' && editor.maskDraft?.kind === 'object' && !editor.maskDraft.maskId) || (editor.aiPicker?.target === t && !editor.aiPicker.maskId)}
+        onclick={() => editor.startAiMask(t)}
+        disabled={editor.readOnly}
+        title={AI_TITLE[t]}>{t === 'object' ? 'Objects' : AI_TARGET_LABELS[t]}{t === 'people' || t === 'landscape' ? '…' : ''}</button
+      >
+    {/each}
+  </div>
   {#if editor.maskDraft}
     <div class="hint">
       {DRAFT_HINT[editor.maskDraft.kind]}
       <button class="small" onclick={() => editor.cancelMaskDraft()}>Cancel</button>
+    </div>
+  {/if}
+  {#if editor.aiPicker}
+    {@const p = editor.aiPicker}
+    <div class="picker">
+      <div class="sub">{p.target === 'people' ? 'People' : 'Landscape'}{p.maskId ? ` · ${MODE_LABEL[p.mode]}` : ''}</div>
+      {#if p.target === 'people'}
+        <div class="who">
+          <label><input type="radio" name="ai-who" checked={p.who === -1} onchange={() => editor.setAiPicker({ who: -1 })} /> Everyone</label>
+          {#if editor.ai.people}
+            {#each editor.ai.people as person, i (i)}
+              <label class="person" title="Person {i + 1}">
+                <input type="radio" name="ai-who" checked={p.who === i} onchange={() => editor.setAiPicker({ who: i })} />
+                <canvas width="40" height="40" use:personThumb={person}></canvas>
+              </label>
+            {/each}
+            {#if !editor.ai.people.length}<span class="note">No people found.</span>{/if}
+          {:else if editor.ai.peopleError}
+            <span class="note error">{editor.ai.peopleError}</span>
+          {:else}
+            <span class="note">Finding people…</span>
+          {/if}
+        </div>
+        <div class="checks">
+          {#each PERSON_PARTS as part (part)}
+            <label><input type="checkbox" checked={p.parts.includes(part)} onchange={(e) => editor.setAiPicker({ parts: ordered(PERSON_PARTS, toggle(p.parts, part, e.currentTarget.checked)) })} /> {PERSON_PART_LABELS[part]}</label>
+          {/each}
+        </div>
+      {:else}
+        <div class="checks">
+          {#each LANDSCAPE_CLASSES as k (k)}
+            <label><input type="checkbox" checked={p.classes.includes(k)} onchange={(e) => editor.setAiPicker({ classes: ordered(LANDSCAPE_CLASSES, toggle(p.classes, k, e.currentTarget.checked)) })} /> {LANDSCAPE_LABELS[k]}</label>
+          {/each}
+        </div>
+      {/if}
+      <div class="row">
+        <button onclick={() => editor.confirmAiPicker()} disabled={p.target === 'people' ? !p.parts.length : !p.classes.length}>Create mask</button>
+        <button class="small" onclick={() => editor.cancelMaskDraft()}>Cancel</button>
+      </div>
+    </div>
+  {/if}
+  {#if editor.ai.progress}
+    {@const pr = editor.ai.progress}
+    <div class="progress">
+      {pr.kind === 'download' ? `Downloading the ${pr.label}: ${MB(pr.loaded)} of ${MB(pr.total)}` : pr.label}
+      {#if pr.kind === 'download'}<progress max={pr.total} value={pr.loaded}></progress>{/if}
     </div>
   {/if}
   {#if editor.painting || editor.maskDraft?.kind === 'brush'}
@@ -156,25 +292,25 @@
               <li class:current={c.id === comp?.id}>
                 <button class="part" onclick={() => editor.selectMask(m.id, c.id)}>
                   <span class="mode">{i === 0 ? '' : MODE_LABEL[c.mode]}</span>
-                  {COMPONENT_LABELS[c.kind]}{c.invert ? ' (inverted)' : ''}
+                  {partLabel(c)}{c.invert ? ' (inverted)' : ''}
+                  {#if c.kind === 'ai' && editor.ai.status[c.id] && editor.ai.status[c.id]!.state !== 'ready'}
+                    <span class="ai-state {editor.ai.status[c.id]!.state}">{AI_STATE_TEXT[editor.ai.status[c.id]!.state]}</span>
+                  {/if}
                 </button>
                 <button class="icon small del" onclick={() => editor.deleteComponent(m.id, c.id)} disabled={editor.readOnly} title="Remove this part" aria-label="Remove part">✕</button>
               </li>
             {/each}
           </ul>
           <div class="ops">
-            <select onchange={(e) => addPart(e, 'add')} disabled={editor.readOnly} aria-label="Add to mask">
-              <option value="">Add…</option>
-              {#each KINDS as k (k)}<option value={k}>{COMPONENT_LABELS[k]}</option>{/each}
-            </select>
-            <select onchange={(e) => addPart(e, 'subtract')} disabled={editor.readOnly} aria-label="Subtract from mask">
-              <option value="">Subtract…</option>
-              {#each KINDS as k (k)}<option value={k}>{COMPONENT_LABELS[k]}</option>{/each}
-            </select>
-            <select onchange={(e) => addPart(e, 'intersect')} disabled={editor.readOnly} aria-label="Intersect mask with">
-              <option value="">Intersect…</option>
-              {#each KINDS as k (k)}<option value={k}>{COMPONENT_LABELS[k]}</option>{/each}
-            </select>
+            {#each [['add', 'Add…', 'Add to mask'], ['subtract', 'Subtract…', 'Subtract from mask'], ['intersect', 'Intersect…', 'Intersect mask with']] as [mode, label, aria] (mode)}
+              <select onchange={(e) => addPart(e, mode as MaskMode)} disabled={editor.readOnly} aria-label={aria}>
+                <option value="">{label}</option>
+                {#each KINDS as k (k)}<option value={k}>{COMPONENT_LABELS[k]}</option>{/each}
+                <optgroup label="AI">
+                  {#each AI_TARGETS as t (t)}<option value="ai:{t}">{aiMenuLabel(t)}</option>{/each}
+                </optgroup>
+              </select>
+            {/each}
           </div>
         {/if}
       </li>
@@ -184,7 +320,7 @@
   {#if sel && comp}
     <div class="group">
       <div class="sub">
-        {COMPONENT_LABELS[comp.kind]}
+        {partLabel(comp)}
         <label class="invert"><input type="checkbox" checked={comp.invert} onchange={() => editor.invertComponent(sel.id, comp.id)} disabled={editor.readOnly} /> Invert</label>
       </div>
       {#if comp.kind === 'radial'}
@@ -205,6 +341,59 @@
         {/if}
       {:else if comp.kind === 'brush'}
         <p class="note">{comp.strokes.length} stroke{comp.strokes.length === 1 ? '' : 's'}. Paint on the photo to add, hold Alt (or tick Erase) to remove.</p>
+      {:else if comp.kind === 'ai'}
+        {@const st = editor.ai.status[comp.id]}
+        {#if st?.state === 'working'}
+          <p class="note">Working… The models run in this browser; the first time they are downloaded once.</p>
+        {:else if st?.state === 'empty'}
+          <p class="note">{st.message}</p>
+        {:else if st?.state === 'failed'}
+          <p class="note error">{st.message} <button class="small" onclick={() => editor.ai.retry()}>Retry</button></p>
+        {/if}
+        {#if comp.target === 'people'}
+          <div class="who">
+            <select
+              value={whoIndex(comp, editor.ai.people)}
+              onchange={(e) => editor.setAiComponent(sel.id, comp.id, { who: Number(e.currentTarget.value) })}
+              disabled={editor.readOnly}
+              aria-label="Who"
+            >
+              <option value={-1}>Everyone</option>
+              {#each editor.ai.people ?? [] as _, i (i)}<option value={i}>Person {i + 1}</option>{/each}
+            </select>
+          </div>
+          <div class="checks">
+            {#each PERSON_PARTS as part (part)}
+              {@const parts = comp.parts ?? (['person'] as PersonPart[])}
+              <label
+                ><input
+                  type="checkbox"
+                  checked={parts.includes(part)}
+                  disabled={editor.readOnly || (parts.length === 1 && parts[0] === part)}
+                  onchange={(e) => editor.setAiComponent(sel.id, comp.id, { parts: ordered(PERSON_PARTS, toggle(parts, part, e.currentTarget.checked)) })}
+                /> {PERSON_PART_LABELS[part]}</label
+              >
+            {/each}
+          </div>
+        {:else if comp.target === 'landscape'}
+          <div class="checks">
+            {#each LANDSCAPE_CLASSES as k (k)}
+              {@const classes = comp.classes ?? ([] as LandscapeClass[])}
+              <label
+                ><input
+                  type="checkbox"
+                  checked={classes.includes(k)}
+                  disabled={editor.readOnly || (classes.length === 1 && classes[0] === k)}
+                  onchange={(e) => editor.setAiComponent(sel.id, comp.id, { classes: ordered(LANDSCAPE_CLASSES, toggle(classes, k, e.currentTarget.checked)) })}
+                /> {LANDSCAPE_LABELS[k]}</label
+              >
+            {/each}
+          </div>
+        {:else if comp.target === 'object'}
+          <p class="note">{comp.box ? 'The object found inside the box you drew.' : 'Shift+click the photo to add more points on the object.'}</p>
+        {:else}
+          <p class="note">Found by AI. Copied to another photo or saved in a preset, it is found again on that photo.</p>
+        {/if}
       {:else}
         <p class="note">Drag the square handles to change where the gradient starts and ends; the round handle rotates it.</p>
       {/if}
@@ -266,6 +455,80 @@
     color: var(--text-dim);
     font-size: 11px;
     white-space: nowrap;
+  }
+  .create.ai {
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .create.ai .lbl {
+    min-width: 46px;
+  }
+  .create.ai button {
+    flex: 1 0 auto;
+  }
+  .picker {
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 4px 8px 8px;
+    margin-top: 8px;
+  }
+  .checks {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 8px;
+    font-size: 12px;
+    margin: 4px 0;
+  }
+  .checks label,
+  .who label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .who {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+    font-size: 12px;
+  }
+  .person canvas {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    display: block;
+    background: var(--bg);
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .progress {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .progress progress {
+    width: 100%;
+    height: 6px;
+  }
+  .ai-state {
+    margin-left: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .ai-state.working {
+    color: var(--accent);
+  }
+  .ai-state.failed,
+  .note.error {
+    color: #e57373;
   }
   .hint,
   .empty,

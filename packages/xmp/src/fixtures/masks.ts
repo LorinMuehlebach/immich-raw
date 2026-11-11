@@ -314,7 +314,7 @@ export const MASK_GROUP_SIDECAR = `${head(`tiff:Orientation="1"
          crs:MaskInverted="false"
          crs:MaskValue="1"
          crs:MaskSubType="3"
-         crs:MaskSubCategoryID="4"/>
+         crs:MaskSubCategoryID="3"/>
        </rdf:Seq>
       </crs:CorrectionMasks>
       </rdf:Description>
@@ -607,6 +607,10 @@ ${components.join('\n')}
       </crs:CorrectionMasks>
       </rdf:Description>
      </rdf:li>`;
+
+/** A Lightroom AI selection (Mask/Image) component <rdf:li>. */
+export const aiLi = (attrs: string, mode = 0, inverted = false) =>
+  `        <rdf:li crs:What="Mask/Image" crs:MaskActive="true" crs:MaskBlendMode="${mode}" crs:MaskInverted="${inverted}" crs:MaskValue="${mode ? 0 : 1}" ${attrs}/>`;
 
 export const linearLi = (mode = 0) =>
   `        <rdf:li crs:What="Mask/Gradient" crs:MaskBlendMode="${mode}" crs:MaskInverted="false" crs:MaskValue="${mode ? 0 : 1}" crs:FullX="0.5" crs:FullY="0.1" crs:ZeroX="0.5" crs:ZeroY="0.4"/>`;
