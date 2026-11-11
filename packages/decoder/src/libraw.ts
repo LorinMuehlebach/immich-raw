@@ -2,6 +2,7 @@
 // disposed afterwards: WASM memory never shrinks, so reusing a worker would keep the
 // peak (up to ~1.5 GB at 61 MP) alive for the whole session.
 import type LibRawType from 'libraw-wasm';
+import { camXyzFromRgbCam, hasCamXyz } from './color.ts';
 import type { DecoderInfo, LinearImage, RawMeta, SensorData } from './types.ts';
 
 // libraw-wasm is loaded unbundled from its own folder (the app copies node_modules/
@@ -68,7 +69,12 @@ interface RawWasmMeta {
 
 function toMeta(m: RawWasmMeta): RawMeta {
   const c = m.color_data;
-  if (!c?.cam_mul || !c.rgb_cam || !c.cam_xyz) throw new Error('This RAW file has no color information the editor can use.');
+  const noColor = 'This RAW file has no color information the editor can use.';
+  if (!c?.cam_mul || !c.rgb_cam) throw new Error(noColor);
+  // Cameras missing from LibRaw's table (e.g. DNGs from new or unusual cameras) come with an
+  // all-zero cam_xyz; rebuild it from the file's own matrix, which rgb_cam is made from.
+  const camXyz = hasCamXyz(c.cam_xyz) ? c.cam_xyz : camXyzFromRgbCam(c.rgb_cam, c.pre_mul ?? []);
+  if (!camXyz) throw new Error(noColor);
   return {
     width: m.width,
     height: m.height,
@@ -76,7 +82,7 @@ function toMeta(m: RawWasmMeta): RawMeta {
     camMul: c.cam_mul,
     preMul: c.pre_mul,
     rgbCam: c.rgb_cam,
-    camXyz: c.cam_xyz,
+    camXyz,
     black: c.black,
     maximum: c.maximum,
     // LibRaw reports -999 when the file has no DNG BaselineExposure.
