@@ -15,6 +15,10 @@ export interface MaskResources {
   brushHalfTexel: [number, number];
   /** Colour component id -> the colour features (OKLab a/L, b/L) of its samples. */
   colors: Map<string, [number, number][]>;
+  /** AI component id -> its place in the AI atlas; components without a map yet are left out. */
+  aiCells?: Map<string, [number, number, number, number]>;
+  /** Half a texel of the AI atlas, in uv. */
+  aiHalfTexel?: [number, number];
 }
 
 /**
@@ -32,7 +36,7 @@ export function colorFeature(lin: readonly number[]): [number, number, number] {
 /** Refine (0..100) -> feature distance at which a colour range has faded out. */
 export const colorRangeReach = (refine: number) => 0.015 + Math.pow(refine / 100, 1.5) * 0.2;
 
-const KIND = { linear: 1, radial: 2, luminance: 3, brush: 4, color: 5 } as const;
+const KIND = { linear: 1, radial: 2, luminance: 3, brush: 4, color: 5, ai: 6 } as const;
 const MODE = { add: 0, subtract: 1, intersect: 2 } as const;
 
 export interface MaskUniforms {
@@ -66,7 +70,8 @@ export function maskFrameScale(w: number, h: number): [number, number] {
   return [w / m, h / m];
 }
 
-function encodeComponent(c: MaskComponent, res: MaskResources | undefined, colors: { next: number; data: Float32Array }): { a: number[]; b: number[] } {
+/** Shader parameters of one component; null leaves it out (an AI map that isn't ready yet). */
+function encodeComponent(c: MaskComponent, res: MaskResources | undefined, colors: { next: number; data: Float32Array }): { a: number[]; b: number[] } | null {
   switch (c.kind) {
     case 'linear':
       return { a: [c.x0, c.y0, c.x1, c.y1], b: [0, 0, 0, 0] };
@@ -89,6 +94,13 @@ function encodeComponent(c: MaskComponent, res: MaskResources | undefined, color
       const start = colors.next;
       for (const f of feats) colors.data.set([f[0], f[1], 0, 0], 4 * colors.next++);
       return { a: [start, feats.length, colorRangeReach(c.refine), 0], b: [0, 0, 0, 0] };
+    }
+    case 'ai': {
+      // Until its map is computed the component is left out (an inverted one would otherwise
+      // select everything for a moment).
+      const cell = res?.aiCells?.get(c.id);
+      if (!cell) return null;
+      return { a: [...cell], b: [...(res!.aiHalfTexel ?? [0, 0]), 0, 0] };
     }
   }
 }
@@ -122,8 +134,10 @@ export function maskUniforms(recipe: Recipe, frame: [number, number], overlayId:
     const slot = u.uMaskCount++;
     if (overlay) u.uOverlay = slot;
     for (const c of m.components) {
+      const enc = encodeComponent(c, res, colors);
+      if (!enc) continue;
       const i = u.uCompCount++;
-      const { a, b } = encodeComponent(c, res, colors);
+      const { a, b } = enc;
       u.uCompInfo.set([KIND[c.kind], MODE[c.mode], slot, c.invert ? 1 : 0], i * 4);
       u.uCompA.set(a, i * 4);
       u.uCompB.set(b, i * 4);

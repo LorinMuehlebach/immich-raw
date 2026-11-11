@@ -27,6 +27,21 @@ This software is based in part on the work of the Independent JPEG Group.
 | Lensfun lens database (`lensfun/lensfun.json`) | commit 52cf1a7b | CC BY-SA 3.0 | https://github.com/lensfun/lensfun/tree/52cf1a7b0e82e07e0ecaa3391ee5106a6dd1ee54/data/db | [LICENSE.md](apps/editor/public/lensfun/LICENSE.md) |
 | Material Icons (back, undo, redo, edit, delete) | | Apache-2.0 | https://github.com/google/material-design-icons | [icons.txt](licenses/icons.txt), [Apache-2.0.txt](licenses/Apache-2.0.txt) |
 | Material Design Icons, "camera-iris" (Immich button) | | Apache-2.0 | https://github.com/Templarian/MaterialDesign | [icons.txt](licenses/icons.txt), [Apache-2.0.txt](licenses/Apache-2.0.txt) |
+| onnxruntime-web (runs the AI mask models; `/immich-raw/ort/`) | 1.31.1 | MIT; the components built into it are listed in its notices | https://github.com/microsoft/onnxruntime/tree/v1.31.1 | [onnxruntime.txt](licenses/onnxruntime.txt), [onnxruntime-third-party.txt](licenses/onnxruntime-third-party.txt) |
+| @mediapipe/tasks-vision (people and face models for AI masks; `/immich-raw/mediapipe/`) | 1.2.2 | Apache-2.0 | https://github.com/google-ai-edge/mediapipe | [mediapipe.txt](licenses/mediapipe.txt) |
+
+## AI models (downloaded at run time, not shipped)
+
+AI masks download these models from their public hosts the first time they are needed (after
+asking) and keep them in the browser. They are not part of immich-raw or its image.
+
+| Model | Used for | Licence | Source |
+|---|---|---|---|
+| IS-Net (DIS), general use, int8 | Subject, Background, Objects (box) | MIT (int8 conversion); IS-Net Apache-2.0 | https://huggingface.co/xrds/isnet-general-onnx-int8, https://github.com/xuebinqin/DIS |
+| UperNet + ConvNeXt-Tiny, ADE20K | Sky, Landscape, where people are | MIT | https://huggingface.co/JElvis/upernet-convnext-tiny-ade-onnx (export of openmmlab/upernet-convnext-tiny) |
+| SlimSAM-77 (Segment Anything), int8 | Objects (clicked) | Apache-2.0 | https://huggingface.co/Xenova/slimsam-77-uniform |
+| MediaPipe Selfie Multiclass 256 x 256 | People: hair, skin, clothes | Apache-2.0 | https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter |
+| MediaPipe Face Landmarker | People: eyes, brows, lips, teeth | Apache-2.0 | https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker |
 
 ## Code adapted from other projects
 

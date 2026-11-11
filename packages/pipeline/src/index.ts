@@ -9,6 +9,7 @@ export {
   Renderer,
   beforeRecipe,
   sampleSource,
+  type AiMaskMap,
   type ExportProgress,
   type Histogram,
   type MaskView,

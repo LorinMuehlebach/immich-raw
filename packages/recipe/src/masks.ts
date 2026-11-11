@@ -17,9 +17,13 @@ export const MAX_BRUSHES = 8;
 export const MAX_COLOR_SAMPLES = 5;
 /** Points across all strokes of one brush component, to keep the recipe small. */
 export const MAX_BRUSH_POINTS = 20000;
+/** AI components across all masks (each one is a map in the AI atlas). */
+export const MAX_AI = 8;
+/** Points brushed over an object (Objects mask). */
+export const MAX_OBJECT_POINTS = 64;
 
 export type MaskMode = 'add' | 'subtract' | 'intersect';
-export type ComponentKind = 'linear' | 'radial' | 'luminance' | 'brush' | 'color';
+export type ComponentKind = 'linear' | 'radial' | 'luminance' | 'brush' | 'color' | 'ai';
 
 interface ComponentBase {
   id: string;
@@ -99,7 +103,68 @@ export interface ColorComponent extends ComponentBase {
   refine: number;
 }
 
-export type MaskComponent = LinearComponent | RadialComponent | LuminanceComponent | BrushComponent | ColorComponent;
+/** What an AI component selects (Lightroom's Select Subject, Sky, Background, People, Landscape, Objects). */
+export type AiTarget = 'subject' | 'sky' | 'background' | 'people' | 'landscape' | 'object';
+export type PersonPart = 'person' | 'faceSkin' | 'bodySkin' | 'hair' | 'facialHair' | 'eyebrows' | 'eyeSclera' | 'iris' | 'lips' | 'teeth' | 'clothes';
+export type LandscapeClass = 'sky' | 'water' | 'vegetation' | 'mountains' | 'architecture' | 'naturalGround' | 'artificialGround' | 'snow';
+
+export const AI_TARGETS: AiTarget[] = ['subject', 'sky', 'background', 'people', 'landscape', 'object'];
+export const AI_TARGET_LABELS: Record<AiTarget, string> = {
+  subject: 'Subject',
+  sky: 'Sky',
+  background: 'Background',
+  people: 'People',
+  landscape: 'Landscape',
+  object: 'Object',
+};
+/** Lightroom's People parts, in its order. */
+export const PERSON_PART_LABELS: Record<PersonPart, string> = {
+  person: 'Entire Person',
+  faceSkin: 'Face Skin',
+  bodySkin: 'Body Skin',
+  eyebrows: 'Eyebrows',
+  eyeSclera: 'Eye Sclera',
+  iris: 'Iris and Pupil',
+  lips: 'Lips',
+  teeth: 'Teeth',
+  hair: 'Hair',
+  facialHair: 'Facial Hair',
+  clothes: 'Clothes',
+};
+export const PERSON_PARTS = Object.keys(PERSON_PART_LABELS) as PersonPart[];
+export const LANDSCAPE_LABELS: Record<LandscapeClass, string> = {
+  sky: 'Sky',
+  water: 'Water',
+  vegetation: 'Vegetation',
+  mountains: 'Mountains',
+  architecture: 'Architecture',
+  naturalGround: 'Natural Ground',
+  artificialGround: 'Artificial Ground',
+  snow: 'Snow',
+};
+export const LANDSCAPE_CLASSES = Object.keys(LANDSCAPE_LABELS) as LandscapeClass[];
+
+/**
+ * AI selection. It stores what was selected, never pixels: the editor computes the map
+ * from the photo (and recomputes it on another photo, like Lightroom's adaptive presets).
+ * Points are in the mask frame, like all other geometry.
+ */
+export interface AiComponent extends ComponentBase {
+  kind: 'ai';
+  target: AiTarget;
+  /** People: the parts selected (their union). */
+  parts?: PersonPart[];
+  /** People: a point on the one person selected; absent or null = everyone. */
+  person?: { x: number; y: number } | null;
+  /** Landscape: the categories selected (their union). */
+  classes?: LandscapeClass[];
+  /** Object: the box drawn around it (x0, y0, x1, y1). */
+  box?: [number, number, number, number];
+  /** Object: points brushed over it, flat [x, y, ...]. */
+  points?: number[];
+}
+
+export type MaskComponent = LinearComponent | RadialComponent | LuminanceComponent | BrushComponent | ColorComponent | AiComponent;
 
 export interface LocalAdjustments {
   temp: number;
@@ -183,7 +248,25 @@ export const COMPONENT_LABELS: Record<ComponentKind, string> = {
   luminance: 'Luminance Range',
   brush: 'Brush',
   color: 'Color Range',
+  ai: 'AI Selection',
 };
+
+/** Name of an AI component, as Lightroom names it: "Subject", "People – Face Skin", "Landscape – Sky + Water". */
+export function aiLabel(c: Pick<AiComponent, 'target' | 'parts' | 'classes' | 'person'>): string {
+  const base = AI_TARGET_LABELS[c.target];
+  const list = (names: string[], all: number) => (names.length === all ? '' : names.length > 2 ? `${names.slice(0, 2).join(' + ')} + …` : names.join(' + '));
+  if (c.target === 'people') {
+    const parts = c.parts ?? ['person'];
+    const who = c.person ? 'Person' : base;
+    const what = parts.length === 1 && parts[0] === 'person' ? '' : list(parts.map((p) => PERSON_PART_LABELS[p]), -1);
+    return what ? `${who} – ${what}` : who;
+  }
+  if (c.target === 'landscape') {
+    const what = list((c.classes ?? []).map((k) => LANDSCAPE_LABELS[k]), LANDSCAPE_CLASSES.length);
+    return what ? `${base} – ${what}` : base;
+  }
+  return base;
+}
 
 export const shortId = (): string => Math.random().toString(36).slice(2, 10);
 
@@ -202,7 +285,23 @@ export function newComponent(kind: ComponentKind, mode: MaskMode = 'add'): MaskC
   if (kind === 'radial') return { ...base, kind, cx: 0.5, cy: 0.33, rx: 0.2, ry: 0.15, angle: 0, feather: 50 };
   if (kind === 'brush') return { ...base, kind, strokes: [] };
   if (kind === 'color') return { ...base, kind, samples: [], refine: 50 };
+  if (kind === 'ai') return { ...base, kind, target: 'subject' };
   return { ...base, kind, lo: 50, hi: 100, smooth: 20 };
+}
+
+/** A new AI component (the editor fills in parts, classes or the object prompt). */
+export function newAiComponent(target: AiTarget, mode: MaskMode = 'add', extra: Partial<Pick<AiComponent, 'parts' | 'person' | 'classes' | 'box' | 'points'>> = {}): AiComponent {
+  const c: AiComponent = { id: shortId(), mode, invert: false, kind: 'ai', target };
+  if (target === 'people') {
+    c.parts = extra.parts?.length ? [...extra.parts] : ['person'];
+    c.person = extra.person ?? null;
+  }
+  if (target === 'landscape') c.classes = extra.classes?.length ? [...extra.classes] : ['sky'];
+  if (target === 'object') {
+    if (extra.box) c.box = [...extra.box];
+    if (extra.points?.length) c.points = [...extra.points];
+  }
+  return c;
 }
 
 /** True when the mask changes the picture (visible, has a component and a non-zero slider). */
@@ -278,9 +377,50 @@ function normalizeComponent(input: unknown): MaskComponent | null {
       }
       return { ...base, kind: 'color', samples, refine: clampParam(COLOR_REFINE, num(input.refine, 50)) };
     }
+    case 'ai':
+      return normalizeAi(input, base);
     default:
       return null;
   }
+}
+
+function pickList<T extends string>(v: unknown, allowed: readonly T[]): T[] {
+  if (!Array.isArray(v)) return [];
+  // Kept in the canonical order, so the same selection always gives the same JSON.
+  return allowed.filter((k) => v.includes(k));
+}
+
+function normalizeAi(input: Record<string, unknown>, base: Pick<AiComponent, 'id' | 'mode' | 'invert'>): AiComponent | null {
+  const target = AI_TARGETS.find((t) => t === input.target);
+  if (!target) return null;
+  const c: AiComponent = { ...base, kind: 'ai', target };
+  const pos = (v: unknown, def: number) => quant(num(v, def, -2, 3));
+  if (target === 'people') {
+    const parts = pickList(input.parts, PERSON_PARTS);
+    c.parts = parts.length ? parts : ['person'];
+    c.person = isObject(input.person) ? { x: pos(input.person.x, 0.5), y: pos(input.person.y, 0.5) } : null;
+  } else if (target === 'landscape') {
+    const classes = pickList(input.classes, LANDSCAPE_CLASSES);
+    if (!classes.length) return null;
+    c.classes = classes;
+  } else if (target === 'object') {
+    const b = Array.isArray(input.box) && input.box.length === 4 && input.box.every((v) => typeof v === 'number' && Number.isFinite(v)) ? (input.box as number[]) : null;
+    if (b) {
+      const [x0, y0, x1, y1] = b.map((v) => pos(v, 0)) as [number, number, number, number];
+      if (Math.abs(x1 - x0) > 1e-3 && Math.abs(y1 - y0) > 1e-3) c.box = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+    }
+    const pts: number[] = [];
+    const src = Array.isArray(input.points) ? input.points : [];
+    for (let i = 0; i + 1 < src.length && pts.length < MAX_OBJECT_POINTS * 2; i += 2) {
+      const x = src[i];
+      const y = src[i + 1];
+      if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) pts.push(pos(x, 0), pos(y, 0));
+    }
+    if (pts.length) c.points = pts;
+    // An object needs something to point at it.
+    if (!c.box && !c.points) return null;
+  }
+  return c;
 }
 
 /** Valid masks from stored JSON: unknown fields dropped, numbers clamped, limits enforced. */
@@ -319,3 +459,9 @@ export const componentCount = (masks: Mask[]): number => masks.reduce((n, m) => 
 
 /** Brush components across all masks, to check against MAX_BRUSHES. */
 export const brushCount = (masks: Mask[]): number => masks.reduce((n, m) => n + m.components.filter((c) => c.kind === 'brush').length, 0);
+
+/** AI components across all masks, to check against MAX_AI. */
+export const aiCount = (masks: Mask[]): number => masks.reduce((n, m) => n + m.components.filter((c) => c.kind === 'ai').length, 0);
+
+/** Every AI component of the recipe's masks. */
+export const aiComponents = (masks: Mask[]): AiComponent[] => masks.flatMap((m) => m.components.filter((c): c is AiComponent => c.kind === 'ai'));

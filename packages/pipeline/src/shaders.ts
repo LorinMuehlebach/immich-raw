@@ -119,6 +119,16 @@ vec2 radialMap(vec2 s, vec2 center, vec2 scale, float c[7]) {
   return r < 1e-9 ? s : center + (s - center) * (evalPoly(c, r) / r);
 }
 
+// Where ideal source point s lies in the decoded image (green channel): what AI masks, which
+// are computed from the decoded image, are looked up with. Same mapping as sampleLens.
+vec2 lensPoint(vec2 s) {
+  if (uLensOn == 0) return s;
+  vec2 si = 0.5 + (s - 0.5) / uLensZoom;
+  float rm = length((si - 0.5) * uManualScale);
+  if (uManualDist != 0.0) si = 0.5 + (si - 0.5) * (1.0 + uManualDist * rm * rm);
+  return uGeoOn == 1 ? radialMap(si, uGeoCenter, uGeoScale, uGeoG) : si;
+}
+
 // Camera RGB at ideal source point s, with the lens corrections; gain = vignetting.
 vec3 sampleLens(vec2 s, out float gain) {
   gain = 1.0;
@@ -183,7 +193,7 @@ vec3 developInput(vec2 t) { return applyDehaze(developBase(t), t, uDehaze); }
 uniform int uMaskCount;
 uniform int uCompCount;
 #define MAX_COLOR_SAMPLES 16
-uniform ivec4 uCompInfo[MAX_COMP]; // kind (1 linear, 2 radial, 3 luminance, 4 brush, 5 colour), mode (0 add, 1 subtract, 2 intersect), mask slot, invert
+uniform ivec4 uCompInfo[MAX_COMP]; // kind (1 linear, 2 radial, 3 luminance, 4 brush, 5 colour, 6 AI), mode (0 add, 1 subtract, 2 intersect), mask slot, invert
 uniform vec4 uCompA[MAX_COMP];
 uniform vec4 uCompB[MAX_COMP];
 uniform vec2 uMaskFrame;           // source s -> mask frame
@@ -192,6 +202,7 @@ uniform vec4 uMaskE[MAX_MASK];     // exposure (EV), contrast, clarity, texture
 uniform vec4 uMaskC[MAX_MASK];     // temp, tint, saturation, hue (radians)
 uniform vec4 uMaskD[MAX_MASK];     // dehaze, sharpness, colour overlay a, b
 uniform sampler2D uBrush;          // brush coverage maps, packed (brush.ts)
+uniform sampler2D uAiMask;         // AI selection maps in decoded-image coordinates, packed
 uniform mat3 uMaskLms;             // working space -> OKLab LMS, for colour ranges
 uniform vec4 uColorSamples[MAX_COLOR_SAMPLES]; // sampled colours: OKLab a/L, b/L
 
@@ -243,6 +254,14 @@ float componentWeight(int i, vec2 s, vec2 m, float lum, vec3 chroma) {
     }
     // Near black the colour of a pixel is mostly noise.
     w = (1.0 - smoothstep(0.45 * a.z, a.z, d)) * smoothstep(0.03, 0.1, chroma.z);
+  } else if (info.x == 6) {
+    // a: the map's place in the atlas; b: half a texel. The map covers the decoded image,
+    // so it is looked up through the lens corrections and stays on the content.
+    vec2 p = lensPoint(s);
+    if (p.x >= 0.0 && p.y >= 0.0 && p.x <= 1.0 && p.y <= 1.0) {
+      vec2 uv = clamp(a.xy + p * a.zw, a.xy + b.xy, a.xy + a.zw - b.xy);
+      w = texture(uAiMask, uv).r;
+    }
   }
   return info.w == 1 ? 1.0 - w : w;
 }

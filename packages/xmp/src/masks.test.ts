@@ -10,6 +10,7 @@ import {
   brushLi,
   colorLi,
   correction,
+  aiLi,
   linearLi,
   orientedSidecar,
   withCorrections,
@@ -68,8 +69,8 @@ describe('importMasks: Lightroom 11+ mask groups', () => {
   const { masks, warnings, unmapped, imported } = masksOf(MASK_GROUP_SIDECAR, LANDSCAPE);
 
   it('imports every mask it can, in order', () => {
-    expect(masks.map((m) => m.name)).toEqual(['Sky', 'Face', 'Brush', 'Leaves', 'Vignette', 'Eyes']);
-    expect(imported).toEqual({ MaskGroupBasedCorrections: 6 });
+    expect(masks.map((m) => m.name)).toEqual(['Sky', 'Face', 'Brush', 'Leaves', 'Sky AI', 'Vignette', 'Eyes']);
+    expect(imported).toEqual({ MaskGroupBasedCorrections: 7 });
   });
 
   it('maps a linear gradient with a subtracted radial, and the slider scales', () => {
@@ -180,13 +181,14 @@ describe('importMasks: Lightroom 11+ mask groups', () => {
     expect(componentWeight(rad, [0.01, 0.66])).toBe(1);
   });
 
-  it('skips AI selections with a warning, keeping the rest of a mask', () => {
-    expect(masks.some((m) => m.name === 'Sky AI')).toBe(false);
-    expect(warnings).toContain(`Mask "Sky AI" skipped: Select Sky (AI) can't be imported`);
+  it('imports AI selections (the editor finds them again in the photo)', () => {
+    const sky = byName(masks, 'Sky AI');
+    expect(sky.components).toEqual([{ id: expect.any(String), kind: 'ai', target: 'sky', mode: 'add', invert: false }]);
+    expect(sky.adjust.dehaze).toBe(5);
     const eyes = byName(masks, 'Eyes');
-    expect(eyes.components.map((c) => c.kind)).toEqual(['radial']);
+    expect(eyes.components.map((c) => (c.kind === 'ai' ? [c.target, c.parts, c.person] : c.kind))).toEqual(['radial', ['people', ['iris'], null]]);
     expect(eyes.adjust.sharpness).toBe(25);
-    expect(warnings).toContain(`Mask "Eyes": Select People (AI) left out (can't be imported)`);
+    expect(warnings.some((w) => w.includes('AI'))).toBe(false);
   });
 
   it('reports local sliders we have no counterpart for', () => {
@@ -364,13 +366,13 @@ describe('crsToPatch: masks', () => {
   it('puts the masks in the patch, replacing ours', () => {
     const r = crsToPatch(parseXmp(MASK_GROUP_SIDECAR)!, LANDSCAPE);
     expect(r.groups).toContain('masks');
-    expect(r.applied).toContainEqual({ key: 'MaskGroupBasedCorrections', value: '6 masks', path: 'masks' });
+    expect(r.applied).toContainEqual({ key: 'MaskGroupBasedCorrections', value: '7 masks', path: 'masks' });
     expect(r.unmapped).toContain('MaskGroupBasedCorrections.LocalMoire');
     expect(r.unmapped).not.toContain('MaskGroupBasedCorrections');
     const before = defaultRecipe();
     before.masks = [{ ...byName(masksOf(LEGACY_PV2012, LANDSCAPE).masks, 'Brush 1'), name: 'Mine' }];
     const recipe = applyPatch(before, r.patch);
-    expect(recipe.masks.map((m) => m.name)).toEqual(['Sky', 'Face', 'Brush', 'Leaves', 'Vignette', 'Eyes']);
+    expect(recipe.masks.map((m) => m.name)).toEqual(['Sky', 'Face', 'Brush', 'Leaves', 'Sky AI', 'Vignette', 'Eyes']);
   });
 
   it('lists each process 2012 container it took masks from', () => {
@@ -397,5 +399,63 @@ describe('featherFromCenterWeight', () => {
     expect(featherFromCenterWeight(0)).toBe(100);
     expect(featherFromCenterWeight(1)).toBeCloseTo(0, 9);
     expect(featherFromCenterWeight(0.1)).toBeCloseTo(80 - (30 * (0.1 - 0.035858)) / (0.16214 - 0.035858), 9);
+  });
+});
+
+describe('importMasks: AI selections', () => {
+  const one = (attrs: string, ctx?: CropContext) => masksOf(withCorrections([correction('AI', [aiLi(attrs)])]), ctx);
+  const ai = (attrs: string) => {
+    const { masks } = one(attrs);
+    const c = masks[0]?.components[0];
+    return c?.kind === 'ai' ? { target: c.target, parts: c.parts, classes: c.classes } : null;
+  };
+
+  it('maps Lightroom\'s codes, needing no photo size', () => {
+    expect(ai('crs:MaskSubType="1"')).toEqual({ target: 'subject' });
+    expect(ai('crs:MaskSubType="2"')).toEqual({ target: 'sky' });
+    expect(ai('crs:MaskSubType="0"')).toEqual({ target: 'background' });
+    expect(ai('crs:MaskSubType="3" crs:MaskSubCategoryID="13"')).toEqual({ target: 'people', parts: ['person'] });
+    expect(ai('crs:MaskSubType="3" crs:MaskSubCategoryID="6"')).toEqual({ target: 'people', parts: ['lips'] });
+    expect(ai('crs:MaskSubType="3" crs:MaskSubCategoryID="12"')).toEqual({ target: 'people', parts: ['teeth'] });
+    expect(ai('crs:MaskSubType="0" crs:MaskSubCategoryID="50006"')).toEqual({ target: 'landscape', classes: ['sky'] });
+    expect(ai('crs:MaskSubType="0" crs:MaskSubCategoryID="50008"')).toEqual({ target: 'landscape', classes: ['snow'] });
+    // No codes at all: the (English) name decides.
+    expect(ai('crs:MaskName="Subject"')).toEqual({ target: 'subject' });
+  });
+
+  it('applies one person\'s part to everyone, with a note', () => {
+    const { masks, warnings } = one('crs:MaskSubType="0" crs:MaskSubCategoryID="5" crs:MaskName="Hair"');
+    expect(masks[0]!.components[0]).toMatchObject({ kind: 'ai', target: 'people', parts: ['hair'] });
+    expect(warnings).toEqual(['Mask "AI": Hair of one person applies to everyone']);
+  });
+
+  it('skips objects and unknown codes as before', () => {
+    expect(one('crs:MaskSubType="0" crs:MaskName="Object 1"').warnings).toEqual([`Mask "AI" skipped: Select Objects (AI) can't be imported`]);
+    expect(one('crs:MaskSubType="7" crs:MaskSubCategoryID="99"').warnings).toEqual([`Mask "AI" skipped: AI selection 7/99 can't be imported`]);
+  });
+
+  it('joins People parts and Landscape categories added one after the other', () => {
+    const xmp = withCorrections([
+      correction('Face', [aiLi('crs:MaskSubType="3" crs:MaskSubCategoryID="2"'), aiLi('crs:MaskSubType="3" crs:MaskSubCategoryID="6"'), aiLi('crs:MaskSubType="3" crs:MaskSubCategoryID="12"', 1)]),
+      correction('Land', [aiLi('crs:MaskSubType="0" crs:MaskSubCategoryID="50005"'), aiLi('crs:MaskSubType="0" crs:MaskSubCategoryID="50007"'), aiLi('crs:MaskSubType="2"', 1, true)]),
+    ]);
+    const { masks } = masksOf(xmp);
+    const parts = (m: Mask) => m.components.map((c) => (c.kind === 'ai' ? [c.mode, c.target, c.parts ?? c.classes ?? c.invert] : c.kind));
+    expect(parts(masks[0]!)).toEqual([
+      ['add', 'people', ['faceSkin', 'lips']],
+      ['subtract', 'people', ['teeth']],
+    ]);
+    // Subtracting an inverted sky is how Lightroom stores "intersect with the sky".
+    expect(parts(masks[1]!)).toEqual([
+      ['add', 'landscape', ['water', 'vegetation']],
+      ['intersect', 'sky', false],
+    ]);
+  });
+
+  it('keeps to the limit of AI selections, whole masks at a time', () => {
+    const many = Array.from({ length: 5 }, (_, i) => correction(`AI ${i + 1}`, [aiLi('crs:MaskSubType="1"'), aiLi('crs:MaskSubType="2"')]));
+    const { masks, warnings } = masksOf(withCorrections(many));
+    expect(masks).toHaveLength(4);
+    expect(warnings).toContain('Mask "AI 5" skipped: more than 8 AI selections in total');
   });
 });

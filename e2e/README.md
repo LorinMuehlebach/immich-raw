@@ -58,6 +58,10 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   `docker compose -f e2e/docker-compose.immich.yml --profile gateway up -d --build gateway`.
   The test scripts run against it with `IMMICH_URL=http://127.0.0.1:8089`, e.g.
   `IMMICH_URL=http://127.0.0.1:8089 node e2e/smoke.mjs <out-dir>`.
+- AI masks: `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>` makes a Sky, Subject, Landscape,
+  Object and People mask on one photo (`leica-q2.DNG` has sky, water and a ferry). It needs
+  internet: the models (about 316 MB) download on first use and stay in the browser profile it
+  keeps in `<out-dir>/profile`.
 
 ## Stop and reset
 

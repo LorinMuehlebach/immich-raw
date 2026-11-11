@@ -63,13 +63,22 @@
     /** Each sample: centre and radius in CSS pixels. */
     points: { c: P; r: number }[];
   }
+  /** An AI part's prompt: the box drawn around an object, or the points clicked on it. */
+  interface AiPrompt {
+    type: 'ai';
+    /** Box corners in order (the box may be turned on screen). */
+    box: P[] | null;
+    points: P[];
+  }
   interface Shape {
     maskId: string;
     comp: MaskComponent;
     maskSelected: boolean;
     selected: boolean;
     pin: P;
-    geo: Radial | Linear | Samples | null;
+    geo: Radial | Linear | Samples | AiPrompt | null;
+    /** AI parts: the pin only selects (moving it would mean finding the object again). */
+    fixed?: boolean;
   }
 
   const shapes = $derived.by((): Shape[] => {
@@ -133,6 +142,15 @@
             })
             .filter((q) => Number.isFinite(q.c[0]));
           if (points.length) out.push({ maskId: m.id, comp: c, maskSelected, selected, pin: points[0]!.c, geo: { type: 'samples', points } });
+        } else if (c.kind === 'ai' && c.target === 'object') {
+          const box = c.box ? ([[c.box[0], c.box[1]], [c.box[2], c.box[1]], [c.box[2], c.box[3]], [c.box[0], c.box[3]]] as P[]).map(toPx) : null;
+          const points: P[] = [];
+          for (let i = 0; c.points && i + 1 < c.points.length; i += 2) points.push(toPx([c.points[i]!, c.points[i + 1]!]));
+          const pin = box ? mul(add(box[0]!, box[2]!), 0.5) : points[0];
+          if (pin && Number.isFinite(pin[0])) out.push({ maskId: m.id, comp: c, maskSelected, selected, pin, geo: { type: 'ai', box, points }, fixed: true });
+        } else if (c.kind === 'ai' && c.target === 'people' && c.person) {
+          const pin = toPx([c.person.x, c.person.y]);
+          if (Number.isFinite(pin[0])) out.push({ maskId: m.id, comp: c, maskSelected, selected, pin, geo: null, fixed: true });
         }
       }
     }
@@ -249,6 +267,36 @@
   // ---------------------------------------------------------------- brush and colour picking
 
   const sampling = $derived(editor.tool === 'mask' && !editor.readOnly && (editor.maskDraft?.kind === 'color' || (!editor.maskDraft && editor.selectedComponent?.kind === 'color')));
+  /** A clicked object is selected: Shift+click adds points to it. */
+  const objectPoints = $derived.by(() => {
+    const c = editor.selectedComponent;
+    return editor.tool === 'mask' && !editor.readOnly && !editor.maskDraft && c?.kind === 'ai' && c.target === 'object' && !c.box;
+  });
+  /** Objects: the box being dragged, in CSS pixels. */
+  let objectDrag = $state<{ start: P; end: P } | null>(null);
+
+  function onObjectMove(e: PointerEvent) {
+    if (objectDrag) objectDrag = { ...objectDrag, end: eventPx(e) };
+  }
+
+  function onObjectUp(e: PointerEvent) {
+    removeEventListener('pointermove', onObjectMove);
+    removeEventListener('pointerup', onObjectUp);
+    removeEventListener('pointercancel', onObjectUp);
+    const d = objectDrag;
+    objectDrag = null;
+    if (!d || e.type === 'pointercancel') return;
+    const end = eventPx(e);
+    if (len(sub(end, d.start)) < 6) {
+      // A click: the object under it.
+      const p = pxToMask(d.start);
+      if (p) editor.drawObject(null, p);
+      return;
+    }
+    const a = pxToMask(d.start);
+    const b = pxToMask(end);
+    if (a && b) editor.drawObject([a[0], a[1], b[0], b[1]], null);
+  }
   let cursor = $state<P | null>(null);
   let altHeld = $state(false);
 
@@ -288,6 +336,19 @@
       addEventListener('pointercancel', onPaintUp);
       return;
     }
+    if (editor.maskDraft?.kind === 'object') {
+      e.preventDefault();
+      const start = eventPx(e);
+      objectDrag = { start, end: start };
+      addEventListener('pointermove', onObjectMove);
+      addEventListener('pointerup', onObjectUp);
+      addEventListener('pointercancel', onObjectUp);
+      return;
+    }
+    if (objectPoints) {
+      if (e.shiftKey) editor.addObjectPoint(p);
+      return;
+    }
     if (!editor.maskDraft && editor.selectedComponent?.kind === 'color' && editor.maskSel.mask && editor.maskSel.comp) {
       const index = editor.sampleColor(p, e.shiftKey);
       if (index !== null) begin('sample', { maskId: editor.maskSel.mask, compId: editor.maskSel.comp }, e, index);
@@ -310,7 +371,7 @@
   {width}
   {height}
   class="masks"
-  class:drawing={!!editor.maskDraft || sampling}
+  class:drawing={!!editor.maskDraft || sampling || objectPoints}
   class:painting={editor.painting}
   role="presentation"
   onpointerdown={onBackgroundDown}
@@ -341,6 +402,15 @@
           {/each}
           <circle cx={g.hr[0]} cy={g.hr[1]} r="6" class="handle rotate" role="presentation" onpointerdown={(e) => begin('rotate', s, e)} />
         {/if}
+      {:else if s.geo?.type === 'ai'}
+        <g class="outline prompt" class:dim={!s.selected}>
+          {#if s.geo.box}
+            {@const pts = s.geo.box.map((q) => q.join(',')).join(' ')}
+            <polygon points={pts} class="under" />
+            <polygon points={pts} />
+          {/if}
+          {#each s.geo.points as q, i (i)}<circle cx={q[0]} cy={q[1]} r="3.5" class="dot" />{/each}
+        </g>
       {:else if s.geo?.type === 'samples'}
         {#each s.geo.points as q, i (i)}
           <g class="sample" class:dim={!s.selected}>
@@ -374,11 +444,25 @@
       class:active={s.selected}
       class:other={!s.maskSelected}
       role="presentation"
-      onpointerdown={(e) => begin('move', s, e)}
+      onpointerdown={(e) => {
+        if (!s.fixed) return begin('move', s, e);
+        e.stopPropagation();
+        editor.selectMask(s.maskId, s.comp.id);
+      }}
     >
       <title>{editor.mask(s.maskId)?.name}</title>
     </circle>
   {/each}
+  {#if objectDrag && len(sub(objectDrag.end, objectDrag.start)) >= 6}
+    {@const x = Math.min(objectDrag.start[0], objectDrag.end[0])}
+    {@const y = Math.min(objectDrag.start[1], objectDrag.end[1])}
+    {@const w = Math.abs(objectDrag.end[0] - objectDrag.start[0])}
+    {@const h = Math.abs(objectDrag.end[1] - objectDrag.start[1])}
+    <g class="outline prompt">
+      <rect {x} {y} width={w} height={h} class="under" />
+      <rect {x} {y} width={w} height={h} />
+    </g>
+  {/if}
   {#if brushRing}
     <g class="brush" class:erase={editor.brush.erase || altHeld}>
       <circle cx={brushRing.c[0]} cy={brushRing.c[1]} r={brushRing.r} class="under" />
@@ -450,6 +534,15 @@
   }
   .outline .mid {
     stroke-dasharray: 6 4;
+  }
+  .prompt polygon:not(.under),
+  .prompt rect:not(.under) {
+    stroke-dasharray: 6 4;
+  }
+  .prompt .dot {
+    fill: #fff;
+    stroke: rgba(0, 0, 0, 0.7);
+    stroke-width: 1.5;
   }
   .feather {
     stroke-dasharray: 4 4;

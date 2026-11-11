@@ -148,11 +148,30 @@ export interface BrushAtlas {
 }
 
 /** Packs brush maps (all the same size) two per row into one 8-bit texture. */
-export function packBrushAtlas(maps: { id: string; map: BrushMap }[]): BrushAtlas | null {
+export function packBrushAtlas(maps: { id: string; map: BrushMap }[], maxSize = Infinity): BrushAtlas | null {
+  return packMaskAtlas(maps, maxSize);
+}
+
+/** A coverage map: Float32 0..1 or Uint8 0..255, row-major. */
+export interface MaskMap {
+  width: number;
+  height: number;
+  data: Float32Array | Uint8Array;
+}
+
+/**
+ * Packs coverage maps two per row into one 8-bit texture. Cells take the first map's size;
+ * when the atlas would be larger than `maxSize` (the GPU's texture limit, often 4096 on
+ * phones) every cell is scaled down to fit.
+ */
+export function packMaskAtlas(maps: { id: string; map: MaskMap }[], maxSize = Infinity): BrushAtlas | null {
   if (!maps.length) return null;
-  const { width: w, height: h } = maps[0]!.map;
   const cols = maps.length > 1 ? 2 : 1;
   const rows = Math.ceil(maps.length / cols);
+  const { width: w0, height: h0 } = maps[0]!.map;
+  const k = Math.max(1, (w0 * cols) / maxSize, (h0 * rows) / maxSize);
+  const w = Math.max(1, Math.floor(w0 / k));
+  const h = Math.max(1, Math.floor(h0 / k));
   const W = w * cols;
   const H = h * rows;
   const data = new Uint8Array(W * H);
@@ -160,9 +179,15 @@ export function packBrushAtlas(maps: { id: string; map: BrushMap }[]): BrushAtla
   maps.forEach(({ id, map }, i) => {
     const ox = (i % cols) * w;
     const oy = Math.floor(i / cols) * h;
+    const scale = map.data instanceof Uint8Array ? 1 : 255;
+    const same = map.width === w && map.height === h;
     for (let y = 0; y < h; y++) {
       const row = (oy + y) * W + ox;
-      for (let x = 0; x < w; x++) data[row + x] = Math.round(Math.min(1, Math.max(0, map.data[y * w + x]!)) * 255);
+      const sy = same ? y : Math.min(map.height - 1, Math.floor(((y + 0.5) * map.height) / h));
+      for (let x = 0; x < w; x++) {
+        const sx = same ? x : Math.min(map.width - 1, Math.floor(((x + 0.5) * map.width) / w));
+        data[row + x] = Math.round(Math.min(255, Math.max(0, map.data[sy * map.width + sx]! * scale)));
+      }
     }
     cells.set(id, [ox / W, oy / H, w / W, h / H]);
   });
