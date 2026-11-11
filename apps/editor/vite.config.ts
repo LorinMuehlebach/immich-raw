@@ -7,12 +7,27 @@ import { defineConfig, type Plugin } from 'vite';
 // URL path the editor is served under, next to Immich (the proxy configs in deploy/ use the same).
 const BASE = '/immich-raw/';
 const here = dirname(fileURLToPath(import.meta.url));
-const librawDist = resolve(here, '../../node_modules/libraw-wasm/dist');
+const librawDist = resolve(here, '../../packages/libraw/lib');
 const injectJs = resolve(here, '../../packages/inject/dist/inject.js');
 const userscript = resolve(here, '../../packages/inject/dist/immich-raw.user.js');
+const nodeModules = resolve(here, '../../node_modules');
+/**
+ * AI masks: the runtimes load from the editor's own origin, unbundled, under names ending in
+ * .js (every server knows that MIME type). ONNX Runtime's threads start its loader by URL,
+ * so it can't live inside a bundle. The models themselves come from their CDNs.
+ */
+const aiRuntime: { name: string; path: string }[] = [
+  { name: 'ort/ort.webgpu.min.js', path: join(nodeModules, 'onnxruntime-web/dist/ort.webgpu.min.mjs') },
+  { name: 'ort/ort-wasm-simd-threaded.asyncify.js', path: join(nodeModules, 'onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.mjs') },
+  { name: 'ort/ort-wasm-simd-threaded.asyncify.wasm', path: join(nodeModules, 'onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.wasm') },
+  { name: 'mediapipe/vision_bundle.js', path: join(nodeModules, '@mediapipe/tasks-vision/vision_bundle.mjs') },
+  { name: 'mediapipe/vision_wasm_module_internal.js', path: join(nodeModules, '@mediapipe/tasks-vision/wasm/vision_wasm_module_internal.js') },
+  { name: 'mediapipe/vision_wasm_module_internal.wasm', path: join(nodeModules, '@mediapipe/tasks-vision/wasm/vision_wasm_module_internal.wasm') },
+];
 
-// libraw-wasm uses SharedArrayBuffer (pthreads), so every response must be cross-origin
-// isolated. The production nginx sends the same headers.
+// Cross-origin isolation. Nothing needs it any more (the editor also works on plain HTTP, where
+// browsers ignore these headers), but it keeps the door open for a multi-threaded decoder.
+// The production nginx sends the same headers.
 const isolation = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -55,8 +70,8 @@ function licensesText(): string {
 }
 
 /**
- * Ships libraw-wasm unbundled under /immich-raw/libraw/ (it resolves its worker and
- * libraw.wasm relative to itself) and the Immich button script as /immich-raw/inject.js.
+ * Ships libraw-wasm (packages/libraw/lib) unbundled under /immich-raw/libraw/ (it resolves its
+ * worker and libraw.wasm relative to itself) and the Immich button script as /immich-raw/inject.js.
  */
 function staticRuntimeFiles(): Plugin {
   const files = (): { name: string; path: string }[] => [
@@ -66,6 +81,7 @@ function staticRuntimeFiles(): Plugin {
     ...(existsSync(injectJs) ? [{ name: 'inject.js', path: injectJs }] : []),
     // Installable from <immich>/immich-raw/immich-raw.user.js when the proxy can't add the button.
     ...(existsSync(userscript) ? [{ name: 'immich-raw.user.js', path: userscript }] : []),
+    ...aiRuntime,
   ];
   return {
     name: 'immich-raw-static-runtime',

@@ -3,7 +3,8 @@
 A throwaway Immich v3.4.0 (with Postgres and Valkey, no machine learning) behind nginx, set up like a
 real deployment:
 
-- `/immich-raw/` serves the built editor (`apps/editor/dist`) with the cross-origin isolation headers.
+- `/immich-raw/` serves the built editor (`apps/editor/dist`) with the same cross-origin isolation
+  headers as production.
 - Every other path goes to Immich, with the "Edit RAW" button script added to its pages.
 
 Photos and the database live in Docker volumes, not in this folder. Don't put real photos in here.
@@ -58,6 +59,20 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   `docker compose -f e2e/docker-compose.immich.yml --profile gateway up -d --build gateway`.
   The test scripts run against it with `IMMICH_URL=http://127.0.0.1:8089`, e.g.
   `IMMICH_URL=http://127.0.0.1:8089 node e2e/smoke.mjs <out-dir>`.
+- Plain HTTP without a secure context, like `http://192.168.x.x:2283` at home: `INSECURE=1` makes
+  `smoke.mjs` and `probe-dng.mjs` open the pages as `http://immich.test:<port>`, which the browser maps to
+  127.0.0.1 (127.0.0.1 itself always counts as secure). Works with `IMMICH_URL` for the gateway, too:
+  `INSECURE=1 node e2e/smoke.mjs <out-dir>`.
+- Reachable from other devices on the network, e.g. a phone at `http://<pc-ip>:8088`:
+  `E2E_BIND=0.0.0.0 docker compose -f e2e/docker-compose.immich.yml up -d proxy` (also works for the
+  gateway). That's plain HTTP, so the editor downloads the RAW on every open. Anyone on the network
+  can log in with the test password; run the same command without `E2E_BIND` to close it again.
+- Decoder build: `node e2e/probe-decoder-compare.mjs <samples-dir>` decodes the samples with
+  `packages/libraw/lib` and the npm libraw-wasm 1.6.0 it replaced, and checks the output is the same.
+- AI masks: `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>` makes a Sky, Subject, Landscape,
+  Object and People mask on one photo (`leica-q2.DNG` has sky, water and a ferry), then exports it.
+  It needs internet: the models (about 316 MB) download on first use and stay in the browser
+  profile it keeps in `<out-dir>/profile`.
 
 ## Stop and reset
 

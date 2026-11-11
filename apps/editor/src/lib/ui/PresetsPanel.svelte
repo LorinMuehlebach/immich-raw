@@ -3,6 +3,7 @@
   // current settings, import Lightroom .xmp / our .json, export all.
   import { DEFAULT_GROUPS, type GroupId, type Recipe, type SettingsPatch } from '@immich-raw/recipe';
   import { onMount } from 'svelte';
+  import { downloadBlob } from '../download.ts';
   import { presetFolders, type ImportResult, type Preset, type PresetStore, type XmpParser } from '../state/presets.ts';
   import CopySettingsDialog from './CopySettingsDialog.svelte';
   import Section from './Section.svelte';
@@ -105,12 +106,7 @@
   }
 
   function exportAll() {
-    const url = URL.createObjectURL(store.exportJson(presets));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'raw-editor-presets.json';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadBlob(store.exportJson(presets), 'raw-editor-presets.json');
   }
 
   function focusSelect(node: HTMLInputElement) {
@@ -158,7 +154,8 @@
         {#if !closed[folder]}
           <ul class="list" role="list" onmouseleave={stopPreview}>
             {#each byFolder[folder] ?? [] as p (p.id)}
-              <li class="row" onmouseenter={() => preview(p)} onmouseleave={stopPreview}>
+              <!-- Hover preview with a mouse only: on a touch screen the tap applies. -->
+              <li class="row" onpointerenter={(e) => e.pointerType === 'mouse' && preview(p)} onmouseleave={stopPreview}>
                 {#if renaming === p.id}
                   <input
                     class="rename"
@@ -282,6 +279,20 @@
     font-size: 11px;
     background: none;
     border-color: transparent;
+  }
+  /* No hover on touch screens: rename and delete stay visible. */
+  @media (hover: none) {
+    .tools {
+      display: flex;
+    }
+  }
+  @media (pointer: coarse) {
+    .row {
+      height: 38px;
+    }
+    .tools .icon {
+      padding: 8px 9px;
+    }
   }
   .rename {
     flex: 1;

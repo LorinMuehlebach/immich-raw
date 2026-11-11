@@ -8,13 +8,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@immich/sdk": "3.4.0",
-    "@jsquash/jpeg": "1.6.0",
+    "@immich-raw/ai": "*",
     "@immich-raw/decoder": "*",
     "@immich-raw/inject": "*",
     "@immich-raw/lens": "*",
     "@immich-raw/pipeline": "*",
     "@immich-raw/recipe": "*",
-    "@immich-raw/xmp": "*"
+    "@immich-raw/xmp": "*",
+    "@immich/sdk": "3.4.0",
+    "@jsquash/jpeg": "1.6.0",
+    "@noble/hashes": "2.4.0"
   }
 }

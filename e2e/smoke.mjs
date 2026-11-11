@@ -1,9 +1,11 @@
 // End-to-end smoke test against the test Immich (e2e/docker-compose.immich.yml, seeded).
-// Opens a RAW from Immich's viewer via the "Edit RAW" button, edits, saves, reopens, re-saves.
+// Opens a RAW from Immich's viewer via the "Edit RAW" button, edits, saves, exports, reopens, re-saves.
 // Usage: node e2e/smoke.mjs <out-dir> [filename-part]   (default: sony)
-import { mkdirSync, writeFileSync } from 'node:fs';
+//   INSECURE=1  open the pages from a plain-HTTP origin that isn't a secure context (insecure.mjs)
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
+import { API_BASE, INSECURE, PAGE_BASE, browserArgs, expectedConsoleError, loginOnPageOrigin } from './insecure.mjs';
 
 const [outDir, namePart = 'sony'] = process.argv.slice(2);
 if (!outDir) {
@@ -11,7 +13,6 @@ if (!outDir) {
   process.exit(1);
 }
 mkdirSync(outDir, { recursive: true });
-const BASE = process.env.IMMICH_URL ?? 'http://127.0.0.1:8088';
 const LOGIN = { email: 'admin@example.com', password: 'raw-editor-e2e' };
 const results = [];
 const check = (name, ok, details = {}) => {
@@ -19,17 +20,39 @@ const check = (name, ok, details = {}) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  ${JSON.stringify(details)}`);
 };
 
+/** Pixel size from a JPEG's SOF marker, or null. */
+function jpegSize(buf) {
+  let i = 2;
+  while (i + 9 < buf.length) {
+    if (buf[i] !== 0xff) return null;
+    const m = buf[i + 1];
+    if (m === 0xff) {
+      i++;
+      continue;
+    }
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+      return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
+    }
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
 const browser = await chromium.launch({
   channel: process.env.BROWSER_CHANNEL ?? 'msedge',
   headless: process.env.HEADED ? false : true,
-  args: ['--enable-gpu', '--use-angle=d3d11', '--ignore-gpu-blocklist'],
+  args: ['--enable-gpu', '--use-angle=d3d11', '--ignore-gpu-blocklist', ...browserArgs],
 });
 try {
   const context = await browser.newContext({ viewport: { width: 1500, height: 950 } });
-  const login = await context.request.post(`${BASE}/api/auth/login`, { data: LOGIN });
+  const login = await context.request.post(`${API_BASE}/api/auth/login`, { data: LOGIN });
   check('login', login.ok());
+  if (INSECURE) {
+    const secure = await loginOnPageOrigin(context, LOGIN);
+    check('pages are not a secure context', secure === false, { origin: PAGE_BASE, isSecureContext: secure });
+  }
   const api = async (method, path, data) => {
-    const r = await context.request.fetch(`${BASE}/api${path}`, { method, data });
+    const r = await context.request.fetch(`${API_BASE}/api${path}`, { method, data });
     return { status: r.status(), body: r.status() === 204 ? null : await r.json().catch(() => null) };
   };
 
@@ -57,13 +80,13 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('console', (m) => {
-    if (m.type() === 'error') errors.push(m.text());
+    if (m.type() === 'error' && !expectedConsoleError(m.text())) errors.push(m.text());
     if (process.env.VERBOSE) console.log(`[page] ${m.text()}`);
   });
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 
   // 1. Immich viewer -> Edit RAW
-  await page.goto(`${BASE}/photos/${raw.id}`);
+  await page.goto(`${PAGE_BASE}/photos/${raw.id}`);
   const button = page.locator('[data-raw-editor-button]');
   await button.waitFor({ timeout: 45000 });
   // Close any popup Immich shows on first load (it remembers a version notice it already fetched).
@@ -109,11 +132,29 @@ try {
     size: `${renderInfo.body?.exifInfo?.exifImageWidth}x${renderInfo.body?.exifInfo?.exifImageHeight}`,
     created: renderInfo.body?.fileCreatedAt,
   });
-  const thumb = await context.request.get(`${BASE}/api/assets/${render1}/thumbnail?size=preview`);
+  const thumb = await context.request.get(`${API_BASE}/api/assets/${render1}/thumbnail?size=preview`);
   if (thumb.ok()) writeFileSync(join(outDir, '4-render-preview.jpg'), await thumb.body());
+  // A fresh browser has the default export settings: Save uploads the Medium preset.
+  const renderFile = await context.request.get(`${API_BASE}/api/assets/${render1}/original`);
+  const renderSize = renderFile.ok() ? jpegSize(await renderFile.body()) : null;
+  check('render is the Medium preset (long edge at most 3840 px)', !!renderSize && Math.max(renderSize.width, renderSize.height) <= 3840, { renderSize });
+
+  // 4b. Export Low: downloads a 2048 px JPEG
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 240000 }),
+    page.getByRole('button', { name: 'Low', exact: true }).click(),
+  ]);
+  const exportPath = join(outDir, download.suggestedFilename());
+  await download.saveAs(exportPath);
+  const exportSize = jpegSize(readFileSync(exportPath));
+  const expectedName = raw.originalFileName.replace(/\.[^.]+$/, '.jpg');
+  check('export Low downloads a 2048 px JPEG', download.suggestedFilename() === expectedName && !!exportSize && Math.max(exportSize.width, exportSize.height) === 2048, {
+    file: download.suggestedFilename(),
+    exportSize,
+  });
 
   // 5. Reopen: settings restored
-  await page.goto(`${BASE}/immich-raw/?asset=${raw.id}&return=${encodeURIComponent(`/photos/${raw.id}`)}`);
+  await page.goto(`${PAGE_BASE}/immich-raw/?asset=${raw.id}&return=${encodeURIComponent(`/photos/${raw.id}`)}`);
   await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
   const exposureText = await page.locator('.row', { has: page.locator('input[aria-label="Exposure"]') }).locator('.value').textContent();
   check('reopen restores settings', exposureText?.trim() === '+0.50', { exposureText });

@@ -5,10 +5,10 @@
 // quarter of the size. Either way the result is decoded again with LibRaw and compared
 // with the original before anyone gets to delete the original.
 import { RawSession, decodeBest, readExtraMeta, readSensor, type LinearImage, type RawMeta } from '@immich-raw/decoder';
-import { assembleDng, tileLayout, type DngMetadata } from '@immich-raw/dng';
+import { assembleDng, cfaComponents, extractTile, tileLayout, type DngMetadata } from '@immich-raw/dng';
 import { readDngCarryOver } from '@immich-raw/lens';
-import { encodeJpeg } from '@immich-raw/pipeline';
-import type { WorkerJob, WorkerReply } from './dng.worker.ts';
+import { encodeJpeg, fitLongEdge, resizeImage } from '@immich-raw/pipeline';
+import type { WorkerJob, WorkerReply, WorkerTile } from './dng.worker.ts';
 
 export type DngMode = 'lossless' | 'lossy';
 export const LOSSY_QUALITY = 0.92;
@@ -73,7 +73,6 @@ export async function buildDng(opts: BuildOptions): Promise<BuiltDng> {
     progress('Reading the sensor data', 0);
     const sensor = await readSensor(opts.bytes);
     extra = { defaultCrop: sensor.defaultCrop, lensMake: sensor.lensMake, bodySerial: sensor.bodySerial };
-    const shared = toShared(sensor.data);
     raw = {
       kind: 'cfa',
       width: sensor.width,
@@ -84,8 +83,7 @@ export async function buildDng(opts: BuildOptions): Promise<BuiltDng> {
       black: sensor.black,
       white: sensor.white,
     };
-    const { count } = tileLayout(sensor.width, sensor.height);
-    tiles = await encodeTiles({ type: 'cfa', data: shared, width: sensor.width, height: sensor.height, patternWidth: sensor.patternWidth }, count, (f) =>
+    tiles = await encodeTiles({ type: 'cfa', data: sensor.data, width: sensor.width, height: sensor.height, patternWidth: sensor.patternWidth }, (f) =>
       progress('Compressing', f),
     );
   } else {
@@ -114,16 +112,15 @@ export async function buildDng(opts: BuildOptions): Promise<BuiltDng> {
     const mul = normMul(meta.camMul);
     const mx = Math.max(...mul);
     const k = mul.map((m) => mx / m);
-    const shared = new Uint16Array(new SharedArrayBuffer(width * height * 3 * 2));
+    const native = new Uint16Array(width * height * 3);
     const src = best.image.data;
     for (let i = 0; i < src.length; i += 3) {
-      shared[i] = Math.min(65535, Math.round(src[i]! * k[0]!));
-      shared[i + 1] = Math.min(65535, Math.round(src[i + 1]! * k[1]!));
-      shared[i + 2] = Math.min(65535, Math.round(src[i + 2]! * k[2]!));
+      native[i] = Math.min(65535, Math.round(src[i]! * k[0]!));
+      native[i + 1] = Math.min(65535, Math.round(src[i + 1]! * k[1]!));
+      native[i + 2] = Math.min(65535, Math.round(src[i + 2]! * k[2]!));
     }
     raw = { kind: 'linear', width, height };
-    const { count } = tileLayout(width, height);
-    tiles = await encodeTiles({ type: 'linear', data: shared, width, height, quality: LOSSY_QUALITY }, count, (f) => progress('Compressing', f));
+    tiles = await encodeTiles({ type: 'linear', data: native, width, height, quality: LOSSY_QUALITY }, (f) => progress('Compressing', f));
   }
 
   progress('Making the preview', 0);
@@ -148,21 +145,28 @@ const normMul = (m: number[]): [number, number, number] => {
   return [m[0]! / g, 1, m[2]! / g];
 };
 
-function toShared(data: Uint16Array): Uint16Array {
-  const out = new Uint16Array(new SharedArrayBuffer(data.byteLength));
-  out.set(data);
-  return out;
-}
-
 /** LibRaw flip -> TIFF Orientation. */
 export function tiffOrientation(flip: number): number {
   return ({ 0: 1, 1: 2, 2: 4, 3: 3, 4: 5, 5: 8, 6: 6, 7: 7 } as Record<number, number>)[flip] ?? 1;
 }
 
-type JobWithoutTiles = WorkerJob extends infer J ? (J extends WorkerJob ? Omit<J, 'tiles'> : never) : never;
+/** The image to cut into DNG tiles: the CFA mosaic, or linear camera RGB for lossy. */
+type TileSource =
+  | { type: 'cfa'; data: Uint16Array; width: number; height: number; patternWidth: number }
+  | { type: 'linear'; data: Uint16Array; width: number; height: number; quality: number };
 
-/** Encodes all tiles on a pool of workers sharing the image. */
-function encodeTiles(job: JobWithoutTiles, count: number, onProgress: (f: number) => void): Promise<Uint8Array[]> {
+/**
+ * Encodes all tiles on a pool of workers. The tiles are cut out here and transferred, a batch
+ * at a time, so the workers need no shared memory.
+ */
+function encodeTiles(source: TileSource, onProgress: (f: number) => void): Promise<Uint8Array[]> {
+  const layout = tileLayout(source.width, source.height);
+  const { count, tileWidth, tileHeight } = layout;
+  const channels = source.type === 'cfa' ? 1 : 3;
+  const settings =
+    source.type === 'cfa'
+      ? { type: 'cfa' as const, tileWidth, tileHeight, components: cfaComponents(source.width, tileWidth, source.patternWidth) }
+      : { type: 'linear' as const, tileWidth, tileHeight, quality: source.quality };
   const out: Uint8Array[] = new Array(count);
   const workers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1, count));
   const batch = 6;
@@ -187,9 +191,11 @@ function encodeTiles(job: JobWithoutTiles, count: number, onProgress: (f: number
           if (++finished === workers) resolve(out);
           return;
         }
-        const tiles: number[] = [];
-        for (; tiles.length < batch && next < count; next++) tiles.push(next);
-        w.postMessage({ ...job, tiles } as WorkerJob);
+        const tiles: WorkerTile[] = [];
+        for (; tiles.length < batch && next < count; next++) {
+          tiles.push({ index: next, data: extractTile(source.data, source.width, source.height, layout, next, channels) });
+        }
+        w.postMessage({ ...settings, tiles } satisfies WorkerJob, tiles.map((t) => t.data.buffer));
       };
       w.onmessage = (e: MessageEvent<WorkerReply>) => {
         const m = e.data;
@@ -206,16 +212,9 @@ function encodeTiles(job: JobWithoutTiles, count: number, onProgress: (f: number
 }
 
 async function makePreviews(img: ImageData): Promise<{ preview: DngMetadata['preview']; thumbnail: DngMetadata['thumbnail'] }> {
-  const scaled = async (max: number) => {
-    const s = Math.min(1, max / Math.max(img.width, img.height));
-    const w = Math.max(1, Math.round(img.width * s));
-    const h = Math.max(1, Math.round(img.height * s));
-    const bmp = await createImageBitmap(img, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' });
-    const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close();
-    return ctx.getImageData(0, 0, w, h);
+  const scaled = (max: number) => {
+    const { width, height } = fitLongEdge(img.width, img.height, max);
+    return resizeImage(img, width, height);
   };
   const big = await scaled(PREVIEW_SIZE);
   const jpeg = await encodeJpeg(big, 0.85);

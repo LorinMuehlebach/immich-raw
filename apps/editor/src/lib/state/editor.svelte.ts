@@ -3,6 +3,7 @@
 import {
   AssetFileType,
   downloadAssetFile,
+  getAlbumInfo,
   getAssetInfo,
   getAssetMetadata,
   searchAssetFiles,
@@ -12,20 +13,8 @@ import {
 } from '@immich/sdk';
 import { RawSession, setLibRawUrl, type LinearImage } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
-import {
-  dngCorrection,
-  estimateLateralCA,
-  findCamera,
-  lensDisplayName,
-  lensfunCorrection,
-  loadLensfun,
-  parseDngOpcodes,
-  searchLenses,
-  type LensCorrection,
-  type LensQuery,
-  type LensfunDb,
-  type LensfunJson,
-} from '@immich-raw/lens';
+import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
+import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
 import { isSafeReturnPath } from '@immich-raw/inject/routes';
 import { crsToPatch, isLightroomSidecar, parseXmp } from '@immich-raw/xmp';
 import {
@@ -41,10 +30,7 @@ import {
   cameraInfo,
   displayHue,
   cropToView,
-  encodeJpeg,
-  exifFromImmich,
   fitViewRect,
-  insertExif,
   isTransformActive,
   profileWhitePoint,
   maxViewRect,
@@ -73,8 +59,13 @@ import {
   BRUSH_FEATHER,
   BRUSH_FLOW,
   BRUSH_SIZE,
+  MAX_AI,
   MAX_BRUSHES,
   MAX_BRUSH_POINTS,
+  MAX_OBJECT_POINTS,
+  aiCount,
+  aiLabel,
+  newAiComponent,
   MAX_COLOR_SAMPLES,
   MAX_COMPONENTS,
   MAX_MASKS,
@@ -100,8 +91,12 @@ import {
   normalizeRecipe,
   pickGroups,
   setPath,
+  type AiComponent,
+  type AiTarget,
   type AspectId,
   type CurveChannel,
+  type LandscapeClass,
+  type PersonPart,
   type CurvePoint,
   type ComponentKind,
   type GroupId,
@@ -122,6 +117,23 @@ import { downloadOriginal } from '../immich/download.ts';
 import { cacheDng, convertBlocked, replaceWithDng, type DeleteMode, type ReplaceStep } from '../immich/replace.ts';
 import { canEdit, loadRecipe, saveRender, type SaveStep } from '../immich/save.ts';
 import { History, editable, editableJson, type HistoryStep } from './history.ts';
+import {
+  DEFAULT_EXPORT_SETTINGS,
+  PRESET_LABELS,
+  exportFilename,
+  normalizeExportSettings,
+  type ExportPreset,
+  type ExportPresetId,
+  type ExportSettings,
+} from './export-settings.ts';
+import { downloadBlob } from '../download.ts';
+import { captureDate } from '../export/metadata.ts';
+import { finishExport, type ExportFile } from '../export/output.ts';
+import { parseContext } from '../immich/context.ts';
+import { newId } from '../id.ts';
+import { anchoredCentre, fitScale, nextScale } from './zoom.ts';
+import { AiMasks } from './ai-masks.svelte.ts';
+import { imageToMask } from '../ai.svelte.ts';
 
 export type Status = 'loading' | 'auth' | 'error' | 'ready';
 /**
@@ -132,11 +144,28 @@ export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask';
 
 /** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
 export interface MaskDraft {
-  kind: 'linear' | 'radial' | 'brush' | 'color';
+  /** object: Lightroom's Objects (drag a box around it, or click it). */
+  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object';
   mode: MaskMode;
   /** Mask to add it to; null = create a new mask. */
   maskId: string | null;
 }
+
+/** The People or Landscape choices before the AI mask is made. */
+export interface AiPicker {
+  target: 'people' | 'landscape';
+  mode: MaskMode;
+  maskId: string | null;
+  parts: PersonPart[];
+  classes: LandscapeClass[];
+  /** Index into ai.people of the person picked; -1 = everyone. */
+  who: number;
+}
+
+const MODE_VERB: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
+
+/** History name of a mask part. */
+const partLabel = (c: MaskComponent) => (c.kind === 'ai' ? aiLabel(c) : COMPONENT_LABELS[c.kind]);
 
 /** Brush settings (Lightroom's brush panel); each stroke keeps the values it was painted with. */
 export interface BrushSettings {
@@ -170,6 +199,10 @@ export interface Snapshot {
   /** Editable fields (profile, wb, basic, toneCurve, detail, crop) as JSON. */
   state: string;
 }
+
+/** Shown while a zoomed view waits for the full-resolution decode; cleared when it is there. */
+const HALF_SIZE_NOTICE = 'Showing the half-size preview until the full-resolution decode finishes.';
+const FULL_FAILED_NOTICE = 'The full-resolution decode failed, so zooming in shows the half-size preview.';
 
 export interface ZoomState {
   on: boolean;
@@ -227,9 +260,14 @@ export interface SidecarOffer {
   warnings: string[];
 }
 
-const STEP_LABEL: Record<SaveStep | 'decode' | 'render' | 'encode', string> = {
+/** Steps of rendering the edit to a JPEG, for saving and exporting. */
+type RenderStep = 'decode' | 'render' | 'resize' | 'sharpen' | 'encode';
+
+const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   decode: 'Decoding full resolution',
   render: 'Rendering',
+  resize: 'Resizing',
+  sharpen: 'Sharpening',
   encode: 'Encoding JPEG',
   prepare: 'Preparing',
   upload: 'Uploading',
@@ -267,6 +305,7 @@ function historyLabel(spec: ParamSpec, value: number): string {
 const CLIPBOARD_KEY = 'raw-editor.clipboard';
 const PREVIOUS_KEY = 'raw-editor.previous';
 const AUTO_PARAMS_KEY = 'raw-editor.autoParams';
+const EXPORT_KEY = 'raw-editor.export';
 
 function storageGet<T>(key: string): T | null {
   try {
@@ -339,9 +378,12 @@ export class Editor {
   tatTarget = $state<TatTarget>('saturation');
   /** How Auto behaves (the user's taste, kept in this browser). */
   autoParams = $state<AutoParams>(normalizeAutoParams(storageGet(AUTO_PARAMS_KEY)));
+  /** Export presets and the one Save uses for the Immich copy (kept in this browser). */
+  exportSettings = $state<ExportSettings>(normalizeExportSettings(storageGet(EXPORT_KEY)));
   /** Masking: the selected mask and component, the gradient about to be drawn, the red overlay. */
   maskSel = $state<{ mask: string | null; comp: string | null }>({ mask: null, comp: null });
   maskDraft = $state<MaskDraft | null>(null);
+  aiPicker = $state<AiPicker | null>(null);
   maskOverlay = $state(true);
   brush = $state<BrushSettings>(normalizeBrush(storageGet(BRUSH_KEY)));
   /** Bumped after every render, so on-image handles follow zoom, pan and crop. */
@@ -353,6 +395,12 @@ export class Editor {
   session: RawSession | null = null;
   fullImage: LinearImage | null = null;
   renderer: Renderer | null = null;
+  /** AI masks of the open photo (computed in a worker). */
+  ai = new AiMasks({
+    renderer: () => this.renderer,
+    photoKey: () => (this.asset ? `${this.asset.id}:${this.asset.checksum}` : null),
+    requestRender: () => this.requestRender(),
+  });
   private history = new History();
   private pendingLabel = 'Edit';
   private previewRecipe: Recipe | null = null;
@@ -400,7 +448,6 @@ export class Editor {
     initApi();
 
     try {
-      if (!crossOriginIsolated) throw new Error('This page must be served with cross-origin isolation headers (COOP/COEP). Check the proxy setup.');
       this.me = await getSession();
       if (!this.me) {
         this.status = 'auth';
@@ -438,6 +485,7 @@ export class Editor {
       this.renderer = new Renderer(canvas);
       this.renderer.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
       this.renderer.setSource(session.half, this.camera);
+      this.ai.reset();
       this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
       this.loadLens(bytes);
       this.syncHistory();
@@ -468,11 +516,16 @@ export class Editor {
       .then((img) => {
         this.fullImage = img;
         this.fullStatus = 'ready';
+        if (this.notice === HALF_SIZE_NOTICE) this.notice = null;
         // Fringes are a pixel or two wide: measure them again at full resolution.
         this.measureCA();
         if (this.zoom.on) this.requestRender();
       })
-      .catch(() => (this.fullStatus = 'error'));
+      .catch((e) => {
+        console.error('Full-resolution decode failed', e);
+        this.fullStatus = 'error';
+        if (this.notice === HALF_SIZE_NOTICE) this.notice = FULL_FAILED_NOTICE;
+      });
   }
 
   /** Offers the RAW's Lightroom settings (XMP sidecar), if Immich has one with crs: data. */
@@ -557,11 +610,15 @@ export class Editor {
     try {
       this.syncLens();
       const recipe = this.currentRecipe();
+      this.ai.sync(recipe);
       const overlay = this.tool === 'mask' && this.maskOverlay ? this.maskSel.mask : null;
       const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: overlay };
       if (this.zoom.on && this.tool !== 'crop' && this.session) {
         const vp = this.viewport;
-        renderer.renderZoom(recipe, this.fullImage ?? this.session.half, {
+        // Up to 50 % the half-size decode has a pixel for every screen pixel, and it is a
+        // quarter of the full image to upload. (Further out the renderer uses its preview.)
+        const source = this.zoom.scale <= 0.5 || !this.fullImage ? this.session.half : this.fullImage;
+        renderer.renderZoom(recipe, source, {
           cx: this.zoom.cx,
           cy: this.zoom.cy,
           scale: this.zoom.scale,
@@ -912,7 +969,7 @@ export class Editor {
   createSnapshot(name: string): void {
     if (this.readOnlyGuard()) return;
     this.snapshots = [
-      { id: crypto.randomUUID(), name: name.trim() || new Date().toLocaleString(), createdAt: new Date().toISOString(), state: editableJson($state.snapshot(this.recipe) as Recipe) },
+      { id: newId(), name: name.trim() || new Date().toLocaleString(), createdAt: new Date().toISOString(), state: editableJson($state.snapshot(this.recipe) as Recipe) },
       ...this.snapshots,
     ];
     this.storeSnapshots();
@@ -943,30 +1000,15 @@ export class Editor {
     const session = this.session;
     const cam = this.camera;
     if (!session || !cam) return;
-    const exif = this.asset?.exifInfo;
-    const m = session.meta;
-    const lensName = (exif?.lensModel || m.lens || '').trim();
-    this.lensQuery = {
-      cameraMake: m.make || exif?.make || '',
-      cameraModel: m.model || exif?.model || '',
-      lens: lensName,
-      focalLength: m.focalLength || exif?.focalLength || 0,
-      aperture: m.aperture || exif?.fNumber || 0,
-      width: cam.fullWidth,
-      height: cam.fullHeight,
-    };
-    this.lensInfo = { ...this.lensInfo, searching: true, lensName };
+    this.lensQuery = lensQueryFor(session.meta, this.asset?.exifInfo, cam);
+    this.lensInfo = { ...this.lensInfo, searching: true, lensName: this.lensQuery.lens };
     this.measureCA();
     try {
-      if (/\.dng$/i.test(this.asset?.originalFileName ?? '')) {
-        const ops = parseDngOpcodes(bytes);
-        this.dngLens = ops ? dngCorrection(ops, { width: cam.fullWidth, height: cam.fullHeight }) : null;
-      }
-      const res = await fetch(`${import.meta.env.BASE_URL}lensfun/lensfun.json`);
-      if (res.ok) this.lensDb = loadLensfun((await res.json()) as LensfunJson);
+      this.dngLens = dngLensFor(this.asset?.originalFileName, bytes, cam);
     } catch (e) {
       console.warn('Lens profile lookup failed', e);
     }
+    this.lensDb = await loadLensDb();
     this.lensInfo.searching = false;
     this.syncLens(true);
     this.requestRender();
@@ -981,20 +1023,7 @@ export class Editor {
     if (!force && id === this.lensFor) return;
     this.lensFor = id;
     const db = this.lensDb;
-    const auto = db ? lensfunCorrection(db, q) : null;
-    const chosen = db && id ? lensfunCorrection(db, q, { lens: id }) : null;
-    const lf = chosen ?? auto;
-    let profile: LensCorrection | null = null;
-    let label: string | null = null;
-    if (this.dngLens && !chosen) {
-      // The file's own correction wins; Lensfun only adds vignetting the file doesn't describe.
-      const vig = this.dngLens.vignetting ?? lf?.correction.vignetting ?? null;
-      profile = { ...this.dngLens, vignetting: vig };
-      label = `Built into the DNG${!this.dngLens.vignetting && vig && lf ? ` (vignetting from Lensfun: ${lf.lens})` : ''}`;
-    } else if (lf) {
-      profile = lf.correction;
-      label = `Lensfun: ${lf.lens}${chosen ? '' : ` (for ${lf.camera})`}`;
-    }
+    const { profile, label, auto, chosen } = pickLensProfile(db, q, this.dngLens, id);
     let candidates: LensInfo['candidates'] = [];
     if (db) {
       const camera = findCamera(db, q.cameraMake, q.cameraModel)?.camera ?? null;
@@ -1080,7 +1109,7 @@ export class Editor {
   }
 
   /** Room for another component (and, for a new mask, another mask)? Tells the user if not. */
-  private maskRoom(newMask: boolean): boolean {
+  private maskRoom(newMask: boolean, ai = false): boolean {
     if (newMask && this.recipe.masks.length >= MAX_MASKS) {
       this.notice = `Up to ${MAX_MASKS} masks are supported.`;
       return false;
@@ -1089,7 +1118,19 @@ export class Editor {
       this.notice = `Up to ${MAX_COMPONENTS} mask parts are supported in total.`;
       return false;
     }
+    if (ai && aiCount(this.recipe.masks) >= MAX_AI) {
+      this.notice = `Up to ${MAX_AI} AI mask parts are supported in total.`;
+      return false;
+    }
     return true;
+  }
+
+  private uniqueMaskName(base: string): string {
+    const used = new Set(this.recipe.masks.map((m) => m.name));
+    if (!used.has(base)) return base;
+    let n = 2;
+    while (used.has(`${base} ${n}`)) n++;
+    return `${base} ${n}`;
   }
 
   private nextMaskName(): string {
@@ -1104,8 +1145,10 @@ export class Editor {
    * are added right away. mode/maskId: add to, subtract from or intersect with an existing mask.
    */
   startMask(kind: ComponentKind, mode: MaskMode = 'add', maskId: string | null = null): void {
+    if (kind === 'ai') return this.startAiMask('subject', mode, maskId);
     if (this.readOnlyGuard() || !this.maskRoom(!maskId)) return;
     if (this.tool !== 'mask') this.setTool('mask');
+    this.aiPicker = null;
     if (kind === 'luminance') {
       this.addComponent(newComponent('luminance', maskId ? mode : 'add'), maskId);
       this.changed(true, `${maskId ? 'Add' : 'New Mask:'} ${COMPONENT_LABELS.luminance}`);
@@ -1120,15 +1163,113 @@ export class Editor {
 
   cancelMaskDraft(): void {
     this.maskDraft = null;
+    this.aiPicker = null;
   }
 
-  private addComponent(c: MaskComponent, maskId: string | null): void {
+  // ---- AI masks
+
+  /**
+   * Lightroom's AI masks. Subject, Sky and Background are added right away; People and
+   * Landscape first show their choices; an object is pointed out on the photo.
+   */
+  startAiMask(target: AiTarget, mode: MaskMode = 'add', maskId: string | null = null): void {
+    if (this.readOnlyGuard() || !this.maskRoom(!maskId, true)) return;
+    if (this.tool !== 'mask') this.setTool('mask');
+    const m = maskId ? mode : 'add';
+    this.maskDraft = null;
+    this.aiPicker = null;
+    if (target === 'people' || target === 'landscape') {
+      this.aiPicker = { target, mode: m, maskId, parts: ['person'], classes: ['sky'], who: -1 };
+      if (target === 'people') void this.ai.findPeople();
+      return;
+    }
+    if (target === 'object') {
+      this.maskDraft = { kind: 'object', mode: m, maskId };
+      return;
+    }
+    this.addAiComponent(newAiComponent(target, m), maskId);
+  }
+
+  setAiPicker(patch: Partial<Pick<AiPicker, 'parts' | 'classes' | 'who'>>): void {
+    if (this.aiPicker) this.aiPicker = { ...this.aiPicker, ...patch };
+  }
+
+  /** Makes the People or Landscape mask chosen in the picker. */
+  confirmAiPicker(): void {
+    const p = this.aiPicker;
+    if (!p || this.readOnlyGuard()) return;
+    if (p.target === 'landscape' && !p.classes.length) return;
+    if (p.target === 'people' && !p.parts.length) return;
+    this.aiPicker = null;
+    const person = this.personPoint(p.who);
+    this.addAiComponent(newAiComponent(p.target, p.mode, p.target === 'people' ? { parts: p.parts, person } : { classes: p.classes }), p.maskId);
+  }
+
+  /** Mask-frame point of person `index` of ai.people; null = everyone. */
+  private personPoint(index: number): { x: number; y: number } | null {
+    const who = index >= 0 ? this.ai.people?.[index] : null;
+    const photo = who ? this.ai.current() : null;
+    return who && photo ? imageToMask(photo, who.at) : null;
+  }
+
+  private addAiComponent(c: AiComponent, maskId: string | null): void {
+    if (!this.maskRoom(!maskId, true)) return;
+    this.addComponent(c, maskId, this.uniqueMaskName(aiLabel(c)));
+    this.changed(true, `${maskId ? MODE_VERB[c.mode] : 'New Mask:'} ${aiLabel(c)}`);
+  }
+
+  /** Changes what an AI part selects (People parts and who, Landscape categories). */
+  setAiComponent(maskId: string, compId: string, patch: { parts?: PersonPart[]; classes?: LandscapeClass[]; who?: number }): void {
+    const m = this.mask(maskId);
+    const c = m?.components.find((x) => x.id === compId);
+    if (!m || !c || c.kind !== 'ai' || this.readOnlyGuard()) return;
+    const next: Partial<AiComponent> = {};
+    if (patch.parts) {
+      if (!patch.parts.length) return;
+      next.parts = patch.parts;
+    }
+    if (patch.classes) {
+      if (!patch.classes.length) return;
+      next.classes = patch.classes;
+    }
+    if (patch.who !== undefined) next.person = this.personPoint(patch.who);
+    this.updateComponent(maskId, compId, next, true, `${m.name}: ${aiLabel({ ...c, ...next })}`);
+  }
+
+  /** Objects: the box dragged around it, or the point clicked (mask frame). */
+  drawObject(box: [number, number, number, number] | null, point: [number, number] | null): void {
+    const d = this.maskDraft;
+    if (!d || d.kind !== 'object' || this.readOnlyGuard()) return;
+    this.maskDraft = null;
+    const c = box
+      ? newAiComponent('object', d.mode, { box: [q5(Math.min(box[0], box[2])), q5(Math.min(box[1], box[3])), q5(Math.max(box[0], box[2])), q5(Math.max(box[1], box[3]))] })
+      : point
+        ? newAiComponent('object', d.mode, { points: [q5(point[0]), q5(point[1])] })
+        : null;
+    if (c) this.addAiComponent(c, d.maskId);
+  }
+
+  /** Shift+click with a clicked object selected: one more point on the object. */
+  addObjectPoint(p: [number, number]): boolean {
+    const m = this.selectedMask;
+    const c = this.selectedComponent;
+    if (!m || !c || c.kind !== 'ai' || c.target !== 'object' || c.box || this.readOnlyGuard()) return false;
+    const points = c.points ?? [];
+    if (points.length >= MAX_OBJECT_POINTS * 2) {
+      this.notice = `Up to ${MAX_OBJECT_POINTS} points per object.`;
+      return true;
+    }
+    this.updateComponent(m.id, c.id, { points: [...points, q5(p[0]), q5(p[1])] }, true, `${m.name}: Add Object Point`);
+    return true;
+  }
+
+  private addComponent(c: MaskComponent, maskId: string | null, name?: string): void {
     const target = this.mask(maskId);
     if (target) {
       target.components.push(c);
       this.maskSel = { mask: target.id, comp: c.id };
     } else {
-      const m = newMask(this.nextMaskName(), c);
+      const m = newMask(name ?? this.nextMaskName(), c);
       this.recipe.masks.push(m);
       this.maskSel = { mask: m.id, comp: c.id };
     }
@@ -1137,7 +1278,8 @@ export class Editor {
   /** Starts drawing the armed gradient at mask-frame point p; returns the new component's id. */
   beginMaskDraw(p: [number, number]): string | null {
     const d = this.maskDraft;
-    if (!d || this.readOnlyGuard()) return null;
+    // Objects are pointed out with drawObject.
+    if (!d || d.kind === 'object' || this.readOnlyGuard()) return null;
     const c = newComponent(d.kind, d.mode);
     if (c.kind === 'linear') Object.assign(c, { x0: p[0], y0: p[1], x1: p[0], y1: p[1] + 1e-3 });
     else if (c.kind === 'radial') Object.assign(c, { cx: p[0], cy: p[1], rx: 1e-3, ry: 1e-3 });
@@ -1163,7 +1305,7 @@ export class Editor {
     } else if (c.kind === 'luminance' && c.lo > c.hi) {
       [c.lo, c.hi] = [c.hi, c.lo];
     }
-    this.changed(commit, label ?? `${m.name}: Edit ${COMPONENT_LABELS[c.kind]}`);
+    this.changed(commit, label ?? `${m.name}: Edit ${partLabel(c)}`);
   }
 
   /** Ends a gradient drawn by a click without a drag: gives it a useful default size. */
@@ -1290,7 +1432,7 @@ export class Editor {
     m.components = m.components.filter((x) => x.id !== compId);
     m.components[0]!.mode = 'add';
     this.maskSel = { mask: m.id, comp: m.components[0]!.id };
-    this.changed(true, `${m.name}: Remove ${c ? COMPONENT_LABELS[c.kind] : 'part'}`);
+    this.changed(true, `${m.name}: Remove ${c ? partLabel(c) : 'part'}`);
   }
 
   deleteMask(maskId: string): void {
@@ -1321,7 +1463,7 @@ export class Editor {
 
   invertComponent(maskId: string, compId: string): void {
     const c = this.mask(maskId)?.components.find((x) => x.id === compId);
-    if (c) this.updateComponent(maskId, compId, { invert: !c.invert }, true, `${this.mask(maskId)!.name}: Invert ${COMPONENT_LABELS[c.kind]}`);
+    if (c) this.updateComponent(maskId, compId, { invert: !c.invert }, true, `${this.mask(maskId)!.name}: Invert ${partLabel(c)}`);
   }
 
   toggleMaskOverlay(): void {
@@ -1343,7 +1485,10 @@ export class Editor {
   setTool(tool: Tool): void {
     if (tool !== 'edit' && this.readOnly) return;
     this.endTargeted();
-    if (tool !== 'mask') this.maskDraft = null;
+    if (tool !== 'mask') {
+      this.maskDraft = null;
+      this.aiPicker = null;
+    }
     if (tool === 'mask' && !this.maskSel.mask && this.recipe.masks.length) {
       const last = this.recipe.masks[this.recipe.masks.length - 1]!;
       this.maskSel = { mask: last.id, comp: last.components[0]?.id ?? null };
@@ -1378,8 +1523,56 @@ export class Editor {
     const t = this.renderer?.previewToFrame(x, y) ?? [0.5, 0.5];
     this.zoom = { on: true, cx: t[0], cy: t[1], scale: 1 };
     this.clampZoom();
-    if (!this.fullImage) this.notice = 'Showing the half-size preview until the full-resolution decode finishes.';
+    this.noteHalfSize();
     this.requestRender();
+  }
+
+  /**
+   * Zooms by `factor` (Ctrl + mouse wheel, trackpad pinch), keeping the photo point under the
+   * cursor in place: (x, y) is the cursor in the current view (0..1), `at` the same point in CSS
+   * pixels from the stage's top left. Zooming out past the fitted size returns to fit.
+   */
+  zoomBy(factor: number, x: number, y: number, at: [number, number]): void {
+    const anchor = this.zoomAnchor(x, y);
+    if (anchor) this.zoomFrom(anchor, factor, at);
+  }
+
+  /**
+   * The zoom scale now (the fitted one when not zoomed) and the photo point (frame coordinates
+   * 0..1) at view point (x, y) (0..1). A touch pinch keeps this from its start, because during the
+   * gesture the last render lags behind the fingers.
+   */
+  zoomAnchor(x: number, y: number): { scale: number; p: [number, number] } | null {
+    const r = this.renderer;
+    if (!r || !this.camera || this.tool === 'crop' || this.status !== 'ready') return null;
+    const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
+    return { scale: this.zoom.on ? this.zoom.scale : fitScale(frame, this.viewport), p: r.previewToFrame(x, y) ?? [0.5, 0.5] };
+  }
+
+  /**
+   * Zooms to `anchor.scale * factor` with the anchor's photo point under the stage point `at`
+   * (CSS pixels from the stage's top left). At or below the fitted size it returns to fit.
+   */
+  zoomFrom(anchor: { scale: number; p: [number, number] }, factor: number, at: [number, number]): void {
+    const r = this.renderer;
+    if (!r || !this.camera || this.tool === 'crop' || this.status !== 'ready') return;
+    const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
+    const fit = fitScale(frame, this.viewport);
+    const current = this.zoom.on ? this.zoom.scale : fit;
+    const scale = nextScale(anchor.scale, factor, fit);
+    if (scale === null) return this.setZoom(false);
+    const [cx, cy] = anchoredCentre(anchor.p, at, scale, frame, this.viewport);
+    this.zoom = { on: true, cx, cy, scale };
+    this.clampZoom();
+    if (scale > 0.5 && current <= 0.5) this.noteHalfSize();
+    this.requestRender();
+  }
+
+  /** Says so when a zoomed view has to make do with the half-size decode. */
+  private noteHalfSize(): void {
+    if (this.fullImage) return;
+    if (this.fullStatus === 'decoding') this.notice = HALF_SIZE_NOTICE;
+    else if (this.fullStatus === 'error') this.notice = FULL_FAILED_NOTICE;
   }
 
   setZoom(on: boolean): void {
@@ -1549,21 +1742,13 @@ export class Editor {
     this.previewRecipe = null;
     const step = (s: keyof typeof STEP_LABEL, fraction = 0) => (this.saving = { label: STEP_LABEL[s], fraction });
     try {
-      step('decode');
-      this.startFullDecode();
-      const full = await session.full();
-      const recipe = cloneRecipe($state.snapshot(this.recipe) as Recipe);
-      recipe.app = APP_ID;
-      recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
-      step('render');
-      const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
-      step('encode');
-      const encoded = await encodeJpeg(image, 0.92);
-      const jpeg = insertExif(encoded, { ...exifFromImmich(asset.exifInfo), software: APP_ID });
+      // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
+      const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
+      const { recipe, file } = await this.renderExport(asset, session, renderer, preset, step, true);
       const saved = await saveRender({
         raw: asset,
         recipe,
-        jpeg: new Blob([jpeg as BlobPart], { type: 'image/jpeg' }),
+        jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
         onProgress: (s, f) => step(s, f),
       });
       if (this.recipe.render?.assetId) this.pastRenders.add(this.recipe.render.assetId);
@@ -1587,6 +1772,120 @@ export class Editor {
     } finally {
       this.saving = null;
     }
+  }
+
+  /** Renders the current edit at full resolution and makes the file the preset describes. */
+  private async renderExport(
+    asset: AssetResponseDto,
+    session: RawSession,
+    renderer: Renderer,
+    preset: ExportPreset,
+    step: (s: RenderStep, fraction?: number) => void,
+    forImmich = false,
+  ): Promise<{ recipe: Recipe; file: ExportFile }> {
+    step('decode');
+    this.startFullDecode();
+    const full = await session.full();
+    const recipe = cloneRecipe($state.snapshot(this.recipe) as Recipe);
+    // AI masks are computed in the background: the export needs every one of them.
+    await this.ai.ready(recipe);
+    recipe.app = APP_ID;
+    recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
+    step('render');
+    const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
+    const file = await finishExport(image, asset, preset, {
+      copyright: this.exportSettings.copyright,
+      owner: this.ownerName(asset),
+      forImmich,
+      onStep: (s) => step(s),
+    });
+    return { recipe, file };
+  }
+
+  /** The photographer, for the copyright line: the asset owner's Immich name. */
+  ownerName(asset: AssetResponseDto | null = this.asset): string {
+    if (!asset) return '';
+    if (asset.owner?.name) return asset.owner.name;
+    return this.me && asset.ownerId === this.me.id ? this.me.name : '';
+  }
+
+  // ---------------------------------------------------------------- export
+
+  /** Settings dialog or album export, open over the editor (keys go to the dialog). */
+  exportDialog = $state<'settings' | 'album' | null>(null);
+  private albumName: Promise<string> | null = null;
+
+  /** Name of the album the editor was opened from ('' for a day or a person), for {album}. */
+  contextAlbumName(): Promise<string> {
+    const ctx = parseContext(this.ctx);
+    if (ctx.kind !== 'album') return Promise.resolve('');
+    this.albumName ??= getAlbumInfo({ id: ctx.id })
+      .then((a) => a.albumName)
+      .catch(() => '');
+    return this.albumName;
+  }
+
+  /** Downloads the current edit (saved or not) with one of the export presets. */
+  async exportPhoto(id: ExportPresetId): Promise<boolean> {
+    const asset = this.asset;
+    const session = this.session;
+    const renderer = this.renderer;
+    if (!asset || !session || !renderer || this.saving || this.status !== 'ready') return false;
+    const what = `Exporting ${PRESET_LABELS[id].name}`;
+    const step = (s: RenderStep, fraction = 0) => (this.saving = { label: `${what}: ${STEP_LABEL[s]}`, fraction });
+    try {
+      const preset = structuredClone($state.snapshot(this.exportSettings.presets[id]) as ExportPreset);
+      const { file } = await this.renderExport(asset, session, renderer, preset, step);
+      const name = exportFilename(preset, {
+        originalFileName: asset.originalFileName,
+        preset: id,
+        date: captureDate(asset),
+        album: await this.contextAlbumName(),
+        owner: this.ownerName(asset),
+      });
+      downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
+      this.error = null;
+      this.notice = `Exported ${name} (${file.width} × ${file.height}).`;
+      return true;
+    } catch (e) {
+      console.error(e);
+      this.notice = null;
+      this.error = `Export failed: ${e instanceof Error ? e.message : String(e)}`;
+      return false;
+    } finally {
+      this.saving = null;
+    }
+  }
+
+  /** Replaces one preset's options (nested groups are replaced whole). */
+  setExportPreset(id: ExportPresetId, patch: Partial<ExportPreset>): void {
+    const current = $state.snapshot(this.exportSettings) as ExportSettings;
+    this.storeExportSettings({ ...current, presets: { ...current.presets, [id]: { ...current.presets[id], ...patch } } });
+  }
+
+  /** Which preset Save uses for the Immich copy. Takes effect on the next save. */
+  setImmichPreset(id: ExportPresetId): void {
+    this.storeExportSettings({ ...($state.snapshot(this.exportSettings) as ExportSettings), immichPreset: id });
+  }
+
+  setExportCopyright(text: string): void {
+    this.storeExportSettings({ ...($state.snapshot(this.exportSettings) as ExportSettings), copyright: text });
+  }
+
+  /** Puts one preset back to its defaults. */
+  resetExportPreset(id: ExportPresetId): void {
+    const current = $state.snapshot(this.exportSettings) as ExportSettings;
+    this.storeExportSettings({ ...current, presets: { ...current.presets, [id]: structuredClone(DEFAULT_EXPORT_SETTINGS.presets[id]) } });
+  }
+
+  resetExportSettings(): void {
+    this.storeExportSettings(structuredClone(DEFAULT_EXPORT_SETTINGS));
+  }
+
+  private storeExportSettings(next: ExportSettings): void {
+    const value = normalizeExportSettings(next);
+    this.exportSettings = value;
+    storageSet(EXPORT_KEY, value);
   }
 
   // ---------------------------------------------------------------- convert to DNG

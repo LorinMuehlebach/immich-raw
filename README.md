@@ -4,14 +4,14 @@ Lightroom-style RAW editing for [Immich](https://immich.app), right in your brow
 
 immich-raw adds an **Edit RAW** button to Immich's photo viewer. It opens the RAW file in a full photo
 editor: white balance, tone, colour, curves, masks, lens corrections, noise reduction and more. When
-you save, the edited photo goes back into Immich as a full-resolution JPEG, stacked on top of the
-original. The RAW file itself is never changed, and the edit settings are stored with it, so you can
+you save, the edited photo goes back into Immich as a JPEG, stacked on top of the original. The RAW file itself is never changed, and the edit settings are stored with it, so you can
 reopen the photo later and carry on where you left off.
 
 It's an unofficial add-on: a small web app you run next to your own Immich. It isn't affiliated with
 Immich or Adobe.
 
-Tested with Immich 3.4.0 in Chromium-based browsers (Chrome, Edge).
+Tested with Immich 3.4.0 in Chromium-based browsers (Chrome, Edge). It also works on phones and
+tablets, with a layout made for touch.
 
 ## How it works
 
@@ -27,16 +27,22 @@ presets (`.xmp`) and sidecar files can be imported.
 
 ![The editor with Auto tone and a few sliders applied](docs/images/2-editor.jpg)
 
-**3. Make local adjustments with masks:** linear and radial gradients, a brush, and colour and
-luminance ranges, each with its own exposure, contrast, colour and sharpness sliders. Here a gradient
-darkens the sky; the red overlay shows where it applies.
+**3. Make local adjustments with masks:** linear and radial gradients, a brush, colour and
+luminance ranges, and AI masks (subject, sky, background, people, landscape, objects), each with its
+own exposure, contrast, colour and sharpness sliders. Here a gradient darkens the sky; the red
+overlay shows where it applies.
 
 ![A linear gradient mask over the sky](docs/images/3-masks.jpg)
 
-**4. Save.** The full-resolution JPEG is uploaded to Immich and stacked on top of the RAW. It keeps the
+**4. Save.** The edited JPEG is uploaded to Immich and stacked on top of the RAW. It keeps the
 RAW's date, location, albums, rating, description and favourite. The two thumbnails at the bottom
 left are the stack: the edited JPEG and the RAW. Saving again replaces the JPEG, and the old one goes
 to Immich's trash. Leaving with unsaved changes asks whether to save them.
+
+The JPEG's size, quality and sharpening come from one of the Export presets: Medium (3840 px long
+edge) unless you pick another under **Immich copy** in the Export panel. Pick High for full
+resolution. A new choice applies from the next save. The copy in Immich is always a JPEG without
+watermark and keeps the RAW's own metadata.
 
 ![Back in Immich: the edited photo on top of its stack](docs/images/5-immich-result.jpg)
 
@@ -53,14 +59,23 @@ original is deleted (to the trash, or permanently).
 - **Same address as Immich.** The editor is a static web app served under `/immich-raw/` on your
   Immich address. It uses your existing Immich login and talks to Immich's API
   directly. There is no separate account, and photos aren't processed on the server.
-- **RAW decoding:** [LibRaw](https://www.libraw.org) compiled to WebAssembly, running in background
-  threads in the browser.
+- **RAW decoding:** [LibRaw](https://www.libraw.org) compiled to WebAssembly, running in a background
+  worker in the browser.
 - **Rendering:** a WebGL2 pipeline in a wide linear colour space. It previews at reduced size while
   you drag a slider and renders full resolution for 100 % zoom and for saving.
-- **The button:** a small script that the immich-raw container (or your own proxy, or a browser
-  userscript) adds to Immich's pages.
+- **The buttons:** a small script that the immich-raw container (or your own proxy, or a browser
+  userscript) adds to Immich's pages: Edit RAW in the photo viewer, Export in the bar shown while
+  photos are selected. To find out which photos are selected (Immich keeps only those on screen in
+  the page), the export button presses Immich's download shortcut (Shift+D) and catches the
+  request, so nothing is downloaded. Immich then clears its selection, as after a download.
 - **Stored data:** the edit settings live in Immich's asset metadata on the RAW. The original file is
-  cached in the browser, so reopening a photo is fast.
+  cached in the browser (over HTTPS), so reopening a photo is fast.
+- **AI masks:** small models run in a background worker in the browser (ONNX Runtime, with WebGPU
+  when the browser has it, and MediaPipe). The first AI mask asks before downloading its models from
+  Hugging Face and Google (about 45 to 240 MB each, 316 MB for all kinds); they are then kept in the
+  browser. The photo is not uploaded anywhere. Like Lightroom, an edit stores what an AI mask selects
+  (Subject, Sky, which People parts), not its pixels: the mask is found again when the photo is
+  opened, and on another photo when it is copied or saved in a preset.
 - **Culler (optional):** a separate small service that groups bursts of similar shots into stacks,
   puts the best one on top and tags why the others lost (lighting, blur, closed eyes). For RAW files
   it measures exposure on the RAW file itself, because Immich's RAW previews are auto-brightened. See
@@ -91,21 +106,62 @@ original is deleted (to the trash, or permanently).
   - linear (M) and radial (Shift+M) gradients;
   - brush (K; Alt erases, `[` and `]` change the size);
   - colour ranges (click a colour, Shift+click to add one);
-  - luminance ranges.
+  - luminance ranges;
+  - AI masks:
+    - Subject, Sky and Background;
+    - People: everyone or one person; the whole person or any of face skin, body skin,
+      eyebrows, eye whites, iris and pupil, lips, teeth, hair, facial hair and clothes;
+    - Landscape: sky, water, vegetation, mountains, architecture, natural and artificial ground,
+      and snow (snow is found by colour, as the scene model has no snow class);
+    - Objects: drag a box around something, or click it (Shift+click adds points).
+
+    The first use of each kind takes a while (see [Under the hood](#under-the-hood)): about 5 to 20
+    seconds per photo depending on the computer, a few seconds with WebGPU, and it is remembered
+    for the photo.
 
   Mask parts can be added, subtracted or intersected, and O shows the overlay.
 - **Workflow:**
-  - histogram with clipping warnings (J), before/after (`\`), 100 % zoom (double-click the photo);
+  - histogram with clipping warnings (J), before/after (`\`), 100 % zoom (double-click the photo)
+    and free zoom up to 800 % (Ctrl + mouse wheel, or pinch on a trackpad);
   - history with named steps, undo/redo;
   - snapshots (stored on the RAW);
   - presets (kept in the browser; Lightroom `.xmp` presets can be imported);
   - copy/paste settings;
   - a filmstrip of the album, person or search you came from.
-- **Lightroom XMP sidecar import** on first open: basic, curves, colour mixer, B&W, colour grading,
-  calibration, detail, lens corrections, transform, effects, crop and masks. AI masks are skipped.
-- **Convert to DNG** (lossless or lossy), described above.
+- **Export** (left panel): Low (web), Medium (screens) and High (print) download the edit, saved or
+  not. The gear sets, for each preset:
+  - file type: JPEG, PNG or TIFF (8 bits, sRGB);
+  - size: full, long or short edge, width or height (pixels, cm or inches at a resolution), or
+    megapixels; never larger than the photo;
+  - JPEG quality, output sharpening (screen, matte or glossy paper; low, standard or high);
+  - a text watermark (position, size, opacity);
+  - metadata: all, all except location, or copyright only, with a copyright line such as
+    `© {year} {owner}`;
+  - the file name: the original name, with the preset or date, album and number, or your own pattern.
 
-The editor shows its keyboard shortcuts in the right-hand panel.
+  The settings are kept in the browser. **Export album…** exports every photo of an Immich album with
+  one preset: RAWs with their saved edit (or the default settings), other photos at the preset's size
+  and type; videos are skipped. A JPEG the editor saved is rendered again from its RAW, so it loses no
+  quality; only when that RAW is gone is the JPEG itself exported. The same works for photos selected
+  in Immich: select them in the timeline, an album or a search, then click the export icon in
+  Immich's selection bar. In Chrome and Edge on HTTPS the files go into a folder you choose, elsewhere
+  into one ZIP. Each RAW is rendered in the browser (about 17 seconds of work per photo), several at
+  once: 4 on a computer and 2 on a phone or tablet, or what you pick, from 1 to 16. On an 8-core
+  laptop, 4 at once was 2.7 to 3.9 times faster than one at a time, and 8 up to 3.5 times faster for
+  40 to 65 MP files ([Export speed](docs/export-speed.md), which also covers what HTTPS adds). Wider
+  colour spaces, 16-bit files and Content Credentials are [feature requests](docs/feature-requests.md).
+- **Lightroom XMP sidecar import** on first open: basic, curves, colour mixer, B&W, colour grading,
+  calibration, detail, lens corrections, transform, effects, crop and masks, including AI masks
+  (Subject, Sky, Background, People parts, Landscape), which are found again in the photo. AI
+  Objects and one person's parts can't be told apart in the file: objects are skipped, and a part
+  of one person applies to everyone. Lightroom presets with AI masks (Adaptive presets) work the same.
+- **Convert to DNG** (lossless or lossy), described above.
+- **Phones and tablets:** a touch layout with the panels in tabs (Edit, Crop, Masks, Presets), below
+  the photo when the device is upright and beside it when sideways. Pinch to zoom and pan, double-tap
+  a slider to reset it; crop and mask handles are finger-sized. The panel folds away to give the
+  photo the whole screen.
+
+The editor shows its keyboard shortcuts in the right-hand panel (on a computer).
 
 ## Installation
 
@@ -122,11 +178,13 @@ A second container, the culler, is optional in both.
 ### Requirements
 
 - **Immich 3.4.x** (tested with 3.4.0), run with Docker Compose.
-- **HTTPS.** The RAW decoder needs the browser's shared memory, which browsers only allow on secure
-  origins: `https://…`, or `http://localhost` for testing. On a plain `http://192.168.x.x:2283`
-  address, Immich works but the editor can't open RAWs.
-- **A desktop browser with WebGL2:** tested in Chrome and Edge. Large RAWs (45–60 megapixels) need
-  about 2 GB of memory in the browser tab.
+- **HTTPS or plain HTTP.** Both work, including a plain `http://192.168.x.x:2283` address. On plain
+  HTTP the browser keeps no copy of the originals, so the editor downloads the RAW again each time
+  you open it. Over HTTPS (or on `localhost`) it keeps recently opened originals.
+- **A browser with WebGL2:** tested in Chrome and Edge. Large RAWs (45–60 megapixels) need about
+  2 GB of memory in the browser tab.
+- **Phones and tablets** work too (see [Features](#features)), but a phone's browser may not give one
+  tab enough memory for the largest RAWs.
 
 The images are published on GitHub's container registry:
 - `ghcr.io/lorinmuehlebach/immich-raw` for x86-64 and ARM64;
@@ -245,8 +303,8 @@ TLS settings to your setup):
 ```
 
 The editor container sends `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy` and
-`Cross-Origin-Resource-Policy` headers. Make sure your proxy passes them through: the RAW decoder
-doesn't work without them.
+`Cross-Origin-Resource-Policy` headers. The editor doesn't need them today, but they are best passed
+through as they are.
 
 **3. Only if your proxy can't add the button: the userscript.**
 
@@ -261,11 +319,10 @@ If both the proxy script and the userscript are active, only one button appears.
 ### Check
 
 1. Reload Immich and open a RAW photo. The iris button appears at the left of the viewer's toolbar.
-2. Click it. The editor opens at `https://<your-immich>/immich-raw/?asset=…` and shows the photo after a
-   few seconds (the first open downloads the RAW).
-3. If the editor reports a problem with cross-origin isolation, open the browser's developer tools on
-   the editor page and check that `crossOriginIsolated` is `true`. If it isn't, the page isn't served
-   over HTTPS, or (advanced setup) your proxy drops the headers listed above.
+2. Click it. The editor opens at `<your-immich>/immich-raw/?asset=…` and shows the photo after a few
+   seconds (the first open downloads the RAW).
+3. If the button doesn't appear, the script tag isn't being added: check the proxy setup above, or use
+   the userscript.
 
 ### Optional: the culler (auto-stack and best pick)
 
@@ -383,7 +440,14 @@ Open http://127.0.0.1:8088 and log in with `admin@example.com` / `raw-editor-e2e
 the editor with hot reload on http://localhost:5173/immich-raw/, using the test Immich's API.
 
 - `npm test`: unit tests (vitest); `npm run check`: type checks.
-- `node e2e/smoke.mjs <out-dir>`: end-to-end test (open, edit, save, reopen, re-save).
+- `node e2e/smoke.mjs <out-dir>`: end-to-end test (open, edit, save, export, reopen, re-save).
+- `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>`: the AI masks on one photo, then an export
+  (needs internet for the models).
+- `node e2e/export.mjs <out-dir>`: the export options (PNG, TIFF, print size, file names), an album
+  export as a ZIP (two photos at once), the export button for photos selected in Immich (including
+  select all), and a saved edit exported from its RAW.
+- `node e2e/bench-export.mjs <out-dir> [mixed|xt30] [1,2,4,8,16]`: times the batch export at several
+  photos at once and samples the browser's memory ([Export speed](docs/export-speed.md)).
 - `node e2e/screenshots.mjs`: regenerates the screenshots in this README.
 - Culler:
   - `cd services/culler && uv run pytest`: its unit tests;
@@ -396,7 +460,9 @@ Project layout:
 
 - `apps/editor/`: the Svelte editor.
 - `packages/`:
-  - `decoder`: libraw-wasm;
+  - `ai`: AI masks (the models, the worker that runs them, turning their output into masks);
+  - `decoder`: RAW decoding with LibRaw;
+  - `libraw`: LibRaw for WebAssembly (libraw-wasm built without threads, see its README);
   - `pipeline`: WebGL2 renderer, colour maths;
   - `recipe`: edit settings;
   - `xmp`: Lightroom import/export;

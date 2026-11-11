@@ -1,13 +1,19 @@
 <script lang="ts">
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
   import { onMount } from 'svelte';
+  import { MediaQuery } from 'svelte/reactivity';
   import { badgeFor } from './lib/immich/cull-view.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import { PresetStore } from './lib/state/presets.ts';
   import { editor } from './lib/state/editor.svelte.ts';
+  import { VIEW_PAD, wheelFactor } from './lib/state/zoom.ts';
+  import AiDownloadDialog from './lib/ui/AiDownloadDialog.svelte';
   import BasicPanel from './lib/ui/BasicPanel.svelte';
   import CalibrationPanel from './lib/ui/CalibrationPanel.svelte';
   import EffectsPanel from './lib/ui/EffectsPanel.svelte';
+  import BatchExportDialog from './lib/ui/BatchExportDialog.svelte';
+  import ExportPanel from './lib/ui/ExportPanel.svelte';
+  import ExportSettingsDialog from './lib/ui/ExportSettingsDialog.svelte';
   import ColorGradingPanel from './lib/ui/ColorGradingPanel.svelte';
   import ColorMixerPanel from './lib/ui/ColorMixerPanel.svelte';
   import ConvertDngDialog from './lib/ui/ConvertDngDialog.svelte';
@@ -47,7 +53,45 @@
   // Built by apps/editor/vite.config.ts: our licence, the third-party notices and the source link.
   const LICENSES_URL = `${import.meta.env.BASE_URL}licenses.txt`;
 
-  const PAD = 24;
+  // Layouts. desktop: presets on the left, the photo, adjustments on the right. split (tablets,
+  // phones held sideways): the photo and one panel on the right with tabs. stacked (phones,
+  // tablets held upright): the photo above that panel. Touch screens use split up to large tablets.
+  const stackedQuery = new MediaQuery('(max-width: 699px), (orientation: portrait) and (max-width: 1099px)');
+  const compactQuery = new MediaQuery('(max-width: 1099px), (pointer: coarse) and (max-width: 1399px)');
+  const layout = $derived(stackedQuery.current ? 'stacked' : compactQuery.current ? 'split' : 'desktop');
+  const compact = $derived(layout !== 'desktop');
+  // Phones (also held sideways): the filmstrip starts collapsed to leave the photo the room.
+  const shortQuery = new MediaQuery('(max-height: 499px)');
+
+  // Split and stacked layouts: the panel's tabs. Presets holds what the desktop's left column has.
+  type Tab = 'edit' | 'crop' | 'mask' | 'presets';
+  const TABS: { id: Tab; label: string; edits?: boolean }[] = [
+    { id: 'edit', label: 'Edit' },
+    { id: 'crop', label: 'Crop', edits: true },
+    { id: 'mask', label: 'Masks', edits: true },
+    { id: 'presets', label: 'Presets' },
+  ];
+  let presetsTab = $state(false);
+  // Crop and masking (also from the keyboard) show their own panel.
+  const tab = $derived<Tab>(editor.tool === 'crop' ? 'crop' : editor.tool === 'mask' ? 'mask' : presetsTab ? 'presets' : 'edit');
+  // Stacked layout: the panel folds away to give the photo the screen.
+  let panelFolded = $state(false);
+  let menuOpen = $state(false);
+
+  function selectTab(t: Tab) {
+    panelFolded = false;
+    presetsTab = t === 'presets';
+    const tool = t === 'crop' ? 'crop' : t === 'mask' ? 'mask' : 'edit';
+    // The white balance picker and the targeted adjustment are part of Edit.
+    if (tool === 'edit' ? editor.tool === 'crop' || editor.tool === 'mask' : editor.tool !== tool) editor.setTool(tool);
+  }
+
+  function fromMenu(action: () => void) {
+    menuOpen = false;
+    action();
+  }
+
+  const PAD = VIEW_PAD;
   const zoomed = $derived(editor.zoom.on && editor.tool !== 'crop');
   const display = $derived.by(() => {
     if (zoomed) return { w: Math.round(stageW), h: Math.round(stageH) };
@@ -83,6 +127,8 @@
       editor.setViewport(stageW, stageH, devicePixelRatio || 1);
     });
     ro.observe(stage);
+    // Not passive: Ctrl + wheel must not also zoom the browser page.
+    stage.addEventListener('wheel', onWheel, { passive: false });
     editor.load(canvas);
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (!discarding && (editor.dirty || editor.saving)) e.preventDefault();
@@ -90,6 +136,7 @@
     addEventListener('beforeunload', beforeUnload);
     return () => {
       ro.disconnect();
+      stage.removeEventListener('wheel', onWheel);
       removeEventListener('beforeunload', beforeUnload);
     };
   });
@@ -146,7 +193,11 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (isTyping(e.target) || copyOpen || editor.dngDialog || leaving) return;
+    if (menuOpen && e.key === 'Escape') {
+      menuOpen = false;
+      return;
+    }
+    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving) return;
     if (editor.status !== 'ready' || editor.saving) return;
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
@@ -234,13 +285,41 @@
   let tatHint = $state('');
   let tatHintAt = 0;
 
+  // Two-finger pinch on a touch screen: zooms and pans, keeping the photo point that was between
+  // the fingers at the start between them.
+  const touches = new Map<number, [number, number]>();
+  let pinch: { dist: number; anchor: { scale: number; p: [number, number] } } | null = null;
+
   function viewPoint(e: PointerEvent | MouseEvent): [number, number] {
+    return viewPointAt(e.clientX, e.clientY);
+  }
+
+  function viewPointAt(clientX: number, clientY: number): [number, number] {
     const r = canvas.getBoundingClientRect();
-    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+    return [(clientX - r.left) / r.width, (clientY - r.top) / r.height];
+  }
+
+  function fingers(): { mid: [number, number]; dist: number } {
+    const [a, b] = [...touches.values()] as [[number, number], [number, number]];
+    return { mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], dist: Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1])) };
   }
 
   function onViewDown(e: PointerEvent) {
     if (editor.tool === 'crop' || editor.status !== 'ready' || e.button > 0) return;
+    if (e.pointerType === 'touch' && editor.tool !== 'tat') {
+      touches.set(e.pointerId, [e.clientX, e.clientY]);
+      if (touches.size > 2) return;
+      if (touches.size === 2) {
+        // The second finger turns the tap or pan into a pinch.
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        drag = null;
+        lastTap.t = 0;
+        const { mid, dist } = fingers();
+        const anchor = editor.zoomAnchor(...viewPointAt(mid[0], mid[1]));
+        pinch = anchor ? { dist, anchor } : null;
+        return;
+      }
+    }
     if (editor.tool === 'tat') {
       const [x, y] = viewPoint(e);
       if (editor.beginTargeted(x, y)) {
@@ -254,6 +333,15 @@
   }
 
   function onViewMove(e: PointerEvent) {
+    if (touches.has(e.pointerId)) {
+      touches.set(e.pointerId, [e.clientX, e.clientY]);
+      if (pinch && touches.size === 2) {
+        const { mid, dist } = fingers();
+        const s = stage.getBoundingClientRect();
+        editor.zoomFrom(pinch.anchor, dist / pinch.dist, [mid[0] - s.left, mid[1] - s.top]);
+        return;
+      }
+    }
     if (editor.tool === 'tat') {
       if (tat && tat.id === e.pointerId) editor.dragTargeted(e.clientY - tat.y);
       else if (!tat && performance.now() - tatHintAt > 60) {
@@ -274,6 +362,11 @@
   }
 
   function onViewUp(e: PointerEvent) {
+    if (touches.delete(e.pointerId) && pinch) {
+      // Lifting a finger ends the pinch; the finger left on the photo neither pans nor taps.
+      if (touches.size < 2) pinch = null;
+      return;
+    }
     if (tat && tat.id === e.pointerId) {
       tat = null;
       editor.endTargeted();
@@ -298,6 +391,15 @@
     }
   }
 
+  /** Ctrl + mouse wheel (and trackpad pinch, which arrives as one) zooms around the cursor. */
+  function onWheel(e: WheelEvent) {
+    if (!e.ctrlKey || editor.status !== 'ready' || editor.tool === 'crop') return;
+    e.preventDefault();
+    const [x, y] = viewPoint(e);
+    const s = stage.getBoundingClientRect();
+    editor.zoomBy(wheelFactor(e), x, y, [e.clientX - s.left, e.clientY - s.top]);
+  }
+
   function confirmCopy(groups: GroupId[]) {
     copyOpen = false;
     editor.copySettings(groups);
@@ -306,7 +408,7 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="app">
+<div class="app {layout}" class:folded={layout === 'stacked' && panelFolded}>
   <header class="top">
     <button class="icon back" onclick={goBack} title="Back to Immich (Esc)" aria-label="Back to Immich">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z" /></svg>
@@ -331,49 +433,78 @@
     <button class="icon" onclick={() => editor.redo()} disabled={!editor.canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.4 10.6A10.46 10.46 0 0 0 11.5 8 10.5 10.5 0 0 0 1.15 15.22l2.37.78A8 8 0 0 1 16.62 12.38L13 16h9V7z" /></svg>
     </button>
-    <button class:active={zoomed} onclick={() => (zoomed ? editor.setZoom(false) : editor.toggleZoom())} disabled={editor.status !== 'ready' || editor.tool === 'crop'} title="Zoom 100 % (Z, or double-click the photo)">
-      {zoomed ? 'Fit' : '1:1'}
-    </button>
-    <button class:active={editor.before} onclick={() => editor.toggleBefore()} disabled={editor.status !== 'ready'} title="Before / after (\)">Before</button>
-    <button class:active={editor.tool === 'crop'} onclick={() => editor.setTool(editor.tool === 'crop' ? 'edit' : 'crop')} disabled={editor.status !== 'ready' || editor.readOnly} title="Crop & straighten (R)">Crop</button>
-    <button class:active={editor.tool === 'mask'} onclick={() => editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask')} disabled={editor.status !== 'ready' || editor.readOnly} title="Masking: local adjustments with gradients and ranges (Shift+W)">
-      Masks{editor.recipe.masks.length ? ` (${editor.recipe.masks.length})` : ''}
-    </button>
-    <button onclick={() => editor.openDngDialog()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving} title="Convert to DNG: replaces the original RAW with a smaller DNG">DNG…</button>
-    <button class="primary" onclick={() => editor.save()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving || (!editor.dirty && !!editor.recipe.render)} title="Save to Immich (Ctrl+S)">
-      {editor.recipe.render ? 'Save' : 'Save to Immich'}
-    </button>
-    <a class="about" href={LICENSES_URL} target="_blank" rel="noopener" title="immich-raw: licences and source code" aria-label="Licences and source code">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.5" /></svg>
-    </a>
+    {#if compact}
+      <!-- Crop and Masks are tabs of the panel; zoom, DNG and the licences go in the menu. -->
+      <button class="icon" class:active={editor.before} onclick={() => editor.toggleBefore()} disabled={editor.status !== 'ready'} title="Before / after" aria-label="Before / after" aria-pressed={editor.before}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M12 4v16" /><path d="M4 5h8v14H4z" fill="currentColor" stroke="none" /></svg>
+      </button>
+      <button class="primary" onclick={() => editor.save()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving || (!editor.dirty && !!editor.recipe.render)} title="Save to Immich">Save</button>
+      <div class="more">
+        <button class="icon" onclick={() => (menuOpen = !menuOpen)} aria-label="More" aria-haspopup="menu" aria-expanded={menuOpen}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="12" cy="19" r="2" /></svg>
+        </button>
+        {#if menuOpen}
+          <div class="menu-shade" role="presentation" onpointerdown={() => (menuOpen = false)}></div>
+          <div class="menu" role="menu">
+            <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.tool === 'crop'}>
+              {zoomed ? 'Fit to screen' : 'Zoom to 100 %'}
+            </button>
+            <button role="menuitem" onclick={() => fromMenu(() => editor.openDngDialog())} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving}>Convert to DNG…</button>
+            <a role="menuitem" href={LICENSES_URL} target="_blank" rel="noopener" onclick={() => (menuOpen = false)}>Licences and source code</a>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <button class:active={zoomed} onclick={() => (zoomed ? editor.setZoom(false) : editor.toggleZoom())} disabled={editor.status !== 'ready' || editor.tool === 'crop'} title="Zoom 100 % (Z, or double-click the photo; Ctrl + mouse wheel zooms freely)">
+        {zoomed ? 'Fit' : '1:1'}
+      </button>
+      <button class:active={editor.before} onclick={() => editor.toggleBefore()} disabled={editor.status !== 'ready'} title="Before / after (\)">Before</button>
+      <button class:active={editor.tool === 'crop'} onclick={() => editor.setTool(editor.tool === 'crop' ? 'edit' : 'crop')} disabled={editor.status !== 'ready' || editor.readOnly} title="Crop & straighten (R)">Crop</button>
+      <button class:active={editor.tool === 'mask'} onclick={() => editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask')} disabled={editor.status !== 'ready' || editor.readOnly} title="Masking: local adjustments with gradients and ranges (Shift+W)">
+        Masks{editor.recipe.masks.length ? ` (${editor.recipe.masks.length})` : ''}
+      </button>
+      <button onclick={() => editor.openDngDialog()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving} title="Convert to DNG: replaces the original RAW with a smaller DNG">DNG…</button>
+      <button class="primary" onclick={() => editor.save()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving || (!editor.dirty && !!editor.recipe.render)} title="Save to Immich (Ctrl+S)">
+        {editor.recipe.render ? 'Save' : 'Save to Immich'}
+      </button>
+      <a class="about" href={LICENSES_URL} target="_blank" rel="noopener" title="immich-raw: licences and source code" aria-label="Licences and source code">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.5" /></svg>
+      </a>
+    {/if}
   </header>
 
-  <aside class="left">
-    {#if editor.status === 'ready'}
-      <PresetsPanel
-        store={presetStore}
-        getCurrent={() => $state.snapshot(editor.recipe) as Recipe}
-        onApply={(patch, name) => editor.applyPatch(patch, `Preset: ${name}`)}
-        onPreview={(patch) => editor.previewPatch(patch)}
-        parseXmp={(text, filename) => editor.parseXmpPreset(text, filename)}
-        disabled={editor.readOnly}
-      />
-      <SnapshotsPanel
-        snapshots={editor.snapshots}
-        onCreate={(name) => editor.createSnapshot(name)}
-        onApply={(id) => editor.applySnapshot(id)}
-        onRename={(id, name) => editor.renameSnapshot(id, name)}
-        onDelete={(id) => editor.deleteSnapshot(id)}
-        disabled={editor.readOnly}
-      />
-      <HistoryPanel steps={editor.historySteps} index={editor.historyIndex} onJump={(i) => editor.jumpToHistory(i)} />
-      <div class="copy">
-        <button onclick={() => (copyOpen = true)} title="Copy settings (Ctrl+Shift+C)">Copy…</button>
-        <button onclick={() => editor.pasteSettings()} disabled={!editor.hasClipboard || editor.readOnly} title="Paste settings (Ctrl+Shift+V)">Paste</button>
-        <button onclick={() => editor.pastePrevious()} disabled={!editor.hasPrevious || editor.readOnly} title="Paste settings of the last saved photo (Ctrl+Alt+V)">Previous</button>
-      </div>
-    {/if}
-  </aside>
+  <!-- The left column on desktops, the Presets tab otherwise. -->
+  {#snippet library()}
+    <PresetsPanel
+      store={presetStore}
+      getCurrent={() => $state.snapshot(editor.recipe) as Recipe}
+      onApply={(patch, name) => editor.applyPatch(patch, `Preset: ${name}`)}
+      onPreview={(patch) => editor.previewPatch(patch)}
+      parseXmp={(text, filename) => editor.parseXmpPreset(text, filename)}
+      disabled={editor.readOnly}
+    />
+    <SnapshotsPanel
+      snapshots={editor.snapshots}
+      onCreate={(name) => editor.createSnapshot(name)}
+      onApply={(id) => editor.applySnapshot(id)}
+      onRename={(id, name) => editor.renameSnapshot(id, name)}
+      onDelete={(id) => editor.deleteSnapshot(id)}
+      disabled={editor.readOnly}
+    />
+    <HistoryPanel steps={editor.historySteps} index={editor.historyIndex} onJump={(i) => editor.jumpToHistory(i)} />
+    <div class="copy">
+      <button onclick={() => (copyOpen = true)} title="Copy settings (Ctrl+Shift+C)">Copy…</button>
+      <button onclick={() => editor.pasteSettings()} disabled={!editor.hasClipboard || editor.readOnly} title="Paste settings (Ctrl+Shift+V)">Paste</button>
+      <button onclick={() => editor.pastePrevious()} disabled={!editor.hasPrevious || editor.readOnly} title="Paste settings of the last saved photo (Ctrl+Alt+V)">Previous</button>
+    </div>
+    <ExportPanel />
+  {/snippet}
+
+  {#if layout === 'desktop'}
+    <aside class="left">
+      {#if editor.status === 'ready'}{@render library()}{/if}
+    </aside>
+  {/if}
 
   <section class="center">
     <main class="stage" bind:this={stage}>
@@ -391,6 +522,8 @@
         onpointerup={onViewUp}
         onpointercancel={(e) => {
           drag = null;
+          touches.delete(e.pointerId);
+          if (touches.size < 2) pinch = null;
           if (tat) onViewUp(e);
         }}
         onpointerleave={() => (tatHint = '')}
@@ -478,49 +611,78 @@
         onNeighbours={(prev, next) => (neighbours = { prev, next })}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
+        startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
   </section>
 
   <aside class="side">
-    <Histogram histogram={editor.histogram} clipping={editor.clipping} onToggleClipping={() => editor.toggleClipping()} {info} />
-    {#if editor.status === 'ready'}
-      {#if editor.tool === 'crop'}
-        <CropPanel />
-      {:else if editor.tool === 'mask'}
-        <MaskPanel />
-      {:else}
-        <BasicPanel />
-        <ToneCurvePanel />
-        <ColorMixerPanel />
-        <ColorGradingPanel />
-        <DetailPanel />
-        <LensPanel />
-        <TransformPanel />
-        <EffectsPanel />
-        <CalibrationPanel />
-      {/if}
-      <div class="keys">
-        <div><kbd>\</kbd> before/after</div>
-        <div><kbd>J</kbd> clipping</div>
-        <div><kbd>R</kbd> crop</div>
-        <div><kbd>W</kbd> WB picker</div>
-        <div><kbd>Z</kbd> / double-click: 1:1</div>
-        <div><kbd>←</kbd><kbd>→</kbd> filmstrip</div>
-        <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
-        <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
-        <div><kbd>Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste</div>
-        <div><kbd>Alt</kbd>-drag: clipping</div>
-        <div><kbd>Ctrl</kbd>+<kbd>U</kbd> auto tone</div>
-        <div><kbd>⇧</kbd>+<kbd>W</kbd> masking</div>
-        <div><kbd>M</kbd> / <kbd>⇧</kbd>+<kbd>M</kbd> gradients</div>
-        <div><kbd>K</kbd> brush, <kbd>[</kbd> <kbd>]</kbd> size</div>
-      </div>
+    {#if compact}
+      <nav class="tabs" aria-label="Panels">
+        {#each TABS as t (t.id)}
+          <button class:active={tab === t.id} aria-pressed={tab === t.id} disabled={editor.status !== 'ready' || (t.edits && editor.readOnly)} onclick={() => selectTab(t.id)}>
+            {t.label}{t.id === 'mask' && editor.recipe.masks.length ? ` (${editor.recipe.masks.length})` : ''}
+          </button>
+        {/each}
+        {#if layout === 'stacked'}
+          <button class="icon fold" onclick={() => (panelFolded = !panelFolded)} aria-label={panelFolded ? 'Show the panel' : 'Hide the panel'} aria-expanded={!panelFolded}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d={panelFolded ? 'M6 15l6-6 6 6' : 'M6 9l6 6 6-6'} /></svg>
+          </button>
+        {/if}
+      </nav>
     {/if}
+    <div class="panels">
+      {#if compact && tab === 'presets'}
+        {#if editor.status === 'ready'}{@render library()}{/if}
+      {:else}
+        <Histogram histogram={editor.histogram} clipping={editor.clipping} onToggleClipping={() => editor.toggleClipping()} {info} />
+        {#if editor.status === 'ready'}
+          {#if editor.tool === 'crop'}
+            <CropPanel />
+          {:else if editor.tool === 'mask'}
+            <MaskPanel />
+          {:else}
+            <BasicPanel />
+            <ToneCurvePanel />
+            <ColorMixerPanel />
+            <ColorGradingPanel />
+            <DetailPanel />
+            <LensPanel />
+            <TransformPanel />
+            <EffectsPanel />
+            <CalibrationPanel />
+          {/if}
+          <div class="keys">
+            <div><kbd>\</kbd> before/after</div>
+            <div><kbd>J</kbd> clipping</div>
+            <div><kbd>R</kbd> crop</div>
+            <div><kbd>W</kbd> WB picker</div>
+            <div><kbd>Z</kbd> / double-click: 1:1</div>
+            <div><kbd>Ctrl</kbd>+wheel: zoom</div>
+            <div><kbd>←</kbd><kbd>→</kbd> filmstrip</div>
+            <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
+            <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
+            <div><kbd>Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste</div>
+            <div><kbd>Alt</kbd>-drag: clipping</div>
+            <div><kbd>Ctrl</kbd>+<kbd>U</kbd> auto tone</div>
+            <div><kbd>⇧</kbd>+<kbd>W</kbd> masking</div>
+            <div><kbd>M</kbd> / <kbd>⇧</kbd>+<kbd>M</kbd> gradients</div>
+            <div><kbd>K</kbd> brush, <kbd>[</kbd> <kbd>]</kbd> size</div>
+          </div>
+        {/if}
+      {/if}
+    </div>
   </aside>
 </div>
 
 <ConvertDngDialog />
+<AiDownloadDialog />
+
+{#if editor.exportDialog === 'settings'}
+  <ExportSettingsDialog />
+{:else if editor.exportDialog === 'album'}
+  <BatchExportDialog onClose={() => (editor.exportDialog = null)} />
+{/if}
 
 {#if leaving}
   <UnsavedDialog fileName={editor.asset?.originalFileName ?? 'This photo'} busy={leaveSaving} onSave={leaveSave} onDiscard={leaveDiscard} onCancel={() => (leaving = null)} />
@@ -536,9 +698,18 @@
     grid-template-columns: 230px 1fr 320px;
     grid-template-rows: 48px 1fr;
     height: 100%;
+    /* Phones: the height left by the browser's toolbars. */
+    height: 100dvh;
+  }
+  .app.split {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .app.stacked {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 48px minmax(0, 1fr) auto;
   }
   .top {
-    grid-column: 1 / 4;
+    grid-column: 1 / -1;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -563,6 +734,49 @@
     color: var(--text-dim);
     font-size: 11px;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .app:not(.desktop) .top {
+    gap: 4px;
+    padding: 0 6px;
+  }
+  .more {
+    position: relative;
+  }
+  .menu-shade {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+  }
+  .menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 51;
+    min-width: 210px;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  }
+  .menu button,
+  .menu a {
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    padding: 10px 12px;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .menu button:hover:not(:disabled),
+  .menu a:hover {
+    background: var(--line);
+    color: var(--text-bright);
   }
   .spacer {
     flex: 1;
@@ -582,14 +796,60 @@
   .left,
   .side {
     background: var(--panel);
-    overflow-y: auto;
     min-height: 0;
   }
   .left {
+    overflow-y: auto;
     border-right: 1px solid #111;
   }
   .side {
+    display: flex;
+    flex-direction: column;
     border-left: 1px solid #111;
+  }
+  .panels {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .app.stacked .side {
+    height: 44dvh;
+    border-left: none;
+    border-top: 1px solid #111;
+  }
+  .app.stacked.folded .side {
+    height: auto;
+  }
+  .app.stacked.folded .panels {
+    display: none;
+  }
+  .tabs {
+    flex: none;
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    border-bottom: 1px solid #111;
+  }
+  .tabs button {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 7px 4px;
+    font-size: 13px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .tabs button.active {
+    background: var(--panel-2);
+    border-color: transparent;
+    color: var(--accent);
+  }
+  .tabs .fold {
+    flex: none;
+    padding: 7px 10px;
   }
   .copy {
     display: flex;
@@ -783,5 +1043,35 @@
     padding: 12px;
     color: var(--text-dim);
     font-size: 11px;
+  }
+  @media (pointer: coarse) {
+    .keys {
+      display: none;
+    }
+  }
+  /* Phones: messages span the photo instead of floating in its middle. */
+  @media (max-width: 599px) {
+    .banner,
+    .toast {
+      left: 8px;
+      right: 8px;
+      transform: none;
+      max-width: none;
+    }
+    .banner {
+      flex-wrap: wrap;
+    }
+    .card {
+      max-width: calc(100% - 24px);
+      padding: 16px;
+    }
+    .saving .card {
+      min-width: 0;
+      width: calc(100% - 48px);
+    }
+    .loading {
+      min-width: 0;
+      width: 80%;
+    }
   }
 </style>
