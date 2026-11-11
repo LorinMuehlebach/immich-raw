@@ -223,7 +223,12 @@ try {
   await api('PUT', `/stacks/${stackA.id}`, { primaryAssetId: id[other] });
   const afterPick = await startRun({ scope, dryRun: false });
   check('a front photo picked in Immich stays in front', (await info(id.a0)).stack?.primaryAssetId === id[other], { run: afterPick.summary });
-  check('and gets the Best tag', cullTags(await info(id[other])).join() === 'Culling/Best' && cullTags(await info(id[bestA])).join() === 'Culling/Runner-up');
+  const pickTags = { [other]: cullTags(await info(id[other])), [bestA]: cullTags(await info(id[bestA])) };
+  check('and gets the Best tag', pickTags[other].join() === 'Culling/Best' && pickTags[bestA].join() === 'Culling/Runner-up', {
+    ...pickTags,
+    changes: afterPick.report?.changes,
+    errors: afterPick.report?.errors,
+  });
   const lookup = (await culler('POST', '/assets/lookup', { ids: Object.values(id) })).body?.items ?? {};
   check('lookup for the filmstrip', lookup[id[other]]?.pinned === true && lookup[id.a2]?.reason === 'blur' && !lookup[id.c0]);
 
@@ -236,10 +241,8 @@ try {
   check('changes need the editor header', (await request(`${CULLER}/runs`, { method: 'POST', cookie: token, body: { scope, dryRun: true } })).status === 403);
 
   // --- the filmstrip --------------------------------------------------------------------------------
-  // The editor opens a seeded camera RAW, in an album next to the culled RAW stacks: LibRaw has no
-  // colour table for the test DNGs' made-up camera, and the editor needs one to open a RAW.
-  const camera = sources[2];
-  const album = await api('POST', '/albums', { albumName: 'culler-e2e', assetIds: [...['a0', 'a1', 'a2', 'a3', 'a4', 'b0', 'b1', 'b2'].map((k) => id[k]), camera.id] });
+  // The editor opens the user's pick of the DNG burst, in an album with both culled RAW stacks.
+  const album = await api('POST', '/albums', { albumName: 'culler-e2e', assetIds: ['a0', 'a1', 'a2', 'a3', 'a4', 'b0', 'b1', 'b2'].map((k) => id[k]) });
   cleanup.album = album.body?.id;
   browser = await chromium.launch({ channel: process.env.BROWSER_CHANNEL ?? 'msedge', headless: !process.env.HEADED });
   const context = await browser.newContext({ viewport: { width: 1500, height: 950 } });
@@ -247,13 +250,15 @@ try {
   page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.goto(`${BASE}/immich-raw/?asset=${camera.id}&ctx=album:${cleanup.album}`);
+  await page.goto(`${BASE}/immich-raw/?asset=${id[other]}&ctx=album:${cleanup.album}`);
   await page.locator('.filmstrip .slot').first().waitFor({ timeout: 120000 });
   await page.locator('.filmstrip .badge').first().waitFor({ timeout: 30000 });
   const badges = await page.locator('.filmstrip .badge').count();
   const grouped = await page.locator('.filmstrip .slot.grouped').count();
   check('filmstrip shows both RAW stacks with badges', badges === 8 && grouped === 8, { badges, grouped });
-  check('a photo outside any stack has no badge', (await page.locator('.title .cull').count()) === 0);
+  await page.locator('.title .cull').waitFor({ timeout: 30000 }).catch(() => {});
+  const verdict = (await page.locator('.title .cull').textContent().catch(() => null))?.trim();
+  check('the open DNG shows its verdict in the title', /best of 5 \(your pick\)/.test(verdict ?? ''), { verdict });
   await page.screenshot({ path: join(outDir, 'filmstrip.png') });
   await page.locator('.filmstrip .gcount').first().click();
   const collapsed = await page.locator('.filmstrip .slot.grouped').count();

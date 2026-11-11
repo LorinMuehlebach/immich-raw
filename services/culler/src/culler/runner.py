@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from culler.config import Config, run_overrides
-from culler.executor import ExecResult, describe, execute
+from culler.executor import TAG_CHECKS, ExecResult, describe, execute, settle_tags, tag_assets_of
 from culler.features import Analyzer
 from culler.frames import build_frames
 from culler.grouping import group_frames, split_chains
@@ -123,6 +123,8 @@ class Loaded:
 
 
 class Runner:
+    tag_checks: tuple[float, ...] = TAG_CHECKS  # see executor.settle_tags
+
     def __init__(self, cfg: Config, client: ImmichClient, store: Store, analyzer: Callable[[Config], Analyzer]):
         self.cfg = cfg
         self.client = client
@@ -411,6 +413,12 @@ class Runner:
         on_progress = (lambda d, t: progress("applying", d, t)) if progress else None
         res = execute(self.client, plan.ops, progress=on_progress) if plan.ops else ExecResult()
         states = self._fix_failed(plan, res, prev)
+        notes: list[str] = []
+        if tagged := tag_assets_of(plan.ops):
+            if progress:
+                progress("checking tags", 0, 0)
+            want = {a: {s.tag} if (s := states.get(a)) and s.tag else set() for a in tagged}
+            notes = settle_tags(self.client, want, root, self.tag_checks)
         group_primary = dict(plan.group_primary)
         with self.store.transaction():
             self.store.set_asset_states(states)
@@ -432,6 +440,7 @@ class Runner:
                 )
         report["errors"] = res.errors
         report["applied"] = res.done
+        report["notes"] = notes
         return report
 
     @staticmethod
@@ -526,6 +535,9 @@ class Runner:
         live = self.load(ids, root).live
         ops, notes = plan_undo(before, after, snap["group_primary"], live, root)
         res = execute(self.client, ops)
+        if tagged := tag_assets_of(ops):
+            want = {a: set(b.tags) if (b := before.get(a)) else set() for a in tagged}
+            notes += settle_tags(self.client, want, root, self.tag_checks)
         with self.store.transaction():
             self.store.set_asset_states({a: b.state for a, b in before.items()})
             for a, s in after.items():

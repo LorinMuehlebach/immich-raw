@@ -62,6 +62,14 @@ def variant(
     return rgb
 
 
+@pytest.fixture(autouse=True)
+def _no_tag_check_waits(monkeypatch):
+    """The in-memory Immich never loses a tag on its own: check the tags without waiting."""
+    from culler.runner import Runner
+
+    monkeypatch.setattr(Runner, "tag_checks", (0.0, 0.0, 0.0))
+
+
 @pytest.fixture(scope="session")
 def scene() -> np.ndarray:
     return make_scene(0)

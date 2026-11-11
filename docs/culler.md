@@ -73,6 +73,10 @@ Code: [services/culler/](../services/culler/).
   - for a RAW + JPEG pair, the camera JPEG goes in front;
   - for an edited RAW, its edit does.
 - **Tags** on every file of each capture, under `Culling/` (the root can be changed).
+  - When a photo's tag changes (say Runner-up becomes Best), Immich 3.4 sometimes loses the new tag a
+    moment later. It writes tags to the photo's sidecar file in a background job and reads them back.
+  - So after applying or undoing, the culler waits a few seconds, reads the tags again and sets any
+    that went missing.
 - **Reject flag** (rating −1) on rejected shots. It is never set on favourites or on photos you gave
   stars.
   - Immich 3.4 empties a −1 again a moment later. Its metadata reader in

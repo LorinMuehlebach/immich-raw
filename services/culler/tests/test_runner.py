@@ -10,6 +10,7 @@ from conftest import asset, make_scene, variant
 from fake_immich import FakeImmich
 
 from culler.config import Config
+from culler.executor import settle_tags
 from culler.features import Analyzer
 from culler.features.embedding import stretch_levels
 from culler.models import CULL_KEY
@@ -262,6 +263,55 @@ def test_undo_of_a_run_that_only_retagged_keeps_the_stack(env):
     sid = immich.stack_id_of("a0")
     assert sid is not None and immich.stacks[sid]["primaryAssetId"] == runner_up
     assert culler_tags(immich, runner_up) == {"Culling/Runner-up"}
+
+
+def lose_next_tag(immich, monkeypatch) -> list[str]:
+    """The next tag added is lost, as Immich 3.4 sometimes does when a photo's tags change twice in a
+    row (it reads its own sidecar file back and drops the newer change)."""
+    real = immich.tag_assets
+    lost: list[str] = []
+
+    def lossy(tag_ids, asset_ids):
+        if lost:
+            real(tag_ids, asset_ids)
+        else:
+            lost.extend(asset_ids)
+
+    monkeypatch.setattr(immich, "tag_assets", lossy)
+    return lost
+
+
+def test_tags_lost_by_immich_are_set_again(env, monkeypatch):
+    immich, runner, _ = env
+    _, first = run(runner)
+    runner_up = next(f for f, (role, _) in roles(first).items() if f[0] == "a" and role == "runner-up")
+    old_best = next(f for f, (role, _) in roles(first).items() if f[0] == "a" and role == "best")
+    immich.update_stack(immich.stack_id_of("a0"), runner_up)
+
+    lost = lose_next_tag(immich, monkeypatch)
+    second, report = run(runner)  # swaps the Best and Runner-up tags
+    assert lost
+    assert culler_tags(immich, runner_up) == {"Culling/Best"}
+    assert culler_tags(immich, old_best) == {"Culling/Runner-up"}
+    assert report["notes"] == []
+
+    lost = lose_next_tag(immich, monkeypatch)
+    undo = runner.undo(second)
+    assert lost
+    assert culler_tags(immich, runner_up) == {"Culling/Runner-up"}
+    assert culler_tags(immich, old_best) == {"Culling/Best"}
+    assert undo["errors"] == [] and undo["notes"] == []
+
+
+def test_tags_that_never_stick_end_with_a_note(monkeypatch):
+    immich = FakeImmich()
+    immich.add(asset("x", "x.jpg"))
+    monkeypatch.setattr(immich, "tag_assets", lambda tag_ids, asset_ids: None)
+    waited: list[float] = []
+    notes = settle_tags(immich, {"x": {"Culling/Best"}}, ROOT, waits=(1, 2, 3), sleep=waited.append)
+    assert waited == [1, 2, 3]
+    assert len(notes) == 1 and "1 photos" in notes[0]
+    assert culler_tags(immich, "x") == set()
 
 
 def test_a_run_without_changes_leaves_nothing_to_undo(env):
