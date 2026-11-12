@@ -120,7 +120,7 @@ A run that finds nothing new changes nothing.
 | Put another shot in front of a stack (Immich), or ★ **Make best** (filmstrip) | Keeps your choice and moves the `Best` tag to it |
 | Give a rejected photo stars, or remove its reject flag | Never sets the flag on it again |
 | Take a photo out of a stack | Leaves that photo alone from then on |
-| Delete a whole stack | Doesn't stack that group again (only a re-run with `--force` does) |
+| Delete a whole stack | Doesn't stack that group again (only **Include them** on the auto-stack page, or a run with `--force`, does) |
 | Save an edit of a shot that isn't in front | The edit joins the stack without taking the front |
 
 **Undo** works per run, newest run first.
@@ -156,6 +156,9 @@ opens a page for those photos with the same checkboxes as **Auto-stack…** in t
 - Afterwards a click on a stack opens it in the stack window, to check the pick or delete the others.
 - **Undo** takes the stacks apart again. After a change in the stack window the run can no longer be
   undone there (undo goes newest run first).
+- **Photos taken out of stacks before** are left alone, as everywhere (see the table above), and
+  the summary says how many. **Include them** previews again with them; only stacking that preview
+  makes the culler forget that you took them apart.
 - The button shows only when the culler works for you: on the same address as Immich, and run with
   your API key.
 

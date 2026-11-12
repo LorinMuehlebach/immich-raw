@@ -89,6 +89,19 @@ describe('culler client', () => {
     expect((init.headers as Record<string, string>)['X-Raw-Editor']).toBe('1');
   });
 
+  it('asks for force only when wanted', async () => {
+    const f = vi.fn(async () => json(202, { runId: 'r4' }));
+    setCullerFetch(f);
+    const scope = { kind: 'assets' as const, ids: ['a', 'b'] };
+    await startRun(scope, true, undefined, true);
+    await startRun(scope, true);
+    const bodies = f.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)));
+    expect(bodies).toEqual([
+      { scope, dryRun: true, force: true },
+      { scope, dryRun: true },
+    ]);
+  });
+
   it("sends the Auto-stack options as the service's settings sections", async () => {
     const f = vi.fn(async () => json(202, { runId: 'r3' }));
     setCullerFetch(f);

@@ -155,6 +155,25 @@ def test_ungroup_takes_a_stack_apart_for_good(client):
     assert client.immich.stack_id_of("a0") is not None
 
 
+def test_a_forced_preview_is_applied_with_force(client):
+    day = {"kind": "day", "date": "2024-05-01"}
+
+    def start(body: dict) -> str:
+        return client.post(f"{BASE}/runs", json=body, cookies=OWNER, headers=WRITE).json()["runId"]
+
+    wait(client, start({"scope": day, "dryRun": False}))
+    client.immich.delete_stack(client.immich.stack_id_of("b0"))
+    plain = wait(client, start({"scope": day, "dryRun": True}))
+    assert plain["summary"]["takenApart"] == 3 and plain["force"] is False
+    forced = wait(client, start({"scope": day, "dryRun": True, "force": True}))
+    assert forced["force"] is True and forced["summary"]["takenApart"] == 0
+    applied = wait(
+        client, client.post(f"{BASE}/runs/{forced['id']}/apply", cookies=OWNER, headers=WRITE).json()["runId"]
+    )
+    assert applied["status"] == "done" and applied["force"] is True
+    assert client.immich.stack_id_of("b0") is not None
+
+
 def test_webhook_needs_the_secret(client):
     assert client.post(f"{BASE}/hooks/immich", json={}).status_code == 404
     assert client.post(f"{BASE}/hooks/immich", json={}, headers={"X-Culler-Secret": "nope"}).status_code == 404

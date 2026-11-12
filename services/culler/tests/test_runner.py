@@ -183,6 +183,22 @@ def test_deleted_stack_is_not_stacked_again(env):
     assert any("b0" in [f["frameId"] for f in g["frames"]] for g in forced["groups"])
 
 
+def test_a_forced_preview_forgets_nothing(env):
+    """A preview may include stacks the user took apart, but only applying it forgets that."""
+    immich, runner, _ = env
+    run(runner)
+    immich.delete_stack(immich.stack_id_of("b0"))
+    _, plain = run(runner, dry_run=True)
+    assert plain["counts"]["takenApart"] == 3
+    assert all("b0" not in [f["frameId"] for f in g["frames"]] for g in plain["groups"])
+    _, forced = run(runner, dry_run=True, force=True)
+    assert forced["counts"]["takenApart"] == 0
+    assert any("b0" in [f["frameId"] for f in g["frames"]] for g in forced["groups"])
+    _, later = run(runner)
+    assert later["counts"]["takenApart"] == 3
+    assert immich.stack_id_of("b0") is None
+
+
 def test_undo_puts_everything_back(env):
     immich, runner, store = env
     rid, _ = run(runner)

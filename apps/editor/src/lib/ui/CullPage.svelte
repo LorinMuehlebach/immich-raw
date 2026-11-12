@@ -39,6 +39,8 @@
   const backUrl = $derived(handoff?.returnPath ?? '/');
 
   let options = $state<CullOptions>(loadCullOptions());
+  /** Also stack the shots whose stack was taken apart in Immich (the culler leaves them alone otherwise). */
+  let force = $state(false);
   let busy = $state<'preview' | 'apply' | 'undo' | null>(null);
   let progress = $state.raw<CullRun | null>(null);
   /** The preview or the applied run on show. */
@@ -57,6 +59,7 @@
   const unread = $derived(handoff ? Math.max(0, handoff.expected - handoff.ids.length) : 0);
   const applied = $derived(!!run && !run.dryRun);
   const changes = $derived(run?.summary?.changes ?? 0);
+  const takenApart = $derived(run?.summary?.takenApart ?? 0);
   const cards = $derived(run?.report?.groups ? stackCards(run.report.groups, live, trashed) : []);
   // The culler undoes newest first: after a change in the stack window this run can't be undone.
   const changedSince = $derived(Object.keys(live).length > 0 || trashed.size > 0);
@@ -144,20 +147,33 @@
   const scope = () => ({ kind: 'assets' as const, ids: handoff?.ids ?? [] });
 
   async function preview() {
-    const r = await track(() => startRun(scope(), true, options), 'preview');
+    if (busy) return;
+    const r = await track(() => startRun(scope(), true, options, force), 'preview');
     if (r) show(r);
   }
 
   /** Applies the preview on show, or stacks right away. */
   async function stack() {
+    if (busy) return;
     const previewed = run?.dryRun ? run : null;
-    const r = await track(() => (previewed ? applyRun(previewed.id) : startRun(scope(), false, options)), 'apply');
+    const r = await track(() => (previewed ? applyRun(previewed.id) : startRun(scope(), false, options, force)), 'apply');
     if (r) show(r);
+  }
+
+  /** The shots taken out of stacks before count too: preview again with them. */
+  async function includeTakenApart() {
+    force = true;
+    await preview();
+  }
+
+  function setForce(on: boolean) {
+    force = on;
+    if (run?.dryRun) run = null; // the preview was made with the other choice
   }
 
   async function undo() {
     const done = run;
-    if (!done || done.dryRun) return;
+    if (busy || !done || done.dryRun) return;
     const r = await track(() => undoRun(done.id), 'undo');
     if (!r) return;
     show(null);
@@ -246,6 +262,12 @@
 
           <h3>What counts</h3>
           <CullOptionsFields {options} status={culler} disabled={!!busy || applied} onChange={setOptions} />
+          {#if force || takenApart}
+            <label class="force" title="Photos you took out of a stack, or whose stack you deleted, in Immich. The culler leaves them alone unless you include them here.">
+              <input type="checkbox" checked={force} disabled={!!busy || applied} onchange={(e) => setForce(e.currentTarget.checked)} />
+              Also stack photos taken out of stacks before
+            </label>
+          {/if}
           {#if culler?.eyes === false}<p class="dim small">Faces, eyes and smiles are off: the culler has no face models.</p>{/if}
           {#if culler?.people === false}<p class="dim small">People without a visible face aren't found: the culler has no people model.</p>{/if}
 
@@ -257,13 +279,15 @@
 
           <div class="buttons">
             {#if applied}
-              <button
-                onclick={undo}
-                disabled={!!busy || changedSince}
-                title={changedSince ? 'Stacks were changed in the stack window since, so this run can no longer be undone here' : 'Take the stacks apart and remove the tags again'}
-              >
-                Undo
-              </button>
+              {#if changes}
+                <button
+                  onclick={undo}
+                  disabled={!!busy || changedSince}
+                  title={changedSince ? 'Stacks were changed in the stack window since, so this run can no longer be undone here' : 'Take the stacks apart and remove the tags again'}
+                >
+                  Undo
+                </button>
+              {/if}
               <span class="spacer"></span>
               <a class="button primary" href={backUrl}>Back to Immich</a>
             {:else}
@@ -283,8 +307,19 @@
               </p>
             {:else if run.summary?.errors}
               <p class="err">{plural(run.summary.errors, 'change')} in Immich failed; the culler's log has the details.</p>
+            {:else if !changes}
+              <p class="dim">Nothing changed in Immich.</p>
             {:else if cards.length}
               <p class="dim">Click a stack to compare its shots, pick another one or delete the others.</p>
+            {/if}
+            {#if takenApart && !run.force}
+              <div class="note">
+                <p>
+                  {plural(takenApart, 'shot was', 'shots were')} left alone: their stacks were taken apart in Immich before (or they were taken out of
+                  one), and the culler doesn't stack them again on its own.
+                </p>
+                {#if !applied}<button onclick={includeTakenApart} disabled={!!busy}>Include them</button>{/if}
+              </div>
             {/if}
             {#if cards.length}
               <ul class="stacks">
@@ -298,7 +333,7 @@
                   </li>
                 {/each}
               </ul>
-            {:else}
+            {:else if !takenApart || run.force}
               <p class="dim">No similar photos to stack in this selection.</p>
             {/if}
           </section>
@@ -431,6 +466,35 @@
   .result {
     font-size: 13px;
   }
+  .force {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 3px;
+    cursor: pointer;
+  }
+  .force input {
+    accent-color: var(--accent);
+    margin: 0;
+  }
+  .note {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin: 8px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+  }
+  .note p {
+    flex: 1;
+    margin: 0;
+  }
+  .note button {
+    flex: none;
+    padding: 6px 14px;
+  }
   .stacks {
     list-style: none;
     margin: 12px 0 0;
@@ -509,6 +573,9 @@
     .buttons .button {
       padding: 10px 16px;
     }
+    .force {
+      min-height: 32px;
+    }
   }
   @media (max-width: 499px) {
     main {
@@ -516,6 +583,10 @@
     }
     .stacks {
       grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    }
+    .note {
+      flex-direction: column;
+      align-items: stretch;
     }
   }
 </style>

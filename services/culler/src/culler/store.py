@@ -37,6 +37,8 @@ MIGRATIONS = [
         run_id TEXT PRIMARY KEY, before TEXT NOT NULL, after TEXT NOT NULL, group_primary TEXT NOT NULL,
         asset_ids TEXT NOT NULL);
     """,
+    # Runs that also regroup stacks the user took apart: applying such a preview does the same.
+    "ALTER TABLE runs ADD COLUMN force INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -121,11 +123,18 @@ class Store:
 
     # --- runs -------------------------------------------------------------------------------------------
     def create_run(
-        self, run_id: str, origin: str, scope: dict, options: dict | None, dry_run: bool, source_run: str | None = None
+        self,
+        run_id: str,
+        origin: str,
+        scope: dict,
+        options: dict | None,
+        dry_run: bool,
+        source_run: str | None = None,
+        force: bool = False,
     ) -> None:
         self._x(
-            "INSERT INTO runs(id, origin, scope, options, dry_run, status, created_at, source_run) "
-            "VALUES(?, ?, ?, ?, ?, 'queued', ?, ?)",
+            "INSERT INTO runs(id, origin, scope, options, dry_run, status, created_at, source_run, force) "
+            "VALUES(?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
             (
                 run_id,
                 origin,
@@ -134,6 +143,7 @@ class Store:
                 int(dry_run),
                 utcnow(),
                 source_run,
+                int(force),
             ),
         )
 
@@ -282,6 +292,7 @@ def _run_row(r: sqlite3.Row, with_report: bool = True) -> dict:
         "scope": json.loads(r["scope"]),
         "options": json.loads(r["options"]) if r["options"] else None,
         "dryRun": bool(r["dry_run"]),
+        "force": bool(r["force"]),
         "status": r["status"],
         "phase": r["phase"],
         "done": r["done"],

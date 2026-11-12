@@ -57,6 +57,8 @@ export interface RunCounts {
   released: number;
   pending: number;
   excluded: number;
+  /** Of the excluded: shots whose stack the user took apart in Immich (a run with force includes them). */
+  takenApart?: number;
   changes: number;
   errors?: number;
 }
@@ -96,6 +98,8 @@ export interface CullRun {
   origin: string;
   scope: Record<string, unknown>;
   dryRun: boolean;
+  /** Also stacks the shots whose stack the user took apart. */
+  force?: boolean;
   status: 'queued' | 'running' | 'done' | 'failed';
   phase: string | null;
   done: number;
@@ -243,8 +247,13 @@ export function runOptions(o: CullOptions): Record<string, Record<string, boolea
   };
 }
 
-export const startRun = async (scope: RunScope, dryRun: boolean, options?: CullOptions): Promise<string> =>
-  runId(await call('POST', '/runs', options ? { scope, dryRun, options: runOptions(options) } : { scope, dryRun }));
+/** `force`: also stack the shots whose stack the user took apart (a preview forgets nothing). */
+export async function startRun(scope: RunScope, dryRun: boolean, options?: CullOptions, force = false): Promise<string> {
+  const body: Record<string, unknown> = { scope, dryRun };
+  if (options) body.options = runOptions(options);
+  if (force) body.force = true;
+  return runId(await call('POST', '/runs', body));
+}
 export const applyRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/apply`));
 export const undoRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/undo`));
 export const makeBest = async (groupId: string, assetId: string): Promise<string> =>

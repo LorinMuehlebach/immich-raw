@@ -165,6 +165,9 @@ describe('runs in words', () => {
       "3 stacks from 37 photos · 4 runner-ups · 3 set aside (1 lighting, 2 not sharp) · 2 still waiting for Immich's preview",
     );
     expect(describeRun({ groups: 1, photos: 3, runnerUps: 1 })).toBe('1 stack from 3 photos · 1 runner-up');
+    expect(describeRun({ groups: 0, photos: 27, excluded: 23, takenApart: 23 })).toBe(
+      '0 stacks from 27 photos · 23 left alone (taken out of stacks in Immich before)',
+    );
     expect(describeRun(null)).toBe('nothing to do');
   });
 

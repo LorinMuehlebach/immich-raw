@@ -194,6 +194,7 @@ export function describeRun(c: Partial<RunCounts> | null | undefined): string {
     parts.push(`${rejected} set aside (${why.join(', ')})`);
   }
   if (c.pending) parts.push(`${c.pending} still waiting for Immich's preview`);
+  if (c.takenApart) parts.push(`${c.takenApart} left alone (taken out of stacks in Immich before)`);
   return parts.join(' · ');
 }
 
