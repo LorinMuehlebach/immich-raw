@@ -108,6 +108,41 @@ def test_runner_reads_the_raw_file_when_previews_look_alike(dngs, tmp_path):
     store.close()
 
 
+def test_measurements_of_the_previous_version_are_brought_up_to_date(dngs, tmp_path):
+    """After an update that only adds animals, a run neither downloads nor decodes the RAW files again."""
+    scene, files = dngs
+    immich = __import__("fake_immich").FakeImmich()
+    preview = jpeg(variant(scene))
+    for i, k in enumerate(("base", "dark", "bright")):
+        immich.add(asset(k, f"{k}.DNG", i, make="Immich-RAW", model="Test Camera"), preview)
+        immich.originals[k] = files[k].read_bytes()
+    store = Store(tmp_path / "s.sqlite")
+    runner = Runner(
+        Config(data_dir=tmp_path), immich, store, lambda c: Analyzer(c, embedder=TinyEmbedder(), load_models=False)
+    )
+    _, first = run(runner, dry_run=True, scope=DAY)
+    analyzer = runner.analyzer(runner.cfg)
+    # As if the previous version had measured them: its key, and no animals looked for.
+    store._x("UPDATE features SET cache_key = ?", (analyzer.upgradable_key,))
+
+    downloads, analysed, upgraded = [], [], []
+    original, analyse, add_animals = immich.original, analyzer.analyse, analyzer.add_animals
+    immich.original = lambda aid, dest: (downloads.append(aid), original(aid, dest))[1]
+    analyzer.analyse = lambda *a, **kw: (analysed.append(a[1]), analyse(*a, **kw))[1]
+    analyzer.add_animals = lambda f, data: (upgraded.append(f.asset_id), add_animals(f, data))[1]
+    _, second = run(runner, dry_run=True, scope=DAY)
+    assert downloads == [] and analysed == []
+    assert sorted(upgraded) == ["base", "bright", "dark"]
+    assert roles(second) == roles(first)
+    assert {f["exposureFrom"] for g in second["groups"] for f in g["frames"]} == {"raw"}  # kept, not measured again
+    assert all(store.features(k, analyzer.cache_key, "th") for k in ("base", "dark", "bright"))
+
+    upgraded.clear()
+    run(runner, dry_run=True, scope=DAY)
+    assert upgraded == [] and analysed == [] and downloads == []  # now under the current key
+    store.close()
+
+
 def test_a_raw_bracket_is_found_from_the_raw_files(tmp_path):
     # As e2e/cull.mjs scene E: 0 / -2 / +2 EV by the shutter speed (1/250, 1/1000, 1/60 s at f/4, ISO 100).
     from datetime import timedelta

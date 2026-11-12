@@ -304,8 +304,9 @@ min_score = 0.4          # a face counts as smiling from this score
 - **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms, the people and animal detector
   about 30 ms). Only photos that have a neighbour within 90 s are measured.
 - **Models:** CLIP, YuNet (faces), MediaPipe's face landmarker (eyes, smiles) and its object
-  detector EfficientDet-Lite0 (people and animals, 7 MB). Updating to this version measures every
-  photo once again, because animals are now found too.
+  detector EfficientDet-Lite0 (people and animals, 7 MB). After updating to this version, a photo
+  already measured is only looked at again for animals: the culler fetches its preview again, but not
+  its RAW file (about 0.1 s a photo instead of 1.5 s for a RAW).
 - **Downloads:** for RAW files the original is downloaded as well.
 - **Cache:** measurements are cached in `/data`, so re-runs are quick.
 - **Memory and size:** about 1 GB of RAM while working; the image is about 1.8 GB including the

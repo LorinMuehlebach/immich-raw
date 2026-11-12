@@ -6,8 +6,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from culler.config import Config
 from culler.features.embedding import ClipEmbedder, Embedder
@@ -26,6 +27,10 @@ log = logging.getLogger(__name__)
 # Bump when a measurement changes, so cached features are recomputed.
 # 2: RAW exposure from the RAW file. 3: faces, people and smiles measured apart. 4: animals.
 FEATURE_VERSION = 4
+# Measurements of this version are brought up to date instead of measured again: only the animals
+# are new since, found on the preview (`add_animals`). Measuring again would download and decode
+# every RAW file once more (about 1.5 s a photo instead of 0.1 s).
+UPGRADABLE_VERSION = 3
 
 
 class Analyzer:
@@ -86,16 +91,33 @@ class Analyzer:
     def people_available(self) -> bool:
         return self.people is not None
 
+    def _key(self, version: int, analysis: dict[str, Any]) -> str:
+        payload = {"v": version, "eyes": self.eyes_available, "people": self.people_available, **analysis}
+        return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
     @property
     def cache_key(self) -> str:
         """Changes whenever cached features would come out differently."""
-        payload = {
-            "v": FEATURE_VERSION,
-            "eyes": self.eyes_available,
-            "people": self.people_available,
-            **self.cfg.analysis_dict(),
-        }
-        return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        return self._key(FEATURE_VERSION, self.cfg.analysis_dict())
+
+    @property
+    def upgradable_key(self) -> str:
+        """The key UPGRADABLE_VERSION gave the same settings (it didn't look for animals)."""
+        analysis = {k: v for k, v in self.cfg.analysis_dict().items() if k != "animals"}
+        return self._key(UPGRADABLE_VERSION, analysis)
+
+    def add_animals(self, f: Features, data: bytes) -> Features:
+        """UPGRADABLE_VERSION's measurements with the animals added: found on Immich's preview
+        (`data`, the one `f` was measured on), and sharpness on the largest. Nothing else is
+        measured again, so a RAW file isn't needed."""
+        rgb = decode_jpeg(data)
+        h, w = rgb.shape[:2]
+        found = self.people.detect(rgb) if self.people else []
+        animals = relevant_animals(found, self.cfg.subjects, w, h)
+        subject = None
+        if animals:
+            subject = measure_sharpness_parts(rgb, [face.box for face in f.faces], [a.box for a in animals]).subject
+        return replace(f, animals=animals, subject_sharpness=subject)
 
     def analyse(
         self, data: bytes, asset_id: str, source: Literal["raw", "jpeg", "render"], raw_path: Path | None = None
