@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from culler.brackets import find_brackets
 from culler.config import Config, run_overrides
 from culler.executor import TAG_CHECKS, ExecResult, describe, execute, settle_tags, tag_assets_of
 from culler.features import Analyzer
@@ -39,7 +40,7 @@ from culler.planner import (
     plan_undo,
     snapshot_before,
 )
-from culler.ranking import rank_group
+from culler.ranking import rank_brackets, rank_group
 from culler.store import FrameFlags, Store, utcnow
 
 log = logging.getLogger(__name__)
@@ -443,6 +444,7 @@ class Runner:
         active = [f for f in fs.frames if f.id not in excluded]
 
         placed: set[str] = set()
+        brackets: list[set[str]] = []
         if release:
             groups: list[list[str]] = [[f.id] for f in active]
             features: dict[str, Features] = {}
@@ -452,7 +454,12 @@ class Runner:
             features, pending = self.measure(active, live, cfg, progress, linked)
             measured = [f for f in active if f.id in features]
             emb = {fid: f.embedding for fid, f in features.items() if f.embedding is not None}
-            groups = group_frames(measured, emb, cfg.grouping)
+            # Exposure brackets are stacks of their own, kept out of the scenes' grouping.
+            brackets = [set(s) for s in find_brackets(measured, features, cfg.brackets)]
+            in_bracket = set().union(*brackets)
+            groups = group_frames([f for f in measured if f.id not in in_bracket], emb, cfg.grouping)
+            groups += [sorted(s, key=lambda fid: (frames_by_id[fid].taken, fid)) for s in brackets]
+            groups.sort(key=lambda g: (frames_by_id[g[0]].taken, frames_by_id[g[0]].name))
             groups += [[f.id] for f in active if f.id not in features]
             groups, placed, unplaced = apply_joins(groups, joins, set(features))
             ignored += [
@@ -474,7 +481,11 @@ class Runner:
             used.add(gid)
             pinned = next((f for f in g if f in rows and rows[f]["pinned"] and rows[f]["group_id"] == gid), None)
             group_frames_ = [frames_by_id[f] for f in g]
-            result = rank_group(group_frames_, features, cfg, pinned=pinned)
+            # A group holding a bracket set stays a bracket, also with shots the user added to it.
+            if any(s <= set(g) for s in brackets):
+                result = rank_brackets(group_frames_, features, cfg, pinned=pinned)
+            else:
+                result = rank_group(group_frames_, features, cfg, pinned=pinned)
             desired.append(DesiredGroup(gid, [frames_by_id[f] for f in result.frame_ids], result))
 
         grouped = {f.id for g in desired for f in g.frames}
@@ -629,7 +640,15 @@ class Runner:
                         "exposureFrom": feats.exposure_source if feats else None,
                     }
                 )
-            groups.append({"id": g.id, "primaryId": plan.group_primary.get(g.id), "frames": frames})
+            groups.append(
+                {
+                    "id": g.id,
+                    "primaryId": plan.group_primary.get(g.id),
+                    "kind": g.result.kind,
+                    "closeCall": g.result.close_call,
+                    "frames": frames,
+                }
+            )
         ops = [op_to_json(op) for op in plan.ops]
         return {
             "scope": scope.to_json(),
@@ -638,7 +657,9 @@ class Runner:
                 "photos": len(fs.frame_of),
                 "frames": len(fs.frames),
                 "groups": len(desired),
-                "best": len(desired),
+                "best": sum(1 for g in desired if g.result.kind == "burst"),
+                "brackets": sum(1 for g in desired if g.result.kind == "bracket"),
+                "closeCalls": sum(1 for g in desired if g.result.close_call),
                 "runnerUps": runner_ups,
                 "rejected": {k: rejected.get(k, 0) for k in ("lighting", "blur", "eyes")},
                 "released": len(released),

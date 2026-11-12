@@ -1,7 +1,7 @@
 """Settings: built-in defaults, then a TOML file, then environment variables.
 
 The TOML file is CULLER_CONFIG, or <data dir>/culler.toml when it exists. Its sections match the
-dataclasses below ([grouping], [lighting], [blur], [eyes], [people], [subjects], [smiles],
+dataclasses below ([grouping], [brackets], [lighting], [blur], [eyes], [people], [subjects], [smiles],
 [ranking], [tags], [watcher]).
 Runs started from the editor may pass `options` with the same shape to try other thresholds.
 """
@@ -25,6 +25,19 @@ class GroupingConfig:
     medoid_similarity: float = 0.82  # cosine to the group's most typical frame (stops drift in a pan)
     recent_frames: int = 3
     split_by_camera: bool = True
+
+
+@dataclass(frozen=True)
+class BracketsConfig:
+    """Exposure brackets (see brackets.py) get a stack of their own: the middle exposure in front,
+    none of them rejected."""
+
+    enabled: bool = True
+    min_frames: int = 3
+    max_gap_s: float = 2.0  # plus the previous shot's exposure time
+    min_spread_ev: float = 1.0  # the set's exposures span at least this
+    min_step_ev: float = 0.3  # exposures closer than this count as the same
+    min_follow: float = 0.5  # the measured brightness moves by at least this share of each step
 
 
 @dataclass(frozen=True)
@@ -153,6 +166,7 @@ class Config:
     webhook_secret: str = field(default="", repr=False)
     threads: int = 2
     grouping: GroupingConfig = field(default_factory=GroupingConfig)
+    brackets: BracketsConfig = field(default_factory=BracketsConfig)
     lighting: LightingConfig = field(default_factory=LightingConfig)
     blur: BlurConfig = field(default_factory=BlurConfig)
     eyes: EyesConfig = field(default_factory=EyesConfig)
@@ -179,7 +193,7 @@ class Config:
 
 
 # Section names a run's `options` may change. Connection settings and the tag root are not.
-OVERRIDABLE = {"grouping", "lighting", "blur", "eyes", "people", "subjects", "smiles", "ranking"}
+OVERRIDABLE = {"grouping", "brackets", "lighting", "blur", "eyes", "people", "subjects", "smiles", "ranking"}
 
 
 def _coerce(name: str, current: Any, value: Any) -> Any:

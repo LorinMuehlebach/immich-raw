@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -22,7 +23,7 @@ RENDER_KEY = "raw-editor.render"
 CULL_KEY = "raw-editor.cull"
 APP_ID = "immich-raw-culler@0.1.0"
 
-Role = Literal["best", "runner-up", "rejected"]
+Role = Literal["best", "runner-up", "rejected", "bracket"]
 Reason = Literal["lighting", "blur", "eyes"]
 
 
@@ -34,6 +35,32 @@ def parse_time(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return t if t.tzinfo else t.replace(tzinfo=UTC)
+
+
+def parse_exposure_time(value: Any) -> float | None:
+    """Seconds from Immich's exposure time: '1/250', '0.5', '30' or a number."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        t = float(value)
+    else:
+        text = str(value).strip().removesuffix("s").strip()
+        try:
+            if "/" in text:
+                num, den = text.split("/", 1)
+                t = float(num) / float(den)
+            else:
+                t = float(text)
+        except (ValueError, ZeroDivisionError):
+            return None
+    return t if math.isfinite(t) and t > 0 else None
+
+
+def camera_exposure_ev(exposure_time: float | None, f_number: float | None, iso: float | None) -> float | None:
+    """How much light the settings let in, in stops (more = brighter): log2(t * ISO/100 / N^2)."""
+    if not exposure_time or not f_number or not iso or exposure_time <= 0 or f_number <= 0 or iso <= 0:
+        return None
+    return math.log2(exposure_time * iso / 100 / (f_number * f_number))
 
 
 def extension(name: str) -> str:
@@ -85,6 +112,13 @@ class Asset:
     visibility: str = "timeline"
     width: int | None = None
     height: int | None = None
+    exposure_time: float | None = None  # seconds
+    f_number: float | None = None
+    iso: float | None = None
+
+    @property
+    def exposure_ev(self) -> float | None:
+        return camera_exposure_ev(self.exposure_time, self.f_number, self.iso)
 
     @property
     def is_raw(self) -> bool:
@@ -130,6 +164,9 @@ class Asset:
             visibility=d.get("visibility", "timeline"),
             width=d.get("width"),
             height=d.get("height"),
+            exposure_time=parse_exposure_time(exif.get("exposureTime")),
+            f_number=exif.get("fNumber"),
+            iso=exif.get("iso"),
         )
 
 
@@ -156,6 +193,8 @@ class Frame:
     favorite: bool = False
     starred: bool = False  # the user gave it 1-5 stars
     duplicate_ids: frozenset[str] = frozenset()
+    exposure_ev: float | None = None  # the camera settings' exposure (see camera_exposure_ev)
+    exposure_time: float | None = None  # seconds
 
 
 @dataclass
@@ -324,9 +363,10 @@ class FrameResult:
 
 @dataclass
 class GroupResult:
-    frame_ids: list[str]  # ranked: best first
+    frame_ids: list[str]  # ranked: best first (for a bracket: the shot in front)
     results: dict[str, FrameResult]
     close_call: bool = False  # the best and the next shot nearly tied: worth a look
+    kind: Literal["burst", "bracket"] = "burst"
 
     @property
     def best(self) -> str:

@@ -9,6 +9,7 @@ those that survived longer first.
 
 from __future__ import annotations
 
+from culler.brackets import middle
 from culler.checks import CHECKS, Basis, Candidate
 from culler.config import Config
 from culler.features.exposure import subject_exposure, subject_target
@@ -121,3 +122,44 @@ def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
         out["smiling"] = f.faces_smiling(cfg.smiles.min_score)
         out["smileFaces"] = sum(1 for face in f.faces if face.smile is not None)
     return out
+
+
+def rank_brackets(
+    frames: list[Frame], features: dict[str, Features], cfg: Config, pinned: str | None = None
+) -> GroupResult:
+    """An exposure bracket: kept whole, nothing rejected. In front: the user's pick (or a sole
+    favourite), else the middle exposure; the others follow from dark to bright."""
+    by_id = {f.id: f for f in frames}
+    front_id: str | None = pinned if pinned in by_id else None
+    if front_id is None and cfg.ranking.respect_favorites:
+        favourites = [f for f in frames if f.favorite]
+        if len(favourites) == 1:
+            front_id = favourites[0].id
+    is_pinned = front_id is not None
+    front = by_id[front_id] if front_id else middle(frames)
+    rest = sorted(
+        (f for f in frames if f.id != front.id),
+        key=lambda f: (f.exposure_ev is None, f.exposure_ev or 0.0, f.taken, f.name),
+    )
+    ordered = [front, *rest]
+    ref = features.get(front.id)
+    results: dict[str, FrameResult] = {}
+    for rank, f in enumerate(ordered, start=1):
+        feats = features.get(f.id)
+        metrics: dict = {}
+        if feats and ref:
+            metrics["evVsBest"] = round(feats.exposure.key - ref.exposure.key, 2)
+            metrics["clipHiPct"] = round(100 * feats.exposure.clip_hi, 1)
+            metrics["clipLoPct"] = round(100 * feats.exposure.clip_lo, 1)
+        if f.exposure_ev is not None and front.exposure_ev is not None:
+            metrics["bracketEv"] = round(f.exposure_ev - front.exposure_ev, 1)
+        results[f.id] = FrameResult(
+            frame_id=f.id,
+            role="bracket",
+            reason=None,
+            rank=rank,
+            score=0.0,
+            pinned=is_pinned and f.id == front.id,
+            metrics=metrics,
+        )
+    return GroupResult(frame_ids=[f.id for f in ordered], results=results, kind="bracket")

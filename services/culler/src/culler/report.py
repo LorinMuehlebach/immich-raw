@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-ICON = {"best": "★", "runner-up": "◐", "rejected": "✕"}
+ICON = {"best": "★", "runner-up": "◐", "rejected": "✕", "bracket": "±"}
 
 
 def describe_metrics(frame: dict[str, Any]) -> str:
     m = frame.get("metrics") or {}
     parts = []
     reason = frame.get("reason")
-    if reason == "lighting" or (m.get("evVsBest") and abs(m["evVsBest"]) >= 0.3):
+    if m.get("bracketEv") is not None:
+        parts.append(f"bracket {m['bracketEv']:+.1f} EV")
+    elif reason == "lighting" or (m.get("evVsBest") and abs(m["evVsBest"]) >= 0.3):
         parts.append(f"{m.get('evVsBest', 0):+.1f} EV vs best")
     if m.get("clipHiPct", 0) >= 1:
         parts.append(f"{m['clipHiPct']:.0f} % blown highlights")
@@ -38,6 +40,8 @@ def format_report(report: dict[str, Any]) -> str:
         f"{c['groups']} stacks from {c['photos']} photos ({c['frames']} captures) · {c['runnerUps']} runner-ups · "
         f"rejected: {rej['lighting']} lighting, {rej['blur']} blur, {rej['eyes']} eyes",
     ]
+    if c.get("brackets"):
+        lines.append(f"{c['brackets']} of the stacks are exposure brackets (none rejected)")
     if c.get("pending"):
         lines.append(f"{c['pending']} photos are still waiting for Immich's preview and were skipped")
     if c.get("released"):
@@ -45,7 +49,8 @@ def format_report(report: dict[str, Any]) -> str:
     for i, g in enumerate(report["groups"], start=1):
         frames = g["frames"]
         times = sorted(f["taken"] for f in frames)
-        lines.append(f"\nStack {i}: {len(frames)} photos, {times[0][11:19]}-{times[-1][11:19]}")
+        kind = " (exposure bracket)" if g.get("kind") == "bracket" else ""
+        lines.append(f"\nStack {i}: {len(frames)} photos, {times[0][11:19]}-{times[-1][11:19]}{kind}")
         for f in frames:
             role = f["role"] if f["role"] != "rejected" else f"rejected ({f['reason']})"
             pin = " (your pick)" if f.get("pinned") else ""
