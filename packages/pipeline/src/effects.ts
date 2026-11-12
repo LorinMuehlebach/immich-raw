@@ -332,11 +332,23 @@ uniform vec2 uVigOpt;   // style (1 highlight priority, 2 color priority, 3 pain
 uniform vec4 uGrain;    // amount (std. dev.), cell size (full-resolution px), roughness, -
 const vec3 FX_LUMA = vec3(0.2126, 0.7152, 0.0722);
 
+#ifdef WIDE_OUT
+// Extended sRGB (see encX in the tone pass): not clipped, the curve mirrored below 0.
+vec3 fxDecode(vec3 v) {
+  vec3 a = abs(v);
+  return sign(v) * mix(a / 12.92, pow((a + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), a));
+}
+vec3 fxEncode(vec3 v) {
+  vec3 a = abs(v);
+  return sign(v) * mix(12.92 * a, 1.055 * pow(a, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), a));
+}
+#else
 vec3 fxDecode(vec3 v) { return mix(v / 12.92, pow((v + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), v)); }
 vec3 fxEncode(vec3 v) {
   v = clamp(v, 0.0, 1.0);
   return mix(12.92 * v, 1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), v));
 }
+#endif
 
 // Radius 1 at the corners of the crop. Roundness 0 follows the crop's aspect, +1 is a
 // circle, -1 a rounded rectangle.
@@ -363,7 +375,15 @@ vec3 applyVignette(vec3 enc, vec2 t) {
   if (uVig.x > 0.0) {
     // Lighten like an exposure change (up to +4 EV), with a shoulder that keeps white white.
     float g = exp2(4.0 * w);
+#ifdef WIDE_OUT
+    // Negative (out-of-gamut) parts just scale: the shoulder is for 0..1.
+    if (style == 1) {
+      vec3 p = max(lin, 0.0);
+      return fxEncode(p * g / (1.0 + p * (g - 1.0)) + min(lin, 0.0) * g);
+    }
+#else
     if (style == 1) return fxEncode(lin * g / (1.0 + lin * (g - 1.0)));
+#endif
     float y = max(dot(lin, FX_LUMA), 1e-6);
     return fxEncode(lin * (g / (1.0 + y * (g - 1.0))));
   }
@@ -424,7 +444,11 @@ vec3 applyGrain(vec3 enc, vec2 p, float fp) {
   float m = grainOctave(p, 4.3 * c, fp, mat2(0.28, -0.96, 0.96, 0.28), vec2(3.71, 11.93), 3u);
   float g = mix(n0, 0.55 * n0 + 0.85 * n1, r) * (1.0 + 0.6 * r * m) / (1.0 + 0.2 * r);
   // Mostly in the midtones, like film; luminance only.
+#ifdef WIDE_OUT
+  float y = clamp(dot(enc, FX_LUMA), 0.0, 1.0);
+#else
   float y = dot(enc, FX_LUMA);
+#endif
   float k = 0.35 + 0.65 * (1.0 - (2.0 * y - 1.0) * (2.0 * y - 1.0));
   return enc + uGrain.x * k * g;
 }

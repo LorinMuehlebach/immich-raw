@@ -22,12 +22,18 @@ export interface LogoWatermarkOptions {
   opacity: number;
 }
 
-/** Pixels the mark is blended into, changed in place. */
+/** Pixels the mark is blended into, changed in place: 8-bit (0-255) or 16-bit (0-65535). */
 export interface OverlayTarget {
-  data: Uint8ClampedArray;
+  data: Uint8ClampedArray | Uint16Array;
   width: number;
   height: number;
 }
+
+/** An 8-bit sRGB overlay colour -> encoded values (0..1) in the target's colour space. */
+export type OverlayConvert = (r: number, g: number, b: number) => readonly [number, number, number];
+
+/** The image a watermark is drawn into; ImageData and the export's 16-bit pixels both fit. */
+export type WatermarkTarget = OverlayTarget & { colorSpace?: PredefinedColorSpace };
 
 const MIN_FONT_PX = 8;
 const MIN_LOGO_PX = 8;
@@ -98,16 +104,36 @@ export function logoLayout(
 }
 
 /**
- * Blends an RGBA overlay (straight alpha, as getImageData gives it) over `dst` at (x, y), in
- * place, clipped to `dst`. The photo's own alpha is kept.
+ * Blends an 8-bit sRGB RGBA overlay (straight alpha, as getImageData gives it) over `dst` at
+ * (x, y), in place, clipped to `dst`. The photo's own alpha is kept. `convert` takes the
+ * overlay's colours into the photo's colour space; a 16-bit photo gets them scaled to its range.
  */
-export function compositeOverlay(dst: OverlayTarget, overlay: OverlayTarget, x: number, y: number): void {
+export function compositeOverlay(dst: OverlayTarget, overlay: { data: Uint8ClampedArray; width: number; height: number }, x: number, y: number, convert?: OverlayConvert): void {
   const x0 = Math.max(0, x);
   const y0 = Math.max(0, y);
   const x1 = Math.min(dst.width, x + overlay.width);
   const y1 = Math.min(dst.height, y + overlay.height);
   const d = dst.data;
   const o = overlay.data;
+  if (convert || d instanceof Uint16Array) {
+    const max = d instanceof Uint16Array ? 65535 : 255;
+    const toDst: OverlayConvert = convert ?? ((r, g, b) => [r / 255, g / 255, b / 255]);
+    for (let row = y0; row < y1; row++) {
+      let di = (row * dst.width + x0) * 4;
+      let oi = ((row - y) * overlay.width + (x0 - x)) * 4;
+      for (let col = x0; col < x1; col++, di += 4, oi += 4) {
+        const a = o[oi + 3]!;
+        if (a === 0) continue;
+        const k = a / 255;
+        const c = toDst(o[oi]!, o[oi + 1]!, o[oi + 2]!);
+        for (let ch = 0; ch < 3; ch++) {
+          const v = d[di + ch]! + (c[ch]! * max - d[di + ch]!) * k;
+          d[di + ch] = v <= 0 ? 0 : v >= max ? max : Math.round(v);
+        }
+      }
+    }
+    return;
+  }
   for (let row = y0; row < y1; row++) {
     let di = (row * dst.width + x0) * 4;
     let oi = ((row - y) * overlay.width + (x0 - x)) * 4;
@@ -130,13 +156,14 @@ export function compositeOverlay(dst: OverlayTarget, overlay: OverlayTarget, x: 
 
 /**
  * Draws the text into the image, in place, and returns it (browser only: OffscreenCanvas).
- * Blank text or opacity 0 leaves it unchanged.
+ * Blank text or opacity 0 leaves it unchanged. `convert`: see compositeOverlay.
  */
-export function drawWatermark(img: ImageData, opts: WatermarkOptions): ImageData {
+export function drawWatermark<T extends WatermarkTarget>(img: T, opts: WatermarkOptions, convert?: OverlayConvert): T {
   const text = opts.text.trim();
   const alpha = Math.min(1, Math.max(0, (opts.opacity || 0) / 100));
   if (!text || alpha === 0) return img;
-  const { width: w, height: h, colorSpace } = img;
+  const { width: w, height: h } = img;
+  const colorSpace = img.colorSpace ?? 'srgb';
 
   const measureCtx = context2d(1, 1, colorSpace);
   const measure = (px: number) => {
@@ -172,24 +199,25 @@ export function drawWatermark(img: ImageData, opts: WatermarkOptions): ImageData
   ctx.globalAlpha = alpha;
   ctx.fillStyle = opts.color === 'white' ? '#fff' : '#000';
   ctx.fillText(text, x, y);
-  compositeOverlay(img, ctx.getImageData(0, 0, x1 - x0, y1 - y0, { colorSpace }), x0, y0);
+  compositeOverlay(img, ctx.getImageData(0, 0, x1 - x0, y1 - y0, { colorSpace }), x0, y0, convert);
   return img;
 }
 
 /**
  * Draws a logo (a decoded PNG, transparency kept) into the image, in place, and returns it
- * (browser only). Opacity 0 leaves it unchanged.
+ * (browser only). Opacity 0 leaves it unchanged. `convert`: see compositeOverlay.
  */
-export function drawLogoWatermark(img: ImageData, logo: ImageBitmap | OffscreenCanvas, opts: LogoWatermarkOptions): ImageData {
+export function drawLogoWatermark<T extends WatermarkTarget>(img: T, logo: ImageBitmap | OffscreenCanvas, opts: LogoWatermarkOptions, convert?: OverlayConvert): T {
   const alpha = Math.min(1, Math.max(0, (opts.opacity || 0) / 100));
   if (alpha === 0 || !logo.width || !logo.height) return img;
+  const colorSpace = img.colorSpace ?? 'srgb';
   const box = logoLayout(img.width, img.height, logo, opts);
-  const ctx = context2d(box.width, box.height, img.colorSpace);
+  const ctx = context2d(box.width, box.height, colorSpace);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.globalAlpha = alpha;
   ctx.drawImage(logo, 0, 0, box.width, box.height);
-  compositeOverlay(img, ctx.getImageData(0, 0, box.width, box.height, { colorSpace: img.colorSpace }), box.x, box.y);
+  compositeOverlay(img, ctx.getImageData(0, 0, box.width, box.height, { colorSpace }), box.x, box.y, convert);
   return img;
 }
 

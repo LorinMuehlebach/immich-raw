@@ -67,8 +67,8 @@ const SETTINGS = {
 const CODEC_SETTINGS = {
   ...SETTINGS,
   presets: {
-    low: { ...SETTINGS.presets.low, format: 'webp', quality: { webp: 80 }, watermark },
-    medium: { ...SETTINGS.presets.medium, format: 'avif', size: { mode: 'longEdge', value: 1200, unit: 'px' }, quality: { avif: 60 }, metadata: 'all', naming: '{name}-{preset}' },
+    low: { ...SETTINGS.presets.low, format: 'webp', color: { space: 'display-p3', bits: 8 }, quality: { webp: 80 }, watermark },
+    medium: { ...SETTINGS.presets.medium, format: 'avif', color: { space: 'display-p3', bits: 8 }, size: { mode: 'longEdge', value: 1200, unit: 'px' }, quality: { avif: 60 }, metadata: 'all', naming: '{name}-{preset}' },
     high: { ...SETTINGS.presets.high, format: 'jxl', size: { mode: 'longEdge', value: 1000, unit: 'px' }, quality: { jxl: 85 }, metadata: 'all', naming: '{name}-{preset}' },
   },
 };
@@ -317,7 +317,8 @@ try {
   const vp8x = riff.find((c) => c.type === 'VP8X')?.data;
   const webpXmp = riff.find((c) => c.type === 'XMP ')?.data.toString('utf8') ?? '';
   const webpSize = await decoded(webp.buf, 'image/webp');
-  check('Low as WebP: VP8X with EXIF and XMP, 1000 px wide, decodes', webp.name === `${base}-low.webp` && riff.map((c) => c.type).join() === 'VP8X,VP8 ,EXIF,XMP ' && (vp8x?.[0] & 0x0c) === 0x0c && riff.find((c) => c.type === 'EXIF')?.data.toString('latin1', 0, 4) === 'II*\0' && webpXmp.includes('e2e') && webpSize?.width === 1000, {
+  const webpIcc = riff.find((c) => c.type === 'ICCP')?.data;
+  check('Low as Display P3 WebP: VP8X with ICC profile, EXIF and XMP, 1000 px wide, decodes', webp.name === `${base}-low.webp` && riff.map((c) => c.type).join() === 'VP8X,ICCP,VP8 ,EXIF,XMP ' && (vp8x?.[0] & 0x2c) === 0x2c && webpIcc?.toString('latin1', 36, 40) === 'acsp' && riff.find((c) => c.type === 'EXIF')?.data.toString('latin1', 0, 4) === 'II*\0' && webpXmp.includes('e2e') && webpSize?.width === 1000, {
     name: webp.name,
     chunks: riff.map((c) => c.type),
     decoded: webpSize,
@@ -329,7 +330,7 @@ try {
   const brand = avif.buf.toString('latin1', 8, 12);
   const nclx = avifNclx(avif.buf);
   const avifSize = await decoded(avif.buf, 'image/avif');
-  check('Medium as AVIF: sRGB colour description, 1200 px, decodes', avif.name === `${base}-medium.avif` && brand === 'avif' && nclx.length > 0 && nclx.every(([p, t]) => p === 1 && t === 13) && longEdge(avifSize) === 1200, {
+  check('Medium as Display P3 AVIF: P3 colour description, 1200 px, decodes', avif.name === `${base}-medium.avif` && brand === 'avif' && nclx.length > 0 && nclx.every(([p, t]) => p === 12 && t === 13) && longEdge(avifSize) === 1200, {
     name: avif.name,
     brand,
     nclx,
@@ -348,6 +349,19 @@ try {
     bytes: jxl.buf.length,
     seconds: jxl.seconds,
   });
+
+  // JPEG in Adobe RGB: the profile in APP2, Exif ColorSpace uncalibrated.
+  await page.evaluate((s) => localStorage.setItem('raw-editor.export', JSON.stringify({ ...s, presets: { ...s.presets, high: { ...s.presets.high, format: 'jpeg', color: { space: 'adobe-rgb', bits: 8 } } } })), CODEC_SETTINGS);
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  const adobe = await download(page.getByRole('button', { name: 'High', exact: true }));
+  const app2 = (() => {
+    for (let p = 2; p + 4 < adobe.buf.length && adobe.buf[p + 1] !== 0xda; p += 2 + adobe.buf.readUInt16BE(p + 2)) {
+      if (adobe.buf[p + 1] === 0xe2 && adobe.buf.toString('latin1', p + 4, p + 15) === 'ICC_PROFILE') return adobe.buf.subarray(p + 18, p + 2 + adobe.buf.readUInt16BE(p + 2));
+    }
+    return null;
+  })();
+  check('High as Adobe RGB JPEG: ICC profile in APP2', !!app2 && app2.toString('latin1', 36, 40) === 'acsp' && app2.includes(Buffer.from('Adobe RGB (1998)')) && longEdge(jpegSize(adobe.buf)) === 1000, { name: adobe.name, icc: app2?.length });
 
   // Logo watermark: a red PNG picked in the settings, drawn into the bottom right of Low.
   const logoPng = Buffer.from(

@@ -8,9 +8,9 @@
 export type SharpenMedia = 'screen' | 'matte' | 'glossy';
 export type SharpenLevel = 'low' | 'standard' | 'high';
 
-/** Structural type so Node tests (no ImageData) work; ImageData satisfies it. */
+/** Structural type so Node tests (no ImageData) work; ImageData satisfies it. 16-bit: 0-65535. */
 export interface RgbaImage {
-  data: Uint8ClampedArray;
+  data: Uint8ClampedArray | Uint16Array;
   width: number;
   height: number;
 }
@@ -39,12 +39,19 @@ export function sharpenParams(media: SharpenMedia, level: SharpenLevel, ppi: num
   return { radius, amount, threshold: THRESHOLD };
 }
 
-/** Sharpens in place: unsharp mask on luma only (apply the same luma delta to R, G, B so colours don't shift), alpha untouched. */
-export function outputSharpen(img: RgbaImage, media: SharpenMedia, level: SharpenLevel, ppi: number): void {
+/**
+ * Sharpens in place: unsharp mask on luma only (apply the same luma delta to R, G, B so colours
+ * don't shift), alpha untouched. `luma`: the weights of R, G and B in the image's colour space
+ * (Rec. 709 / sRGB by default). 16-bit images get the same threshold, scaled to their range.
+ */
+export function outputSharpen(img: RgbaImage, media: SharpenMedia, level: SharpenLevel, ppi: number, luma: readonly [number, number, number] = [KR, KG, KB]): void {
   const { data, width: w, height: h } = img;
   if (w < 3 || h < 3) return;
-  const { radius, amount, threshold } = sharpenParams(media, level, ppi);
+  const { radius, amount, threshold: threshold8 } = sharpenParams(media, level, ppi);
   if (!(amount > 0)) return;
+  const wide = data instanceof Uint16Array;
+  const threshold = wide ? threshold8 * 257 : threshold8;
+  const [kr, kg, kb] = luma;
   const k = gaussianHalfKernel(radius);
   const r = k.length - 1;
   const k0 = k[0];
@@ -54,7 +61,7 @@ export function outputSharpen(img: RgbaImage, media: SharpenMedia, level: Sharpe
   const hblur = new Float32Array(w * h);
   const row = new Float32Array(w + 2 * r);
   for (let y = 0; y < h; y++) {
-    for (let x = 0, p = y * w * 4; x < w; x++, p += 4) row[x + r] = KR * data[p] + KG * data[p + 1] + KB * data[p + 2];
+    for (let x = 0, p = y * w * 4; x < w; x++, p += 4) row[x + r] = kr * data[p]! + kg * data[p + 1]! + kb * data[p + 2]!;
     const first = row[r];
     const last = row[r + w - 1];
     for (let i = 0; i < r; i++) {
@@ -83,21 +90,30 @@ export function outputSharpen(img: RgbaImage, media: SharpenMedia, level: Sharpe
       for (let x = 0; x < w; x++) blur[x] += ki * (hblur[a + x] + hblur[b + x]);
     }
     for (let x = 0, p = o * 4; x < w; x++, p += 4) {
-      const R = data[p];
-      const G = data[p + 1];
-      const B = data[p + 2];
-      let d = KR * R + KG * G + KB * B - blur[x];
+      const R = data[p]!;
+      const G = data[p + 1]!;
+      const B = data[p + 2]!;
+      let d = kr * R + kg * G + kb * B - blur[x]!;
       const ad = Math.abs(d);
       if (ad <= threshold) continue;
       if (ad < 2 * threshold) d *= (ad - threshold) / threshold;
       d *= amount;
-      // Uint8ClampedArray rounds and clamps.
-      data[p] = R + d;
-      data[p + 1] = G + d;
-      data[p + 2] = B + d;
+      if (wide) {
+        // A Uint16Array wraps around: round and clamp here.
+        data[p] = clamp16(R + d);
+        data[p + 1] = clamp16(G + d);
+        data[p + 2] = clamp16(B + d);
+      } else {
+        // Uint8ClampedArray rounds and clamps.
+        data[p] = R + d;
+        data[p + 1] = G + d;
+        data[p + 2] = B + d;
+      }
     }
   }
 }
+
+const clamp16 = (v: number) => (v <= 0 ? 0 : v >= 65535 ? 65535 : Math.round(v));
 
 /** One half of a normalised Gaussian kernel (index 0 is the centre), truncated at 3 sigma. */
 function gaussianHalfKernel(sigma: number): Float64Array {

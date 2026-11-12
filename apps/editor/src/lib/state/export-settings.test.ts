@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_EXPORT_SETTINGS,
+  colorChoices,
   exportFilename,
   fillTemplate,
   fillText,
@@ -12,6 +13,7 @@ import {
   safeFileName,
   sizeShort,
   sizeSummary,
+  validColor,
   withSizeMode,
   withSizeUnit,
   withSizeValue,
@@ -28,6 +30,7 @@ describe('normalizeExportSettings', () => {
     const stored = structuredClone(DEFAULT_EXPORT_SETTINGS);
     stored.presets.low = {
       format: 'webp',
+      color: { space: 'display-p3', bits: 8 },
       size: { mode: 'width', value: 20, unit: 'cm' },
       ppi: 240,
       quality: { jpeg: 70, webp: 66, avif: 40, jxl: 91 },
@@ -107,6 +110,27 @@ describe('normalizeExportSettings', () => {
     expect(high.quality).toEqual({ jpeg: 100, webp: DEFAULT_EXPORT_SETTINGS.presets.high.quality.webp, avif: 30, jxl: 78 });
     expect(high.lossless).toBe(false);
     for (const format of ['webp', 'jxl'] as const) expect(normalizeExportSettings({ presets: { low: { format } } }).presets.low.format).toBe(format);
+  });
+
+  it('keeps only the colour settings the file type can hold', () => {
+    const color = (format: string, space: string, bits: number) => normalizeExportSettings({ presets: { high: { format, color: { space, bits } } } }).presets.high.color;
+    expect(color('tiff', 'prophoto', 16)).toEqual({ space: 'prophoto', bits: 16 });
+    expect(color('png', 'adobe-rgb', 8)).toEqual({ space: 'adobe-rgb', bits: 8 });
+    // ProPhoto needs 16 bits: PNG and TIFF switch to them, JPEG falls back to sRGB.
+    expect(color('png', 'prophoto', 8)).toEqual({ space: 'prophoto', bits: 16 });
+    expect(color('jpeg', 'prophoto', 16)).toEqual({ space: 'srgb', bits: 8 });
+    expect(color('jpeg', 'display-p3', 16)).toEqual({ space: 'display-p3', bits: 8 });
+    expect(color('avif', 'adobe-rgb', 8)).toEqual({ space: 'srgb', bits: 8 });
+    expect(color('avif', 'display-p3', 8)).toEqual({ space: 'display-p3', bits: 8 });
+    expect(color('jxl', 'display-p3', 8)).toEqual({ space: 'srgb', bits: 8 });
+    expect(color('tiff', 'rec2020', 12)).toEqual({ space: 'srgb', bits: 8 });
+    expect(normalizeExportSettings({ presets: { low: {} } }).presets.low.color).toEqual({ space: 'srgb', bits: 8 });
+  });
+
+  it('lists the colour choices of each file type', () => {
+    expect(colorChoices('tiff')).toEqual({ spaces: ['srgb', 'display-p3', 'adobe-rgb', 'prophoto'], bits: [8, 16] });
+    expect(colorChoices('webp').bits).toEqual([8]);
+    expect(validColor('webp', { space: 'adobe-rgb', bits: 16 })).toEqual({ space: 'adobe-rgb', bits: 8 });
   });
 
   it('does not share objects with the defaults', () => {
@@ -200,6 +224,8 @@ describe('summaries', () => {
     expect(presetSummary({ ...d.medium, format: 'avif' })).toBe('AVIF · Long edge 3840 px · quality 63');
     expect(presetSummary({ ...d.medium, format: 'jxl', lossless: true })).toBe('JPEG XL · Long edge 3840 px · lossless');
     expect(presetSummary({ ...d.high, watermark: { ...d.high.watermark, enabled: true, kind: 'image' } })).toBe('JPEG · Full size · quality 95 · logo watermark');
+    expect(presetSummary({ ...d.high, format: 'tiff', color: { space: 'prophoto', bits: 16 } })).toBe('TIFF · Full size · 16-bit · ProPhoto RGB');
+    expect(formatShort({ ...d.high, format: 'png', color: { space: 'srgb', bits: 16 } })).toBe('PNG 16-bit');
   });
 
   it('gives each preset button its format line', () => {

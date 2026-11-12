@@ -4,6 +4,7 @@
 // is the JPEG itself exported. Other images are exported as they are, at the preset's size and
 // type.
 import { RENDER_KEY } from '@immich-raw/inject/raw';
+import type { Pixels } from '@immich-raw/pipeline';
 import { RECIPE_KEY } from '@immich-raw/recipe';
 import {
   AssetOrder,
@@ -21,7 +22,7 @@ import { exportFilename, type ExportPreset, type ExportPresetId } from '../state
 import { loadLogoBitmap } from '../state/logos.ts';
 import { mapLimit, planItems, type AlbumItem, type PlanAsset } from './album-plan.ts';
 import { captureDate } from './metadata.ts';
-import { finishExport, type OutputStep } from './output.ts';
+import { finishExport, outputColor, type OutputStep } from './output.ts';
 import type { Destination } from './destination.ts';
 import { RawRenderer, type RawStep } from './raw-render.ts';
 
@@ -185,6 +186,7 @@ async function decodeImage(blob: Blob): Promise<ImageData | null> {
  */
 export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promise<AlbumResult> {
   const result: AlbumResult = { written: [], copied: [], failed: [], cancelled: false, notes: [] };
+  const color = outputColor(o.preset);
   const wm = o.preset.watermark;
   // Decoded once for the whole run; every photo draws the same logo.
   const logo = wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
@@ -205,9 +207,10 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
     const asset = await getAssetInfo({ id: item.id });
     const owner = asset.owner?.name ?? o.fallbackOwner;
     const names = { originalFileName: asset.originalFileName, preset: o.presetId, date: captureDate(asset), seq: i + 1, seqDigits, album: plan.source.name, owner };
-    let image: ImageData | null;
+    let image: Pixels | ImageData | null;
     if (item.kind === 'raw') {
-      image = await raws.render(asset, await loadRecipe(asset.id), (s, f) => report(s, f));
+      // Rendered straight into the export's colour space and bit depth.
+      image = await raws.render(asset, await loadRecipe(asset.id), (s, f) => report(s, f), color);
     } else {
       report('download');
       const bytes = await downloadUncached(asset.id, (f) => report('download', f));
@@ -247,7 +250,9 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
   };
 
   try {
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(o.parallel, total)) }, worker));
+    // A 16-bit photo takes twice the memory of an 8-bit one: at most two at once.
+    const parallel = color.bits === 16 ? Math.min(2, o.parallel) : o.parallel;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(parallel, total)) }, worker));
   } finally {
     raws.dispose();
     logo?.close();

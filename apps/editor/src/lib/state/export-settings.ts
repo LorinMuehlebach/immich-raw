@@ -1,6 +1,7 @@
 // Export presets: Low (web), Medium (screen) and High (print), each with Lightroom's export
-// options (file type, size, quality, output sharpening, watermark, metadata, file name), and
-// which of them Save uses for the copy in Immich. Kept in this browser.
+// options (file type, colour space, size, quality, output sharpening, watermark, metadata, file
+// name), and which of them Save uses for the copy in Immich. Kept in this browser.
+import type { OutputColor, OutputSpace } from '@immich-raw/pipeline';
 import { clampParam, type ParamSpec } from '@immich-raw/recipe';
 
 export type ExportPresetId = 'low' | 'medium' | 'high';
@@ -45,6 +46,8 @@ export interface ExportWatermark {
 
 export interface ExportPreset {
   format: ExportFormat;
+  /** Colour space and bits per sample; what the file type allows (validColor). */
+  color: OutputColor;
   size: ExportSize;
   /** Print resolution: converts in/cm to pixels and is written into the file. */
   ppi: number;
@@ -90,6 +93,39 @@ export const PRESET_LABELS: Record<ExportPresetId, { name: string; purpose: stri
 export const FORMAT_LABELS: Record<ExportFormat, string> = { jpeg: 'JPEG', png: 'PNG', tiff: 'TIFF', webp: 'WebP', avif: 'AVIF', jxl: 'JPEG XL' };
 export const FORMAT_EXTENSION: Record<ExportFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tif', webp: 'webp', avif: 'avif', jxl: 'jxl' };
 export const EXPORT_FORMATS = Object.keys(FORMAT_LABELS) as ExportFormat[];
+export const SPACE_LABELS: Record<OutputSpace, string> = { srgb: 'sRGB', 'display-p3': 'Display P3', 'adobe-rgb': 'Adobe RGB (1998)', prophoto: 'ProPhoto RGB' };
+
+/**
+ * The colour spaces and bit depths a file type can hold: JPEG, WebP and AVIF are 8-bit, AVIF
+ * says its space with a code (sRGB and Display P3 only), JPEG XL as encoded here is sRGB only.
+ * ProPhoto needs 16 bits (in 8 its steps show as banding).
+ */
+export function colorChoices(format: ExportFormat): { spaces: OutputSpace[]; bits: (8 | 16)[] } {
+  switch (format) {
+    case 'png':
+    case 'tiff':
+      return { spaces: ['srgb', 'display-p3', 'adobe-rgb', 'prophoto'], bits: [8, 16] };
+    case 'jpeg':
+    case 'webp':
+      return { spaces: ['srgb', 'display-p3', 'adobe-rgb'], bits: [8] };
+    case 'avif':
+      return { spaces: ['srgb', 'display-p3'], bits: [8] };
+    case 'jxl':
+      return { spaces: ['srgb'], bits: [8] };
+  }
+}
+
+/** `color` as the file type allows it: ProPhoto moves to 16 bits, anything else not possible to sRGB / 8 bits. */
+export function validColor(format: ExportFormat, color: OutputColor): OutputColor {
+  const c = colorChoices(format);
+  let bits = c.bits.includes(color.bits) ? color.bits : 8;
+  let space = c.spaces.includes(color.space) ? color.space : 'srgb';
+  if (space === 'prophoto' && bits !== 16) {
+    if (c.bits.includes(16)) bits = 16;
+    else space = 'srgb';
+  }
+  return { space, bits };
+}
 export const LOSSY_FORMATS: readonly LossyFormat[] = ['jpeg', 'webp', 'avif', 'jxl'];
 
 export function isLossy(format: ExportFormat): format is LossyFormat {
@@ -159,6 +195,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   presets: {
     low: {
       format: 'jpeg',
+      color: { space: 'srgb', bits: 8 },
       size: { mode: 'longEdge', value: 2048, unit: 'px' },
       ppi: 72,
       quality: { jpeg: 80, webp: 75, avif: 50, jxl: 75 },
@@ -170,6 +207,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
     },
     medium: {
       format: 'jpeg',
+      color: { space: 'srgb', bits: 8 },
       size: { mode: 'longEdge', value: 3840, unit: 'px' },
       ppi: 72,
       quality: { jpeg: 90, webp: 85, avif: 63, jxl: 88 },
@@ -181,6 +219,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
     },
     high: {
       format: 'jpeg',
+      color: { space: 'srgb', bits: 8 },
       size: { mode: 'full', value: 30, unit: 'cm' },
       ppi: 300,
       quality: { jpeg: 95, webp: 92, avif: 75, jxl: 94 },
@@ -294,8 +333,11 @@ function normalizePreset(id: ExportPresetId, v: unknown): ExportPreset {
   const o = obj(v);
   const sh = obj(o.sharpen);
   const wm = obj(o.watermark);
+  const format = pick(o.format, EXPORT_FORMATS, def.format);
+  const c = obj(o.color);
   return {
-    format: pick(o.format, EXPORT_FORMATS, def.format),
+    format,
+    color: validColor(format, { space: pick(c.space, Object.keys(SPACE_LABELS) as OutputSpace[], 'srgb'), bits: c.bits === 16 ? 16 : 8 }),
     size: normalizeSize(o.size, o.longEdge, def.size),
     ppi: num(o.ppi, PPI_RANGE.min, PPI_RANGE.max, def.ppi),
     quality: normalizeQuality(id, o.quality),
@@ -425,18 +467,20 @@ export function qualityShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossl
   return p.lossless && hasLosslessOption(p.format) ? 'lossless' : `quality ${p.quality[p.format]}`;
 }
 
-/** Second line of a preset button: "quality 90" for JPEG, "WebP 85", "JPEG XL lossless", "PNG". */
-export function formatShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossless'>): string {
+/** Second line of a preset button: "quality 90" for JPEG, "WebP 85", "JPEG XL lossless", "PNG", "TIFF 16-bit". */
+export function formatShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossless'> & { color?: OutputColor }): string {
   if (p.format === 'jpeg') return qualityShort(p);
-  if (!isLossy(p.format)) return FORMAT_LABELS[p.format];
+  if (!isLossy(p.format)) return `${FORMAT_LABELS[p.format]}${p.color?.bits === 16 ? ' 16-bit' : ''}`;
   return `${FORMAT_LABELS[p.format]} ${p.lossless && hasLosslessOption(p.format) ? 'lossless' : p.quality[p.format]}`;
 }
 
-/** "JPEG · 2048 px · quality 80" */
+/** "JPEG · 2048 px · quality 80", "TIFF · Full size · 16-bit · ProPhoto RGB" */
 export function presetSummary(p: ExportPreset): string {
   const parts = [FORMAT_LABELS[p.format], sizeSummary(p)];
   const quality = qualityShort(p);
   if (quality) parts.push(quality);
+  if (p.color.bits === 16) parts.push('16-bit');
+  if (p.color.space !== 'srgb') parts.push(SPACE_LABELS[p.color.space]);
   if (p.sharpen.for !== 'none') parts.push(`sharpened for ${SHARPEN_LABELS[p.sharpen.for].toLowerCase()}`);
   if (p.watermark.enabled) parts.push(p.watermark.kind === 'image' ? 'logo watermark' : 'watermark');
   return parts.join(' · ');

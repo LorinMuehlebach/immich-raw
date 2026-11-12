@@ -16,14 +16,17 @@
     QUALITY_SPECS,
     SHARPEN_LABELS,
     SIZE_MODE_LABELS,
+    SPACE_LABELS,
     UNIT_LABELS,
     WATERMARK_KIND_LABELS,
     WATERMARK_OPACITY,
     WATERMARK_SIZE,
+    colorChoices,
     exportFilename,
     hasLosslessOption,
     isLossy,
     sizeValueRange,
+    validColor,
     withSizeMode,
     withSizeUnit,
     withSizeValue,
@@ -41,13 +44,14 @@
     type WatermarkKind,
     type WatermarkPosition,
   } from '../state/export-settings.ts';
+  import type { OutputSpace } from '@immich-raw/pipeline';
   import { captureDate } from '../export/metadata.ts';
   import { deleteUnusedLogo, importLogo, logoStorage, type StoredLogo } from '../state/logos.ts';
   import Slider from './Slider.svelte';
 
   const FORMAT_HINTS: Partial<Record<ExportFormat, string>> = {
-    png: '8 bits per channel, lossless.',
-    tiff: '8 bits per channel, lossless (Deflate).',
+    png: 'Lossless; 8 or 16 bits per channel.',
+    tiff: 'Lossless (Deflate); 8 or 16 bits per channel.',
     webp: '8 bits per channel, at most 16383 pixels a side.',
     avif: '8 bits per channel. Slow at full size; no EXIF or XMP.',
     jxl: '8 bits per channel. Slow at full size; not every browser shows it yet.',
@@ -55,6 +59,7 @@
 
   let id = $state<ExportPresetId>(editor.exportSettings.immichPreset);
   const p = $derived(editor.exportSettings.presets[id]);
+  const colors = $derived(colorChoices(p.format));
   const range = $derived(sizeValueRange(p.size));
   const known = $derived(NAMING_CHOICES.some((c) => c.template === p.naming));
   let custom = $state(false);
@@ -264,10 +269,25 @@
         </select>
       </label>
 
-      <label class="row" title="Display P3 and Adobe RGB are planned">
+      <label class="row">
         <span class="lbl">Colour space</span>
-        <select disabled><option>sRGB</option></select>
+        <select value={p.color.space} aria-label="Colour space" onchange={(e) => set({ color: validColor(p.format, { ...p.color, space: e.currentTarget.value as OutputSpace }) })}>
+          {#each Object.entries(SPACE_LABELS) as [value, label] (value)}
+            <option {value} disabled={!colors.spaces.includes(value as OutputSpace)}>{label}{value === 'prophoto' ? ' (16-bit)' : ''}</option>
+          {/each}
+        </select>
+        {#if colors.bits.length > 1}
+          <select class="unit-select" value={String(p.color.bits)} aria-label="Bit depth" onchange={(e) => set({ color: validColor(p.format, { ...p.color, bits: e.currentTarget.value === '16' ? 16 : 8 }) })}>
+            <option value="8" disabled={p.color.space === 'prophoto'}>8-bit</option>
+            <option value="16">16-bit</option>
+          </select>
+        {/if}
       </label>
+      {#if p.color.space !== 'srgb'}
+        <p class="hint">The file carries the colour space's profile; apps without colour management show its colours duller.</p>
+      {:else if colors.spaces.length === 1}
+        <p class="hint">{FORMAT_LABELS[p.format]} is exported in sRGB.</p>
+      {/if}
 
       <div class="sep"></div>
 
@@ -370,7 +390,7 @@
     </div>
 
     {#if id === editor.exportSettings.immichPreset}
-      <p class="note">Save uses this preset for the copy in Immich: its size, quality and sharpening. That copy is always a JPEG without watermark and keeps the RAW's own metadata.</p>
+      <p class="note">Save uses this preset for the copy in Immich: its size, quality and sharpening. That copy is always an sRGB JPEG without watermark and keeps the RAW's own metadata.</p>
     {/if}
 
     <div class="form save">

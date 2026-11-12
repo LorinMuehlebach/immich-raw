@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TAGS, exifFromImmich, insertExif, parseExposureTime, toRational, zoneOffsetMinutes, type ExifFields } from './jpeg-segments.ts';
+import { ICC_CHUNK, TAGS, exifFromImmich, insertExif, insertIcc, parseExposureTime, toRational, zoneOffsetMinutes, type ExifFields } from './jpeg-segments.ts';
 
 // --- a minimal synthetic JPEG (no real image data needed) ----------------------------------
 
@@ -230,6 +230,43 @@ describe('insertExif', () => {
 
   it('rejects non-JPEG input', () => {
     expect(() => insertExif(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), {})).toThrow(/SOI/);
+  });
+});
+
+describe('insertIcc', () => {
+  const iccSegments = (jpeg: Uint8Array) =>
+    segments(jpeg)
+      .list.filter((s) => s.marker === 0xe2 && text('ICC_PROFILE').every((c, i) => jpeg[s.start + 4 + i] === c))
+      .map((s) => ({ ...s, seq: jpeg[s.start + 16]!, count: jpeg[s.start + 17]!, data: jpeg.subarray(s.start + 18, s.end) }));
+
+  it('puts the profile after the APP0 and APP1 segments, replacing an old one', () => {
+    const icc = Uint8Array.from({ length: 500 }, (_, i) => i & 0xff);
+    // insertExif drops JFIF; insertIcc goes after the leading APP0/APP1 segments of any JPEG.
+    const out = insertIcc(insertExif(makeJpeg(APP0_JFIF, APP2_ICC, DQT, SOF0), { colorSpace: 'uncalibrated' }), icc);
+    expect(segments(out).list.map((s) => s.marker)).toEqual([0xe1, 0xe2, 0xdb, 0xc0]);
+    expect(segments(insertIcc(makeJpeg(APP0_JFIF, APP1_OLD_EXIF, DQT), icc)).list.map((s) => s.marker)).toEqual([0xe0, 0xe1, 0xe2, 0xdb]);
+    const [only, ...rest] = iccSegments(out);
+    expect(rest).toEqual([]);
+    expect([only!.seq, only!.count]).toEqual([1, 1]);
+    expect([...only!.data]).toEqual([...icc]);
+    // The image data is untouched.
+    expect([...out.subarray(segments(out).sos)]).toEqual(SOS_AND_SCAN);
+  });
+
+  it('splits a profile larger than one segment into numbered chunks', () => {
+    const icc = Uint8Array.from({ length: ICC_CHUNK + 1000 }, (_, i) => (i * 7) & 0xff);
+    const parts = iccSegments(insertIcc(makeJpeg(DQT, SOF0), icc));
+    expect(parts.map((p) => [p.seq, p.count, p.data.length])).toEqual([
+      [1, 2, ICC_CHUNK],
+      [2, 2, 1000],
+    ]);
+    expect([...parts[0]!.data, ...parts[1]!.data]).toEqual([...icc]);
+    expect(parts[0]!.end - parts[0]!.start).toBe(65535 + 2);
+  });
+
+  it('writes ColorSpace uncalibrated for a profile-tagged export', () => {
+    const { exif } = readTiff(tiffOf(insertExif(makeJpeg(DQT, SOF0), { colorSpace: 'uncalibrated' })));
+    expect(exif.get(TAGS.ColorSpace)).toEqual({ type: 3, count: 1, value: [0xffff] });
   });
 });
 

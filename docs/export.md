@@ -12,7 +12,9 @@ editor, a whole album, or the photos selected in Immich.
 ## Settings
 
 The gear sets, for each preset:
-- file type: JPEG, PNG, TIFF, WebP, AVIF or JPEG XL (8 bits, sRGB; see the table below);
+- file type: JPEG, PNG, TIFF, WebP, AVIF or JPEG XL (see the table below);
+- colour space and bit depth: sRGB, Display P3, Adobe RGB or ProPhoto RGB, 8 or 16 bits (see
+  [Colour space and bit depth](#colour-space-and-bit-depth));
 - size: full, long or short edge, width or height (pixels, cm or inches at a resolution), or
   megapixels; never larger than the photo;
 - quality, kept for each lossy file type, or lossless for WebP and JPEG XL;
@@ -40,6 +42,30 @@ favourite.
 
 WebP, AVIF and JPEG XL are encoded in the background, so the editor stays usable meanwhile. In a
 batch, one AVIF or JPEG XL (two WebPs) is encoded at a time.
+
+## Colour space and bit depth
+
+sRGB suits the web and most screens. The wider spaces keep colours sRGB can't show: Display P3
+for phones, Macs and modern screens, Adobe RGB for print, ProPhoto RGB to edit further in another
+program (16-bit only: in 8 bits its steps show as banding).
+
+| File type | Colour spaces | 16-bit | How the file names its space |
+|---|---|---|---|
+| JPEG | sRGB, Display P3, Adobe RGB | – | ICC profile |
+| PNG | all four | yes | ICC profile (sRGB: its sRGB chunk) |
+| TIFF | all four | yes | ICC profile |
+| WebP | sRGB, Display P3, Adobe RGB | – | ICC profile |
+| AVIF | sRGB, Display P3 | – | colour code (CICP) |
+| JPEG XL | sRGB | – | – |
+
+- A RAW is rendered straight into the chosen space: colours beyond sRGB are kept until the very
+  last step, which fits them into the space.
+- Programs without colour management show a file in a wider space with duller colours.
+- The Fujifilm film looks are sRGB tables: with one of them, colours stay inside sRGB.
+- Photos that aren't RAWs (in an album export) keep their own colours, which are sRGB.
+- The copy Save puts in Immich is always an 8-bit sRGB JPEG.
+- 16-bit files are about twice as large, and a full-size 16-bit export needs about twice the
+  memory while it is made; batch exports in 16 bits work on at most 2 photos at once.
 
 ![Export settings: file type and size](images/export/settings.jpg)
 
@@ -73,5 +99,4 @@ computer and 2 on a phone or tablet, or what you pick, from 1 to 16. On an 8-cor
 was 2.7 to 3.9 times faster than one at a time, and 8 up to 3.5 times faster for 40 to 65 MP files.
 Measurements, and what HTTPS adds: [Export speed](export-speed.md).
 
-Wider colour spaces, 16-bit files and Content Credentials are
-[feature requests](feature-requests.md).
+Content Credentials are a [feature request](feature-requests.md).

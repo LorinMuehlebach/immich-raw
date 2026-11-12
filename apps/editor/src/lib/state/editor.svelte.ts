@@ -41,12 +41,16 @@ import {
   uprightSize,
   viewToCrop,
   withAspect,
+  asImageData,
+  SRGB8,
   type Affine,
   type AutoParams,
   type CameraInfo,
   type Histogram,
   type LensData,
   type MaskView,
+  type OutputColor,
+  type Pixels,
   type ProfileLooks,
   type ViewRect,
 } from '@immich-raw/pipeline';
@@ -135,7 +139,7 @@ import {
 import { downloadBlob } from '../download.ts';
 import { loadLogoBitmap } from './logos.ts';
 import { captureDate } from '../export/metadata.ts';
-import { finishExport, type ExportFile } from '../export/output.ts';
+import { finishExport, outputColor, type ExportFile } from '../export/output.ts';
 import { parseContext } from '../immich/context.ts';
 import { newId } from '../id.ts';
 import { anchoredCentre, fitScale, nextScale } from './zoom.ts';
@@ -2000,20 +2004,22 @@ export class Editor {
     step: (s: RenderStep, fraction?: number) => void,
     forImmich = false,
   ): Promise<{ recipe: Recipe; file: ExportFile; fallback: boolean }> {
-    const { recipe, image, fallback } = await this.renderFull(session, renderer, step);
+    const { recipe, image, fallback } = await this.renderFull(session, renderer, step, outputColor(preset, forImmich));
     const file = await this.finish(image, asset, preset, step, forImmich);
     return { recipe, file, fallback };
   }
 
   /**
-   * The current edit rendered at full resolution, and the recipe it was rendered from.
+   * The current edit rendered at full resolution (in the colour space and bit depth `out`), and
+   * the recipe it was rendered from.
    * fallback: the recipe's film look isn't in this browser, so it rendered with Color.
    */
   private async renderFull(
     session: RawSession,
     renderer: Renderer,
     step: (s: RenderStep, fraction?: number) => void,
-  ): Promise<{ recipe: Recipe; image: ImageData; fallback: boolean }> {
+    out: OutputColor = SRGB8,
+  ): Promise<{ recipe: Recipe; image: Pixels; fallback: boolean }> {
     step('decode');
     this.startFullDecode();
     const full = await session.full();
@@ -2029,12 +2035,12 @@ export class Editor {
     recipe.app = APP_ID;
     recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
     step('render');
-    const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
+    const image = await renderer.exportPixels(recipe, full, out, (done, total) => step('render', done / total));
     return { recipe, image, fallback };
   }
 
   /** A rendered image made into the file `preset` describes. */
-  private async finish(image: ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
+  private async finish(image: Pixels | ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
     const wm = preset.watermark;
     const logo = !forImmich && wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
     try {
@@ -2158,12 +2164,14 @@ export class Editor {
       await aiConsent.permitModels([upscaler(s.style, s.scale).model]);
       const { recipe, image } = await this.renderFull(session, renderer, (st, f) => show(STEP_LABEL[st], f));
       if (cancelled) throw new Error(CANCELLED);
-      const big = await this.runUpscale(image, s.style, s.scale, backend.gpu, (t) => (task = t), show);
+      const big = await this.runUpscale(asImageData(image), s.style, s.scale, backend.gpu, (t) => (task = t), show);
       cancellable = false;
       const high = $state.snapshot(this.exportSettings.presets.high) as ExportPreset;
       const preset: ExportPreset = {
         ...structuredClone(high),
         format: s.format,
+        // The upscaler works on 8-bit sRGB.
+        color: SRGB8,
         quality: { ...high.quality, jpeg: UPSCALE_QUALITY },
         size: { mode: 'full', value: 0, unit: 'px' },
         // The model sharpens already.

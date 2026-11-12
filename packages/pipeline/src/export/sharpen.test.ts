@@ -99,6 +99,33 @@ describe('outputSharpen', () => {
     expect(at(img, 0, 5)).toEqual([10, 10, 10, 255]);
   });
 
+  it('sharpens 16-bit images like 8-bit ones, clamped to 0..65535 instead of wrapping', () => {
+    const wide = (lo: number, hi: number): RgbaImage => {
+      const data = new Uint16Array(20 * 20 * 4);
+      for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++) data.set(x < 10 ? [lo, lo, lo, 65535] : [hi, hi, hi, 65535], (y * 20 + x) * 4);
+      return { data, width: 20, height: 20 };
+    };
+    const eight = greyEdge(100, 150);
+    const sixteen = wide(100 * 257, 150 * 257);
+    outputSharpen(eight, 'screen', 'standard', 300);
+    outputSharpen(sixteen, 'screen', 'standard', 300);
+    for (const x of [8, 9, 10, 11]) expect(at(sixteen, x, 5)[0]! / 257).toBeCloseTo(at(eight, x, 5)[0]!, 0);
+    const extreme = wide(2000, 63000);
+    outputSharpen(extreme, 'matte', 'high', 300);
+    expect(at(extreme, 9, 5)).toEqual([0, 0, 0, 65535]);
+    expect(at(extreme, 10, 5)).toEqual([65535, 65535, 65535, 65535]);
+  });
+
+  it('weights R, G and B by the luma it is given', () => {
+    const red = () => image(20, 20, (x) => (x < 10 ? [100, 120, 120, 255] : [200, 120, 120, 255]));
+    const rec709 = red();
+    const redHeavy = red();
+    outputSharpen(rec709, 'screen', 'high', 300);
+    outputSharpen(redHeavy, 'screen', 'high', 300, [0.6, 0.3, 0.1]);
+    // An edge in red alone has more luma detail when red weighs more.
+    expect(at(redHeavy, 10, 5)[1]! - 120).toBeGreaterThan(at(rec709, 10, 5)[1]! - 120);
+  });
+
   it('reaches further from the edge with a larger radius', () => {
     const screen = greyEdge(100, 150);
     const print = greyEdge(100, 150);
