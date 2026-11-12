@@ -39,6 +39,9 @@ function jpegSize(buf) {
   return null;
 }
 
+/** What the page shows when a step fails (set once the page is open). */
+let onFailure = async () => ({});
+
 const browser = await chromium.launch({
   channel: process.env.BROWSER_CHANNEL ?? 'msedge',
   headless: process.env.HEADED ? false : true,
@@ -85,6 +88,13 @@ try {
     if (process.env.VERBOSE) console.log(`[page] ${m.text()}`);
   });
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('crash', () => errors.push('page crashed'));
+  // On a failure: what the page shows, and what it logged.
+  onFailure = async () => {
+    await page.screenshot({ path: join(outDir, 'failed.png') }).catch(() => {});
+    const shown = await page.locator('.toast, .error, .saving').allTextContents().catch(() => []);
+    return { shown: shown.map((s) => s.replace(/\s+/g, ' ').trim()).slice(0, 4), errors: errors.slice(-6) };
+  };
 
   // 1. Immich viewer -> Edit RAW
   await page.goto(`${PAGE_BASE}/photos/${raw.id}`);
@@ -242,7 +252,7 @@ try {
 
   check('no console errors', errors.length === 0, { errors: errors.slice(0, 5) });
 } catch (e) {
-  check('fatal', false, { error: String(e?.stack ?? e).slice(0, 800) });
+  check('fatal', false, { error: String(e?.stack ?? e).slice(0, 800), page: await onFailure() });
 } finally {
   await browser.close();
   writeFileSync(join(outDir, 'smoke.json'), JSON.stringify(results, null, 2));
