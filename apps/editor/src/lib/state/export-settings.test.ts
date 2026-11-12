@@ -6,7 +6,9 @@ import {
   fillText,
   normalizeExportSettings,
   outputSize,
+  formatShort,
   presetSummary,
+  qualityShort,
   safeFileName,
   sizeShort,
   sizeSummary,
@@ -25,10 +27,11 @@ describe('normalizeExportSettings', () => {
   it('keeps valid stored settings', () => {
     const stored = structuredClone(DEFAULT_EXPORT_SETTINGS);
     stored.presets.low = {
-      format: 'png',
+      format: 'webp',
       size: { mode: 'width', value: 20, unit: 'cm' },
       ppi: 240,
-      quality: 70,
+      quality: { jpeg: 70, webp: 66, avif: 40, jxl: 91 },
+      lossless: true,
       sharpen: { for: 'matte', amount: 'high' },
       watermark: { enabled: true, text: 'Hi', position: 'top-left', size: 5.5, opacity: 40, color: 'black' },
       metadata: 'copyright',
@@ -50,8 +53,9 @@ describe('normalizeExportSettings', () => {
   it('reads presets stored before the export options (longEdge only)', () => {
     const s = normalizeExportSettings({ presets: { low: { longEdge: 1600, quality: 70 }, medium: { longEdge: null, quality: 88 } }, immichPreset: 'low' });
     expect(s.presets.low.size).toEqual({ mode: 'longEdge', value: 1600, unit: 'px' });
-    expect(s.presets.low.quality).toBe(70);
+    expect(s.presets.low.quality).toEqual({ ...DEFAULT_EXPORT_SETTINGS.presets.low.quality, jpeg: 70 });
     expect(s.presets.low.format).toBe('jpeg');
+    expect(s.presets.low.lossless).toBe(false);
     expect(s.presets.medium.size.mode).toBe('full');
     expect(s.presets.high).toEqual(DEFAULT_EXPORT_SETTINGS.presets.high);
     expect(s.immichPreset).toBe('low');
@@ -79,13 +83,22 @@ describe('normalizeExportSettings', () => {
     expect(low.format).toBe('jpeg');
     expect(low.size).toEqual({ mode: 'longEdge', value: 2048, unit: 'px' });
     expect(low.ppi).toBe(1200);
-    expect(low.quality).toBe(50);
+    expect(low.quality).toEqual({ ...def.quality, jpeg: 50 });
     expect(low.sharpen).toEqual(def.sharpen);
     expect(low.watermark).toEqual({ ...def.watermark, size: 20, opacity: 5 });
     expect(low.metadata).toBe(def.metadata);
     expect(low.naming).toBe(def.naming);
     expect(s.presets.medium.size).toEqual({ mode: 'megapixels', value: 12, unit: 'px' });
     expect(s.immichPreset).toBe('medium');
+  });
+
+  it('keeps a quality for each lossy format, in its own range', () => {
+    const s = normalizeExportSettings({ presets: { high: { format: 'avif', quality: { jpeg: 120, webp: 'x', avif: 10, jxl: 77.6 }, lossless: 'yes' } } });
+    const high = s.presets.high;
+    expect(high.format).toBe('avif');
+    expect(high.quality).toEqual({ jpeg: 100, webp: DEFAULT_EXPORT_SETTINGS.presets.high.quality.webp, avif: 30, jxl: 78 });
+    expect(high.lossless).toBe(false);
+    for (const format of ['webp', 'jxl'] as const) expect(normalizeExportSettings({ presets: { low: { format } } }).presets.low.format).toBe(format);
   });
 
   it('does not share objects with the defaults', () => {
@@ -158,6 +171,7 @@ describe('file names', () => {
     expect(exportFilename({ naming: '{name}', format: 'tiff' }, values)).toBe('DSC_0001.tif');
     expect(exportFilename({ naming: '{name}', format: 'png' }, { originalFileName: 'trip.2024.cr3' })).toBe('trip.2024.png');
     expect(exportFilename({ naming: '{album}', format: 'jpeg' }, {})).toBe('photo.jpg');
+    expect(['webp', 'avif', 'jxl'].map((format) => exportFilename({ naming: '{name}', format: format as 'webp' }, values))).toEqual(['DSC_0001.webp', 'DSC_0001.avif', 'DSC_0001.jxl']);
     expect(safeFileName(' a/b\\c?.. ')).toBe('a_b_c_');
   });
 
@@ -175,5 +189,18 @@ describe('summaries', () => {
     expect(sizeSummary({ size: { mode: 'width', value: 20, unit: 'cm' }, ppi: 300 })).toBe('Width 20 cm at 300 ppi');
     expect(presetSummary(d.low)).toBe('JPEG · Long edge 2048 px · quality 80 · sharpened for screen');
     expect(presetSummary({ ...d.high, format: 'tiff', watermark: { ...d.high.watermark, enabled: true } })).toBe('TIFF · Full size · watermark');
+    expect(presetSummary({ ...d.medium, format: 'avif' })).toBe('AVIF · Long edge 3840 px · quality 63');
+    expect(presetSummary({ ...d.medium, format: 'jxl', lossless: true })).toBe('JPEG XL · Long edge 3840 px · lossless');
+  });
+
+  it('gives each preset button its format line', () => {
+    const d = DEFAULT_EXPORT_SETTINGS.presets;
+    expect(formatShort(d.medium)).toBe('quality 90');
+    expect(formatShort({ ...d.medium, format: 'webp' })).toBe('WebP 85');
+    expect(formatShort({ ...d.medium, format: 'webp', lossless: true })).toBe('WebP lossless');
+    // AVIF has no lossless choice here: the flag set for another format doesn't apply.
+    expect(formatShort({ ...d.medium, format: 'avif', lossless: true })).toBe('AVIF 63');
+    expect(formatShort({ ...d.medium, format: 'png' })).toBe('PNG');
+    expect(qualityShort({ ...d.medium, format: 'tiff' })).toBe('');
   });
 });

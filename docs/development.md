@@ -25,9 +25,10 @@ photos already uploaded; `deploy/demo/compose.build.yml` builds it from a checko
   ([e2e/README.md](../e2e/README.md#variants)).
 - `node e2e/export.mjs <out-dir>`: the export options (PNG, TIFF, print size, file names), an album
   export as a ZIP (two photos at once), the export button for photos selected in Immich (including
-  select all), and a saved edit exported from its RAW.
-- `node e2e/bench-export.mjs <out-dir> [mixed|xt30] [1,2,4,8,16]`: times the batch export at several
-  photos at once and samples the browser's memory ([Export speed](export-speed.md)).
+  select all), a saved edit exported from its RAW, and WebP, AVIF and JPEG XL with their metadata.
+- `node e2e/bench-export.mjs <out-dir> [mixed|xt30] [1,2,4,8,16] [preset] [format]`: times the batch
+  export at several photos at once and samples the browser's memory
+  ([Export speed](export-speed.md)); `format` changes the preset's file type (e.g. `avif`).
 - `node e2e/screenshots.mjs [section ...]`: regenerates the screenshots of the guides in `docs/`
   ([e2e/README.md](../e2e/README.md#screenshots)).
 - Culler:

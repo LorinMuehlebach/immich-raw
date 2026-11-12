@@ -280,7 +280,7 @@ const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   render: 'Rendering',
   resize: 'Resizing',
   sharpen: 'Sharpening',
-  encode: 'Encoding JPEG',
+  encode: 'Encoding',
   prepare: 'Preparing',
   upload: 'Uploading',
   metadata: 'Copying date, location, albums and tags',
@@ -2156,7 +2156,7 @@ export class Editor {
       const preset: ExportPreset = {
         ...structuredClone(high),
         format: s.format,
-        quality: UPSCALE_QUALITY,
+        quality: { ...high.quality, jpeg: UPSCALE_QUALITY },
         size: { mode: 'full', value: 0, unit: 'px' },
         // The model sharpens already.
         sharpen: { for: 'none', amount: high.sharpen.amount },

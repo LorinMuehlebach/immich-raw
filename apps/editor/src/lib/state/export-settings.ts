@@ -4,7 +4,9 @@
 import { clampParam, type ParamSpec } from '@immich-raw/recipe';
 
 export type ExportPresetId = 'low' | 'medium' | 'high';
-export type ExportFormat = 'jpeg' | 'png' | 'tiff';
+export type ExportFormat = 'jpeg' | 'png' | 'tiff' | 'webp' | 'avif' | 'jxl';
+/** The formats with a quality setting. */
+export type LossyFormat = 'jpeg' | 'webp' | 'avif' | 'jxl';
 /** Full size, or which side (or the pixel count) the value sets. */
 export type SizeMode = 'full' | 'longEdge' | 'shortEdge' | 'width' | 'height' | 'megapixels';
 export type SizeUnit = 'px' | 'in' | 'cm';
@@ -38,8 +40,10 @@ export interface ExportPreset {
   size: ExportSize;
   /** Print resolution: converts in/cm to pixels and is written into the file. */
   ppi: number;
-  /** JPEG quality, 50-100. */
-  quality: number;
+  /** Quality of each lossy format (QUALITY_SPECS); each format keeps its own. */
+  quality: Record<LossyFormat, number>;
+  /** WebP and JPEG XL: lossless instead of the quality setting. */
+  lossless: boolean;
   sharpen: { for: SharpenFor; amount: SharpenAmount };
   watermark: ExportWatermark;
   metadata: MetadataMode;
@@ -75,8 +79,19 @@ export const PRESET_LABELS: Record<ExportPresetId, { name: string; purpose: stri
   high: { name: 'High', purpose: 'for printing' },
 };
 
-export const FORMAT_LABELS: Record<ExportFormat, string> = { jpeg: 'JPEG', png: 'PNG', tiff: 'TIFF' };
-export const FORMAT_EXTENSION: Record<ExportFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tif' };
+export const FORMAT_LABELS: Record<ExportFormat, string> = { jpeg: 'JPEG', png: 'PNG', tiff: 'TIFF', webp: 'WebP', avif: 'AVIF', jxl: 'JPEG XL' };
+export const FORMAT_EXTENSION: Record<ExportFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tif', webp: 'webp', avif: 'avif', jxl: 'jxl' };
+export const EXPORT_FORMATS = Object.keys(FORMAT_LABELS) as ExportFormat[];
+export const LOSSY_FORMATS: readonly LossyFormat[] = ['jpeg', 'webp', 'avif', 'jxl'];
+
+export function isLossy(format: ExportFormat): format is LossyFormat {
+  return (LOSSY_FORMATS as readonly string[]).includes(format);
+}
+
+/** Formats with a lossless choice besides their quality setting (PNG and TIFF are always lossless). */
+export function hasLosslessOption(format: ExportFormat): boolean {
+  return format === 'webp' || format === 'jxl';
+}
 export const SIZE_MODE_LABELS: Record<SizeMode, string> = {
   full: 'Full size',
   longEdge: 'Long edge',
@@ -126,7 +141,8 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
       format: 'jpeg',
       size: { mode: 'longEdge', value: 2048, unit: 'px' },
       ppi: 72,
-      quality: 80,
+      quality: { jpeg: 80, webp: 75, avif: 50, jxl: 75 },
+      lossless: false,
       sharpen: { for: 'screen', amount: 'standard' },
       watermark: watermarkDefaults(),
       metadata: 'noLocation',
@@ -136,7 +152,8 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
       format: 'jpeg',
       size: { mode: 'longEdge', value: 3840, unit: 'px' },
       ppi: 72,
-      quality: 90,
+      quality: { jpeg: 90, webp: 85, avif: 63, jxl: 88 },
+      lossless: false,
       sharpen: { for: 'none', amount: 'standard' },
       watermark: watermarkDefaults(),
       metadata: 'all',
@@ -146,7 +163,8 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
       format: 'jpeg',
       size: { mode: 'full', value: 30, unit: 'cm' },
       ppi: 300,
-      quality: 95,
+      quality: { jpeg: 95, webp: 92, avif: 75, jxl: 94 },
+      lossless: false,
       sharpen: { for: 'none', amount: 'standard' },
       watermark: watermarkDefaults(),
       metadata: 'all',
@@ -158,21 +176,32 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   save: { front: 'edit', favorite: 'copy' },
 };
 
-const qualitySpec = (id: ExportPresetId): ParamSpec => ({
-  path: `export.${id}.quality`,
+// AVIF's scale runs lower: quality 63 looks about like JPEG 90.
+const QUALITY_MIN: Record<LossyFormat, number> = { jpeg: 50, webp: 50, avif: 30, jxl: 50 };
+
+const qualitySpec = (id: ExportPresetId, format: LossyFormat): ParamSpec => ({
+  path: `export.${id}.quality.${format}`,
   label: 'Quality',
-  min: 50,
+  min: QUALITY_MIN[format],
   max: 100,
-  default: DEFAULT_EXPORT_SETTINGS.presets[id].quality,
+  default: DEFAULT_EXPORT_SETTINGS.presets[id].quality[format],
   step: 1,
   decimals: 0,
   signed: false,
 });
 
-export const QUALITY_SPECS: Record<ExportPresetId, ParamSpec> = {
-  low: qualitySpec('low'),
-  medium: qualitySpec('medium'),
-  high: qualitySpec('high'),
+const qualitySpecs = (id: ExportPresetId): Record<LossyFormat, ParamSpec> => ({
+  jpeg: qualitySpec(id, 'jpeg'),
+  webp: qualitySpec(id, 'webp'),
+  avif: qualitySpec(id, 'avif'),
+  jxl: qualitySpec(id, 'jxl'),
+});
+
+/** The quality slider of each preset and lossy format. */
+export const QUALITY_SPECS: Record<ExportPresetId, Record<LossyFormat, ParamSpec>> = {
+  low: qualitySpecs('low'),
+  medium: qualitySpecs('medium'),
+  high: qualitySpecs('high'),
 };
 
 export const WATERMARK_SIZE: ParamSpec = { path: 'watermark.size', label: 'Size', min: 1, max: 20, default: 3, step: 0.5, decimals: 1, signed: false };
@@ -226,16 +255,29 @@ function normalizeSize(v: unknown, legacyLongEdge: unknown, def: ExportSize): Ex
   return { mode, value, unit };
 }
 
+function normalizeQuality(id: ExportPresetId, v: unknown): Record<LossyFormat, number> {
+  const def = DEFAULT_EXPORT_SETTINGS.presets[id].quality;
+  // Before WebP, AVIF and JPEG XL, a preset had one number: the JPEG quality.
+  const stored = typeof v === 'number' ? { jpeg: v } : obj(v);
+  const out = { ...def };
+  for (const f of LOSSY_FORMATS) {
+    const q = stored[f];
+    if (typeof q === 'number' && Number.isFinite(q)) out[f] = Math.round(clampParam(QUALITY_SPECS[id][f], q));
+  }
+  return out;
+}
+
 function normalizePreset(id: ExportPresetId, v: unknown): ExportPreset {
   const def = DEFAULT_EXPORT_SETTINGS.presets[id];
   const o = obj(v);
   const sh = obj(o.sharpen);
   const wm = obj(o.watermark);
   return {
-    format: pick(o.format, ['jpeg', 'png', 'tiff'] as const, def.format),
+    format: pick(o.format, EXPORT_FORMATS, def.format),
     size: normalizeSize(o.size, o.longEdge, def.size),
     ppi: num(o.ppi, PPI_RANGE.min, PPI_RANGE.max, def.ppi),
-    quality: typeof o.quality === 'number' ? Math.round(clampParam(QUALITY_SPECS[id], o.quality)) : def.quality,
+    quality: normalizeQuality(id, o.quality),
+    lossless: typeof o.lossless === 'boolean' ? o.lossless : def.lossless,
     sharpen: {
       for: pick(sh.for, ['none', 'screen', 'matte', 'glossy'] as const, def.sharpen.for),
       amount: pick(sh.amount, ['low', 'standard', 'high'] as const, def.sharpen.amount),
@@ -352,10 +394,24 @@ export function sizeShort(p: Pick<ExportPreset, 'size' | 'ppi'>): string {
   return s.unit === 'px' ? `${s.value} px` : `${s.value} ${s.unit}`;
 }
 
+/** "quality 80", "lossless", or '' for PNG and TIFF. */
+export function qualityShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossless'>): string {
+  if (!isLossy(p.format)) return '';
+  return p.lossless && hasLosslessOption(p.format) ? 'lossless' : `quality ${p.quality[p.format]}`;
+}
+
+/** Second line of a preset button: "quality 90" for JPEG, "WebP 85", "JPEG XL lossless", "PNG". */
+export function formatShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossless'>): string {
+  if (p.format === 'jpeg') return qualityShort(p);
+  if (!isLossy(p.format)) return FORMAT_LABELS[p.format];
+  return `${FORMAT_LABELS[p.format]} ${p.lossless && hasLosslessOption(p.format) ? 'lossless' : p.quality[p.format]}`;
+}
+
 /** "JPEG · 2048 px · quality 80" */
 export function presetSummary(p: ExportPreset): string {
   const parts = [FORMAT_LABELS[p.format], sizeSummary(p)];
-  if (p.format === 'jpeg') parts.push(`quality ${p.quality}`);
+  const quality = qualityShort(p);
+  if (quality) parts.push(quality);
   if (p.sharpen.for !== 'none') parts.push(`sharpened for ${SHARPEN_LABELS[p.sharpen.for].toLowerCase()}`);
   if (p.watermark.enabled) parts.push('watermark');
   return parts.join(' · ');

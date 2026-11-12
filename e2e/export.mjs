@@ -1,7 +1,8 @@
 // End-to-end test of the export options and the album export against the test Immich
 // (e2e/docker-compose.immich.yml, seeded). The presets are set to PNG, TIFF and a print-sized
 // JPEG; each is exported once, then a two-photo album is exported as a ZIP (the folder picker
-// can't be driven by a script, so it is hidden and the editor falls back to a ZIP).
+// can't be driven by a script, so it is hidden and the editor falls back to a ZIP). Then the
+// presets switch to WebP, AVIF and JPEG XL, and each of those is exported once.
 // Usage: node e2e/export.mjs <out-dir>
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,6 +60,16 @@ const SETTINGS = {
   },
   immichPreset: 'medium',
   copyright: '© {year} {owner} e2e',
+};
+
+/** The same presets as WebP, AVIF and JPEG XL. */
+const CODEC_SETTINGS = {
+  ...SETTINGS,
+  presets: {
+    low: { ...SETTINGS.presets.low, format: 'webp', quality: { webp: 80 }, watermark },
+    medium: { ...SETTINGS.presets.medium, format: 'avif', size: { mode: 'longEdge', value: 1200, unit: 'px' }, quality: { avif: 60 }, metadata: 'all', naming: '{name}-{preset}' },
+    high: { ...SETTINGS.presets.high, format: 'jxl', size: { mode: 'longEdge', value: 1000, unit: 'px' }, quality: { jxl: 85 }, metadata: 'all', naming: '{name}-{preset}' },
+  },
 };
 
 // --- file readers ----------------------------------------------------------------------
@@ -125,6 +136,41 @@ function zipEntries(buf) {
   return out;
 }
 
+/** WebP chunks: [{ type, data }], or null. */
+function riffChunks(buf) {
+  if (buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') return null;
+  const chunks = [];
+  for (let p = 12; p + 8 <= buf.length; ) {
+    const size = buf.readUInt32LE(p + 4);
+    chunks.push({ type: buf.toString('latin1', p, p + 4), data: buf.subarray(p + 8, p + 8 + size) });
+    p += 8 + size + (size & 1);
+  }
+  return chunks;
+}
+
+/** ISO BMFF boxes between start and end: [{ type, start, end }] (payload offsets). */
+function bmffBoxes(buf, start = 0, end = buf.length) {
+  const boxes = [];
+  for (let p = start; p + 8 <= end; ) {
+    const size = buf.readUInt32BE(p) || end - p;
+    boxes.push({ type: buf.toString('latin1', p + 4, p + 8), start: p + 8, end: p + size });
+    p += size;
+  }
+  return boxes;
+}
+
+/** CICP of each nclx colr box of an AVIF: [[primaries, transfer, matrix]]. */
+function avifNclx(buf) {
+  const out = [];
+  const meta = bmffBoxes(buf).find((b) => b.type === 'meta');
+  const iprp = meta && bmffBoxes(buf, meta.start + 4, meta.end).find((b) => b.type === 'iprp');
+  const ipco = iprp && bmffBoxes(buf, iprp.start, iprp.end).find((b) => b.type === 'ipco');
+  for (const c of ipco ? bmffBoxes(buf, ipco.start, ipco.end) : []) {
+    if (c.type === 'colr' && buf.toString('latin1', c.start, c.start + 4) === 'nclx') out.push([buf.readUInt16BE(c.start + 4), buf.readUInt16BE(c.start + 6), buf.readUInt16BE(c.start + 8)]);
+  }
+  return out;
+}
+
 const longEdge = (s) => (s ? Math.max(s.width, s.height) : 0);
 
 // --- test ------------------------------------------------------------------------------
@@ -156,8 +202,12 @@ try {
   albumId = album.body?.id;
   check('album created', !!albumId);
 
+  // Once per tab, so a test can change the settings and reload.
   await context.addInitScript((settings) => {
-    localStorage.setItem('raw-editor.export', JSON.stringify(settings));
+    if (!sessionStorage.getItem('e2e.seeded')) {
+      localStorage.setItem('raw-editor.export', JSON.stringify(settings));
+      sessionStorage.setItem('e2e.seeded', '1');
+    }
     delete window.showDirectoryPicker;
     window.showDirectoryPicker = undefined;
   }, SETTINGS);
@@ -236,6 +286,67 @@ try {
   const format = await page.locator('.dialog select').first().inputValue();
   check('settings dialog shows the preset', format === 'tiff', { format });
   await page.keyboard.press('Escape');
+
+  // WebP, AVIF and JPEG XL: the same presets in the formats encoded in a worker.
+  await page.evaluate((s) => localStorage.setItem('raw-editor.export', JSON.stringify(s)), CODEC_SETTINGS);
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  /** Width and height as this browser decodes the file, or null when it can't. */
+  const decoded = (buf, type) =>
+    page.evaluate(
+      async ({ b64, type }) => {
+        try {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const bmp = await createImageBitmap(new Blob([bytes], { type }));
+          return { width: bmp.width, height: bmp.height };
+        } catch {
+          return null;
+        }
+      },
+      { b64: buf.toString('base64'), type },
+    );
+  const timed = async (button) => {
+    const t = Date.now();
+    const file = await download(button);
+    return { ...file, seconds: (Date.now() - t) / 1000 };
+  };
+
+  const webp = await timed(page.getByRole('button', { name: 'Low', exact: true }));
+  const riff = riffChunks(webp.buf) ?? [];
+  const vp8x = riff.find((c) => c.type === 'VP8X')?.data;
+  const webpXmp = riff.find((c) => c.type === 'XMP ')?.data.toString('utf8') ?? '';
+  const webpSize = await decoded(webp.buf, 'image/webp');
+  check('Low as WebP: VP8X with EXIF and XMP, 1000 px wide, decodes', webp.name === `${base}-low.webp` && riff.map((c) => c.type).join() === 'VP8X,VP8 ,EXIF,XMP ' && (vp8x?.[0] & 0x0c) === 0x0c && riff.find((c) => c.type === 'EXIF')?.data.toString('latin1', 0, 4) === 'II*\0' && webpXmp.includes('e2e') && webpSize?.width === 1000, {
+    name: webp.name,
+    chunks: riff.map((c) => c.type),
+    decoded: webpSize,
+    bytes: webp.buf.length,
+    seconds: webp.seconds,
+  });
+
+  const avif = await timed(page.getByRole('button', { name: 'Medium', exact: true }));
+  const brand = avif.buf.toString('latin1', 8, 12);
+  const nclx = avifNclx(avif.buf);
+  const avifSize = await decoded(avif.buf, 'image/avif');
+  check('Medium as AVIF: sRGB colour description, 1200 px, decodes', avif.name === `${base}-medium.avif` && brand === 'avif' && nclx.length > 0 && nclx.every(([p, t]) => p === 1 && t === 13) && longEdge(avifSize) === 1200, {
+    name: avif.name,
+    brand,
+    nclx,
+    decoded: avifSize,
+    bytes: avif.buf.length,
+    seconds: avif.seconds,
+  });
+
+  const jxl = await timed(page.getByRole('button', { name: 'High', exact: true }));
+  const jxlBoxes = bmffBoxes(jxl.buf).map((b) => b.type);
+  const jxlc = bmffBoxes(jxl.buf).find((b) => b.type === 'jxlc');
+  const jxlXmp = bmffBoxes(jxl.buf).find((b) => b.type === 'xml ');
+  check('High as JPEG XL: container with Exif, XMP and the codestream', jxl.name === `${base}-high.jxl` && jxlBoxes.join() === 'JXL ,ftyp,Exif,xml ,jxlc' && jxl.buf[jxlc.start] === 0xff && jxl.buf[jxlc.start + 1] === 0x0a && jxl.buf.toString('utf8', jxlXmp.start, jxlXmp.end).includes('e2e') && jxl.buf.length > 20000, {
+    name: jxl.name,
+    boxes: jxlBoxes,
+    bytes: jxl.buf.length,
+    seconds: jxl.seconds,
+  });
 
   // Immich: select the album's two photos, export them with the button in the selection bar
   const immich = await context.newPage();

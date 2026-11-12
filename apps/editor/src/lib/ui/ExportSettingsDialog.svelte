@@ -19,6 +19,8 @@
     WATERMARK_OPACITY,
     WATERMARK_SIZE,
     exportFilename,
+    hasLosslessOption,
+    isLossy,
     sizeValueRange,
     withSizeMode,
     withSizeUnit,
@@ -37,6 +39,14 @@
   } from '../state/export-settings.ts';
   import { captureDate } from '../export/metadata.ts';
   import Slider from './Slider.svelte';
+
+  const FORMAT_HINTS: Partial<Record<ExportFormat, string>> = {
+    png: '8 bits per channel, lossless.',
+    tiff: '8 bits per channel, lossless (Deflate).',
+    webp: '8 bits per channel, at most 16383 pixels a side.',
+    avif: '8 bits per channel. Slow at full size; no EXIF or XMP.',
+    jxl: '8 bits per channel. Slow at full size; not every browser shows it yet.',
+  };
 
   let id = $state<ExportPresetId>(editor.exportSettings.immichPreset);
   const p = $derived(editor.exportSettings.presets[id]);
@@ -105,8 +115,14 @@
           {#each Object.entries(FORMAT_LABELS) as [value, label] (value)}<option {value}>{label}</option>{/each}
         </select>
       </label>
-      {#if p.format === 'tiff'}<p class="hint">8 bits per channel, lossless (Deflate).</p>{/if}
-      {#if p.format === 'png'}<p class="hint">8 bits per channel, lossless.</p>{/if}
+      {#if FORMAT_HINTS[p.format]}<p class="hint">{FORMAT_HINTS[p.format]}</p>{/if}
+      {#if hasLosslessOption(p.format)}
+        <label class="row check">
+          <span class="lbl"></span>
+          <input type="checkbox" checked={p.lossless} onchange={(e) => set({ lossless: e.currentTarget.checked })} />
+          <span>Lossless</span>
+        </label>
+      {/if}
 
       <label class="row">
         <span class="lbl">Size</span>
@@ -151,14 +167,15 @@
       </label>
       <p class="hint">Never larger than the photo.</p>
 
-      {#if p.format === 'jpeg'}
+      {#if isLossy(p.format) && !(p.lossless && hasLosslessOption(p.format))}
+        {@const f = p.format}
         <div class="slider">
           <Slider
-            spec={QUALITY_SPECS[id]}
-            value={p.quality}
-            onchange={(v) => set({ quality: Math.round(v) })}
+            spec={QUALITY_SPECS[id][f]}
+            value={p.quality[f]}
+            onchange={(v) => set({ quality: { ...p.quality, [f]: Math.round(v) } })}
             oncommit={() => {}}
-            onreset={() => set({ quality: QUALITY_SPECS[id].default })}
+            onreset={() => set({ quality: { ...p.quality, [f]: QUALITY_SPECS[id][f].default } })}
           />
         </div>
       {/if}

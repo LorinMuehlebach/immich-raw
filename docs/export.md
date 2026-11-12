@@ -12,10 +12,11 @@ editor, a whole album, or the photos selected in Immich.
 ## Settings
 
 The gear sets, for each preset:
-- file type: JPEG, PNG or TIFF (8 bits, sRGB);
+- file type: JPEG, PNG, TIFF, WebP, AVIF or JPEG XL (8 bits, sRGB; see the table below);
 - size: full, long or short edge, width or height (pixels, cm or inches at a resolution), or
   megapixels; never larger than the photo;
-- JPEG quality, output sharpening (screen, matte or glossy paper; low, standard or high);
+- quality, kept for each lossy file type, or lossless for WebP and JPEG XL;
+- output sharpening (screen, matte or glossy paper; low, standard or high);
 - a text watermark (position, size, opacity);
 - metadata: all, all except location, or copyright only, with a copyright line such as
   `© {year} {owner}`;
@@ -25,6 +26,18 @@ The settings are kept in the browser. One of the presets also makes the copy tha
 Immich** uploads (**Immich copy**, see [Getting started](getting-started.md#3-save)). Below the
 presets, **Save to Immich** sets which photo is in front of the stack and when the edit is a
 favourite.
+
+| File type | Compression | Metadata in the file | Notes |
+|---|---|---|---|
+| JPEG | quality 50–100 | EXIF, XMP | |
+| PNG | lossless | EXIF, XMP | |
+| TIFF | lossless (Deflate) | EXIF, XMP | |
+| WebP | quality 50–100, or lossless | EXIF, XMP | at most 16383 pixels a side |
+| AVIF | quality 30–100 (63 looks about like JPEG 90) | none | slow at full size |
+| JPEG XL | quality 50–100, or lossless | EXIF, XMP | slow at full size; Chrome and Edge don't show it, Safari does |
+
+WebP, AVIF and JPEG XL are encoded in the background, so the editor stays usable meanwhile. In a
+batch, one AVIF or JPEG XL (two WebPs) is encoded at a time.
 
 ![Export settings: file type and size](images/export/settings.jpg)
 

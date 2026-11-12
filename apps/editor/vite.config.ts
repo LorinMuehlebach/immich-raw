@@ -125,7 +125,8 @@ export default defineConfig({
     },
   },
   preview: { headers: isolation },
-  optimizeDeps: { exclude: ['@jsquash/jpeg'] },
+  // Pre-bundling would move the encoders away from their .wasm files (found next to the module).
+  optimizeDeps: { exclude: ['@jsquash/jpeg', '@jsquash/webp', '@jsquash/avif', '@jsquash/jxl'] },
   worker: { format: 'es' },
   build: { target: 'es2022', assetsInlineLimit: 0, chunkSizeWarningLimit: 1500 },
 });

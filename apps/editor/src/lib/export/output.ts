@@ -11,10 +11,12 @@ import {
   insertXmp,
   outputSharpen,
   resizeImage,
+  WEBP_MAX_SIDE,
   type ExifFields,
 } from '@immich-raw/pipeline';
 import { APP_ID } from '@immich-raw/recipe';
 import { fillText, outputSize, type ExportFormat, type ExportPreset } from '../state/export-settings.ts';
+import { encodeOffThread } from './encoder.ts';
 import { captureDate, exportMetadata, immichCopyExif, immichCopyXmp, type MetadataAsset } from './metadata.ts';
 
 export type OutputStep = 'resize' | 'sharpen' | 'encode';
@@ -26,7 +28,14 @@ export interface ExportFile {
   mime: string;
 }
 
-export const FORMAT_MIME: Record<ExportFormat, string> = { jpeg: 'image/jpeg', png: 'image/png', tiff: 'image/tiff' };
+export const FORMAT_MIME: Record<ExportFormat, string> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  tiff: 'image/tiff',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  jxl: 'image/jxl',
+};
 
 export interface OutputOptions {
   /** Copyright template ({year}, {owner}). */
@@ -68,9 +77,15 @@ function tiffMetadata(exif: ExifFields, xmp: string, ppi: number) {
   };
 }
 
-/** Turns the full-size rendered photo into the file the preset describes. */
+/**
+ * Turns the full-size rendered photo into the file the preset describes. The rendered pixels
+ * may be handed to an encoder worker: don't use `rendered` afterwards.
+ */
 export async function finishExport(rendered: ImageData, asset: MetadataAsset, preset: ExportPreset, o: OutputOptions): Promise<ExportFile> {
   const size = outputSize(rendered.width, rendered.height, preset.size, preset.ppi);
+  if (!o.forImmich && preset.format === 'webp' && (size.width > WEBP_MAX_SIDE || size.height > WEBP_MAX_SIDE)) {
+    throw new Error(`WebP can't be larger than ${WEBP_MAX_SIDE} pixels a side; this export would be ${size.width} × ${size.height}. Choose a smaller size.`);
+  }
   let image = rendered;
   if (size.width !== image.width || size.height !== image.height) {
     o.onStep?.('resize');
@@ -89,7 +104,7 @@ export async function finishExport(rendered: ImageData, asset: MetadataAsset, pr
   const { width, height } = image;
 
   if (o.forImmich) {
-    const jpeg = insertExif(await encodeJpeg(image, preset.quality / 100), immichCopyExif(asset, APP_ID, width, height));
+    const jpeg = insertExif(await encodeJpeg(image, preset.quality.jpeg / 100), immichCopyExif(asset, APP_ID, width, height));
     return { bytes: insertXmp(jpeg, immichCopyXmp(asset)), width, height, mime: FORMAT_MIME.jpeg };
   }
 
@@ -98,7 +113,7 @@ export async function finishExport(rendered: ImageData, asset: MetadataAsset, pr
   let bytes: Uint8Array;
   switch (preset.format) {
     case 'jpeg':
-      bytes = insertExif(await encodeJpeg(image, preset.quality / 100), meta.exif);
+      bytes = insertExif(await encodeJpeg(image, preset.quality.jpeg / 100), meta.exif);
       if (xmp) bytes = insertXmp(bytes, xmp);
       break;
     case 'png':
@@ -106,6 +121,21 @@ export async function finishExport(rendered: ImageData, asset: MetadataAsset, pr
       break;
     case 'tiff':
       bytes = await encodeRgbTiff(image, tiffMetadata(meta.exif, xmp, preset.ppi));
+      break;
+    case 'webp':
+    case 'avif':
+    case 'jxl':
+      // AVIF gets no EXIF or XMP: they would be extra items in its item tables, not a chunk to add.
+      bytes = await encodeOffThread({
+        format: preset.format,
+        width,
+        height,
+        data: image.data,
+        quality: preset.quality[preset.format],
+        lossless: preset.lossless,
+        exif: preset.format === 'avif' ? undefined : buildExifTiff(meta.exif),
+        xmp: preset.format === 'avif' ? undefined : xmp || undefined,
+      });
       break;
   }
   return { bytes, width, height, mime: FORMAT_MIME[preset.format] };
