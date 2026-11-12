@@ -1,5 +1,6 @@
 // End-to-end smoke test against the test Immich (e2e/docker-compose.immich.yml, seeded).
-// Opens a RAW from Immich's viewer via the "Edit RAW" button, edits, saves, exports, reopens, re-saves.
+// Opens a RAW from Immich's viewer via the "Edit RAW" button, edits, saves, exports, reopens, re-saves,
+// then saves with the RAW in front and the edit always a favourite, and back with the defaults.
 // Usage: node e2e/smoke.mjs <out-dir> [filename-part]   (default: sony)
 //   INSECURE=1  open the pages from a plain-HTTP origin that isn't a secure context (insecure.mjs)
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -172,6 +173,73 @@ try {
     oldTrashed: old.body?.isTrashed,
   });
   await page.screenshot({ path: join(outDir, '5-resaved.png') });
+
+  // 7. Save options: the RAW in front, the edit always a favourite, the RAW's own tags on the edit.
+  const tagValue = 'e2e/Save options';
+  const upserted = await api('PUT', '/tags', { tags: [tagValue] });
+  const tag = (upserted.body ?? []).find((t) => t.value === tagValue);
+  if (tag) await api('PUT', `/tags/${tag.id}/assets`, { ids: [raw.id] });
+  check('tag the RAW', !!tag, { status: upserted.status });
+  const setSave = (save) =>
+    page.evaluate((s) => {
+      const key = 'raw-editor.export';
+      let stored = {};
+      try {
+        stored = JSON.parse(localStorage.getItem(key) ?? '{}') ?? {};
+      } catch {}
+      localStorage.setItem(key, JSON.stringify({ ...stored, save: s }));
+    }, save);
+  await setSave({ front: 'raw', favorite: 'always' });
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  await page.locator('input[aria-label="Contrast"]').fill('30');
+  await page.locator('header.top button.primary').click();
+  const toast3 = page.locator('.toast', { hasText: 'Saved to Immich' });
+  await toast3.waitFor({ timeout: 240000 });
+  const notice3 = (await toast3.textContent()) ?? '';
+  const render3 = (await api('GET', `/assets/${raw.id}/metadata/raw-editor.recipe`)).body?.value?.render?.assetId;
+  const rawInfo3 = await api('GET', `/assets/${raw.id}`);
+  const stack3 = rawInfo3.body?.stack?.id ? await api('GET', `/stacks/${rawInfo3.body.stack.id}`) : null;
+  const old2 = await api('GET', `/assets/${render2}`);
+  check('RAW in front: the RAW leads the stack, the new edit is in it, the old one in trash', rawInfo3.body?.stack?.primaryAssetId === raw.id && (stack3?.body?.assets ?? []).some((a) => a.id === render3) && old2.body?.isTrashed === true, {
+    primary: rawInfo3.body?.stack?.primaryAssetId,
+    render3,
+    members: (stack3?.body?.assets ?? []).map((a) => a.originalFileName),
+    oldTrashed: old2.body?.isTrashed,
+  });
+  check('the notice says the edit is behind the RAW', /behind the RAW/.test(notice3), { notice3 });
+  check('the way back names the RAW', (new URL(page.url()).searchParams.get('return') ?? '').includes(raw.id), { url: page.url() });
+  const render3Info = await api('GET', `/assets/${render3}`);
+  check('favourite Always: the edit is a favourite', render3Info.body?.isFavorite === true, { isFavorite: render3Info.body?.isFavorite });
+  const render3File = await context.request.get(`${API_BASE}/api/assets/${render3}/original`);
+  const render3Text = render3File.ok() ? (await render3File.body()).toString('latin1') : '';
+  check("the edit's XMP lists the RAW's tags", render3Text.includes('digiKam:TagsList') && render3Text.includes(tagValue));
+  // Immich reads the uploaded file's tags in a background job that may run after Save tagged
+  // the edit: the tag must be there, and still be there once that job has run.
+  const hasTag = async () => ((await api('GET', `/assets/${render3}`)).body?.tags ?? []).some((t) => t.value === tagValue);
+  let tagged = false;
+  for (let i = 0; i < 20 && !(tagged = await hasTag()); i++) await page.waitForTimeout(1000);
+  await page.waitForTimeout(10000);
+  const stillTagged = await hasTag();
+  check("the RAW's tags are on the edit, and stay there", tagged && stillTagged, { tagged, stillTagged });
+
+  // 8. Back to the defaults: the next save puts the edit in front again.
+  await setSave({ front: 'edit', favorite: 'copy' });
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  await page.locator('input[aria-label="Contrast"]').fill('10');
+  await page.locator('header.top button.primary').click();
+  await page.locator('.toast', { hasText: 'stacked on top of the RAW' }).waitFor({ timeout: 240000 });
+  const render4 = (await api('GET', `/assets/${raw.id}/metadata/raw-editor.recipe`)).body?.value?.render?.assetId;
+  const rawInfo4 = await api('GET', `/assets/${raw.id}`);
+  const render4Info = await api('GET', `/assets/${render4}`);
+  check('edit in front again, a favourite only when the RAW is', rawInfo4.body?.stack?.primaryAssetId === render4 && render4Info.body?.isFavorite === !!rawInfo4.body?.isFavorite, {
+    primary: rawInfo4.body?.stack?.primaryAssetId,
+    render4,
+    isFavorite: render4Info.body?.isFavorite,
+  });
+  if (tag) await api('DELETE', `/tags/${tag.id}`);
+
   check('no console errors', errors.length === 0, { errors: errors.slice(0, 5) });
 } catch (e) {
   check('fatal', false, { error: String(e?.stack ?? e).slice(0, 800) });

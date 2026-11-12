@@ -23,10 +23,17 @@ to DNG; below the photo is the filmstrip.
 ## 3. Save
 
 **Save to Immich** (Ctrl+S) uploads the edited JPEG and stacks it on top of the RAW.
-- It keeps the RAW's date, location, albums, rating, description and favourite.
+- It keeps the RAW's date, location, albums, tags, rating, description and favourite.
 - Saving again replaces the JPEG; the old one goes to Immich's trash.
-- The RAW file itself is never changed. The edit settings are stored with it, so you can reopen
-  the photo later and carry on where you left off.
+- The RAW file itself is never changed. The edit settings are stored on the RAW in Immich's
+  database, so you can reopen the photo later and carry on where you left off.
+
+Two choices under **Save to Immich** in the Export settings (the gear in the Export panel) change
+this:
+- **In front of the stack:** the edited JPEG (the default) or the RAW. With the RAW in front, the
+  JPEG goes in the stack behind it. In a stack of several shots, the best shot stays in front
+  either way ([Stacking](stacking.md)).
+- **Favourite:** the edited JPEG is a favourite when the RAW is one (the default), or always.
 
 ![Saved: the editor offers the way back to Immich](images/getting-started/saved.jpg)
 
@@ -41,8 +48,9 @@ Leaving with unsaved changes asks whether to save them:
 
 ## 4. Back in Immich
 
-The edited photo is on top of its stack. The two thumbnails at the bottom left are the stack: the
-edited JPEG and the RAW. Immich's own Edit RAW button on the JPEG opens the RAW again.
+The edited photo is on top of its stack (unless Save keeps the RAW in front). The two thumbnails at
+the bottom left are the stack: the edited JPEG and the RAW. Immich's own Edit RAW button on the JPEG
+opens the RAW again.
 
 ![Back in Immich: the edited photo on top of its stack](images/getting-started/immich-result.jpg)
 

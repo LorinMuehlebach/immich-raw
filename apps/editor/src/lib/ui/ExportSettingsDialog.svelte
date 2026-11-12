@@ -4,7 +4,9 @@
   import {
     AMOUNT_LABELS,
     EXPORT_PRESET_IDS,
+    FAVORITE_LABELS,
     FORMAT_LABELS,
+    FRONT_LABELS,
     METADATA_LABELS,
     NAMING_CHOICES,
     POSITION_LABELS,
@@ -25,10 +27,12 @@
     type ExportPreset,
     type ExportPresetId,
     type MetadataMode,
+    type SaveFavorite,
     type SharpenAmount,
     type SharpenFor,
     type SizeMode,
     type SizeUnit,
+    type StackFront,
     type WatermarkPosition,
   } from '../state/export-settings.ts';
   import { captureDate } from '../export/metadata.ts';
@@ -255,6 +259,24 @@
       <p class="note">Save uses this preset for the copy in Immich: its size, quality and sharpening. That copy is always a JPEG without watermark and keeps the RAW's own metadata.</p>
     {/if}
 
+    <div class="form save">
+      <div class="sep"></div>
+      <h3>Save to Immich</h3>
+      <label class="row" title="Which photo Immich shows for the stack. A stack of several shots keeps its best shot in front.">
+        <span class="lbl">In front of the stack</span>
+        <select value={editor.exportSettings.save.front} onchange={(e) => editor.setSaveSettings({ front: e.currentTarget.value as StackFront })}>
+          {#each Object.entries(FRONT_LABELS) as [value, label] (value)}<option {value}>{label}</option>{/each}
+        </select>
+      </label>
+      <label class="row">
+        <span class="lbl">Favourite</span>
+        <select value={editor.exportSettings.save.favorite} onchange={(e) => editor.setSaveSettings({ favorite: e.currentTarget.value as SaveFavorite })}>
+          {#each Object.entries(FAVORITE_LABELS) as [value, label] (value)}<option {value}>{label}</option>{/each}
+        </select>
+      </label>
+      <p class="hint">Tags, albums, date, location, rating and description come from the RAW.</p>
+    </div>
+
     <div class="buttons">
       <button onclick={() => editor.resetExportPreset(id)}>Defaults for {PRESET_LABELS[id].name}</button>
       <span class="spacer"></span>
@@ -397,6 +419,15 @@
   .sep {
     border-top: 1px solid var(--line);
     margin: 6px 0;
+  }
+  .save {
+    margin-top: 6px;
+  }
+  h3 {
+    margin: 0 0 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-bright);
   }
   .note {
     margin: 10px 0 0;

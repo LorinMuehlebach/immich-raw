@@ -36,7 +36,15 @@ describe('normalizeExportSettings', () => {
     };
     stored.immichPreset = 'high';
     stored.copyright = '© Me';
+    stored.save = { front: 'raw', favorite: 'always' };
     expect(normalizeExportSettings(stored)).toEqual(stored);
+  });
+
+  it('gives the save defaults to settings stored before the save options', () => {
+    const s = normalizeExportSettings({ immichPreset: 'low', copyright: 'x' });
+    expect(s.save).toEqual({ front: 'edit', favorite: 'copy' });
+    expect(normalizeExportSettings({ save: { front: 'camera', favorite: true } }).save).toEqual(DEFAULT_EXPORT_SETTINGS.save);
+    expect(normalizeExportSettings({ save: { front: 'raw' } }).save).toEqual({ front: 'raw', favorite: 'copy' });
   });
 
   it('reads presets stored before the export options (longEdge only)', () => {

@@ -130,6 +130,7 @@ import {
   type ExportPreset,
   type ExportPresetId,
   type ExportSettings,
+  type SaveSettings,
 } from './export-settings.ts';
 import { downloadBlob } from '../download.ts';
 import { captureDate } from '../export/metadata.ts';
@@ -282,15 +283,22 @@ const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   encode: 'Encoding JPEG',
   prepare: 'Preparing',
   upload: 'Uploading',
-  metadata: 'Copying date, location and albums',
+  metadata: 'Copying date, location, albums and tags',
   stack: 'Stacking with the RAW',
   recipe: 'Saving edit settings',
   cleanup: 'Moving the previous version to trash',
 };
 
+/** What Save did with the stack, from the RAW's stack front after saving. */
+function savedNotice(front: string | undefined, rawId: string, renderId: string | null): string {
+  if (front && front === renderId) return 'Saved to Immich, stacked on top of the RAW.';
+  if (front === rawId) return "Saved to Immich, in the RAW's stack behind the RAW.";
+  return "Saved to Immich, in the RAW's stack.";
+}
+
 const UPSCALE_SAVE_LABEL: Record<UpscaleSaveStep, string> = {
   upload: 'Uploading',
-  metadata: 'Copying date, location and albums',
+  metadata: 'Copying date, location, albums and tags',
   stack: 'Stacking with the RAW',
 };
 
@@ -1943,24 +1951,33 @@ export class Editor {
     try {
       // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
-      const { recipe, file, fallback } = await this.renderExport(asset, session, renderer, preset, step, true);
+      const settings = $state.snapshot(this.exportSettings.save) as SaveSettings;
+      // Tags, rating or favourite may have changed in Immich since the editor opened.
+      const raw = await getAssetInfo({ id: asset.id }).catch(() => asset);
+      const { recipe, file, fallback } = await this.renderExport(raw, session, renderer, preset, step, true);
+      const warnings: string[] = [];
       const saved = await saveRender({
-        raw: asset,
+        raw,
         recipe,
         jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
+        settings,
         onProgress: (s, f) => step(s, f),
+        onWarning: (w) => warnings.push(w),
       });
       if (this.recipe.render?.assetId) this.pastRenders.add(this.recipe.render.assetId);
       this.recipe.render = saved.render;
       this.savedRenderId = saved.render?.assetId ?? null;
+      // Read the RAW again before the way back is updated: it follows the stack's new front.
+      this.asset = await getAssetInfo({ id: asset.id }).catch(() => raw);
       this.syncReturnPath();
       this.recipe.decoder = saved.decoder;
       delete this.recipe.pending;
       this.savedJson = editableJson(saved);
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
-      this.notice = `Saved to Immich, stacked on top of the RAW.${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
-      this.asset = await getAssetInfo({ id: asset.id }).catch(() => asset);
+      this.notice = [savedNotice(this.asset.stack?.primaryAssetId, asset.id, this.savedRenderId), ...warnings, fallback ? COLOR_FALLBACK : '']
+        .filter(Boolean)
+        .join(' ');
       this.requestRender();
       return true;
     } catch (e) {
@@ -2277,6 +2294,12 @@ export class Editor {
     this.storeExportSettings({ ...($state.snapshot(this.exportSettings) as ExportSettings), copyright: text });
   }
 
+  /** How Save puts the edit into Immich (stack front, favourite). Takes effect on the next save. */
+  setSaveSettings(patch: Partial<SaveSettings>): void {
+    const current = $state.snapshot(this.exportSettings) as ExportSettings;
+    this.storeExportSettings({ ...current, save: { ...current.save, ...patch } });
+  }
+
   /** Puts one preset back to its defaults. */
   resetExportPreset(id: ExportPresetId): void {
     const current = $state.snapshot(this.exportSettings) as ExportSettings;
@@ -2425,16 +2448,18 @@ export class Editor {
     }
   }
 
-  /** Where "back" goes: the page the user came from, pointing at the new render if saved. */
+  /** Where "back" goes: the page the user came from, pointing at the stack's front photo if saved. */
   backUrl(): string {
     const renderId = this.recipe.render?.assetId;
     const rawId = this.asset?.id;
     let path = this.returnPath ?? (rawId ? `/photos/${rawId}` : '/photos');
     // The editor may have been opened from the RAW or from an earlier render (the top of
-    // the stack); either way, come back to the current render.
-    if (renderId) {
-      for (const id of [rawId, ...this.pastRenders]) {
-        if (id && id !== renderId && path.includes(id)) path = path.replaceAll(id, renderId);
+    // the stack); either way, come back to the current render, or to the RAW when Save
+    // keeps the RAW in front.
+    const target = rawId && renderId && this.asset?.stack?.primaryAssetId === rawId ? rawId : renderId;
+    if (target) {
+      for (const id of [rawId, renderId, ...this.pastRenders]) {
+        if (id && id !== target && path.includes(id)) path = path.replaceAll(id, target);
       }
     }
     return path;

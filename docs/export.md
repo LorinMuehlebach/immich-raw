@@ -22,7 +22,9 @@ The gear sets, for each preset:
 - the file name: the original name, with the preset or date, album and number, or your own pattern.
 
 The settings are kept in the browser. One of the presets also makes the copy that **Save to
-Immich** uploads (**Immich copy**, see [Getting started](getting-started.md#3-save)).
+Immich** uploads (**Immich copy**, see [Getting started](getting-started.md#3-save)). Below the
+presets, **Save to Immich** sets which photo is in front of the stack and when the edit is a
+favourite.
 
 ![Export settings: file type and size](images/export/settings.jpg)
 

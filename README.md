@@ -18,8 +18,8 @@ phones and tablets.
 Each feature has a guide with screenshots.
 
 - **[Edit from Immich and save back](docs/getting-started.md):** the Edit RAW button, a JPEG of
-  your edit stacked on the RAW with its date, location, albums and rating, and the edit kept for
-  later.
+  your edit stacked with the RAW (in front of it, or behind it) with its date, location, albums,
+  tags and rating, and the edit kept for later.
 - **[Lightroom-style editing](docs/editing.md):** white balance, tone, Auto tone, profiles
   (including Fujifilm film looks), curves, Color Mixer, Color Grading, sharpening and noise
   reduction, lens corrections (Lensfun), transform, vignette and grain, crop.

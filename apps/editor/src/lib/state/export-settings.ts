@@ -47,12 +47,24 @@ export interface ExportPreset {
   naming: string;
 }
 
+/** Which photo Save puts in front of the RAW's stack. */
+export type StackFront = 'edit' | 'raw';
+/** copy: the edit is a favourite when the RAW is; always: every saved edit is a favourite. */
+export type SaveFavorite = 'copy' | 'always';
+
+/** How Save puts the edit into Immich. Tags, albums, date, location, rating and description always come from the RAW. */
+export interface SaveSettings {
+  front: StackFront;
+  favorite: SaveFavorite;
+}
+
 export interface ExportSettings {
   presets: Record<ExportPresetId, ExportPreset>;
   /** The preset Save renders the Immich copy with (size, quality, sharpening; always JPEG). */
   immichPreset: ExportPresetId;
   /** Copyright line written into exports (and the watermark's default text), with {year} and {owner}. */
   copyright: string;
+  save: SaveSettings;
 }
 
 export const EXPORT_PRESET_IDS: readonly ExportPresetId[] = ['low', 'medium', 'high'];
@@ -81,6 +93,8 @@ export const METADATA_LABELS: Record<MetadataMode, string> = {
   noLocation: 'All except location',
   copyright: 'Copyright only',
 };
+export const FRONT_LABELS: Record<StackFront, string> = { edit: 'The edited JPEG', raw: 'The RAW' };
+export const FAVORITE_LABELS: Record<SaveFavorite, string> = { copy: 'When the RAW is one', always: 'Always' };
 export const POSITION_LABELS: Record<WatermarkPosition, string> = {
   'top-left': 'Top left',
   top: 'Top',
@@ -141,6 +155,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   },
   immichPreset: 'medium',
   copyright: DEFAULT_COPYRIGHT,
+  save: { front: 'edit', favorite: 'copy' },
 };
 
 const qualitySpec = (id: ExportPresetId): ParamSpec => ({
@@ -242,6 +257,8 @@ function normalizePreset(id: ExportPresetId, v: unknown): ExportPreset {
 export function normalizeExportSettings(input: unknown): ExportSettings {
   const o = obj(input);
   const presets = obj(o.presets);
+  const save = obj(o.save);
+  const def = DEFAULT_EXPORT_SETTINGS.save;
   return {
     presets: {
       low: normalizePreset('low', presets.low),
@@ -250,6 +267,10 @@ export function normalizeExportSettings(input: unknown): ExportSettings {
     },
     immichPreset: isExportPresetId(o.immichPreset) ? o.immichPreset : DEFAULT_EXPORT_SETTINGS.immichPreset,
     copyright: text(o.copyright, DEFAULT_COPYRIGHT),
+    save: {
+      front: pick(save.front, ['edit', 'raw'] as const, def.front),
+      favorite: pick(save.favorite, ['copy', 'always'] as const, def.favorite),
+    },
   };
 }
 

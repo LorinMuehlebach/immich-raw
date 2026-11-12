@@ -149,6 +149,16 @@ describe('buildXmp', () => {
     expect(xml).not.toContain('lr:');
   });
 
+  it("writes tag paths as digiKam:TagsList, the list Immich reads a file's tags from", () => {
+    const xml = buildXmp({ tagsList: ['Travel', 'Places / Asia/Shanghai', 'Culling/Rejected/Blur', 'Travel', '  '] });
+    expectWellFormed(xml);
+    expect(attr(xml, 'xmlns:digiKam')).toBe('http://www.digikam.org/ns/1.0/');
+    expect(items(xml, 'digiKam:TagsList')).toMatchObject({ values: ['Travel', 'Places/Asia/Shanghai', 'Culling/Rejected/Blur'] });
+    expect(xml).toContain('<rdf:Seq>');
+    expect(xml).not.toContain('dc:subject');
+    expect(buildXmp({ tagsList: [] })).toBe('');
+  });
+
   it('writes ratings -1 and 1..5 only', () => {
     expect(attr(buildXmp({ rating: -1 }), 'xmp:Rating')).toBe('-1');
     expect(attr(buildXmp({ rating: 1 }), 'xmp:Rating')).toBe('1');

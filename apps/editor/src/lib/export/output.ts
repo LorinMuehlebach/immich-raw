@@ -15,7 +15,7 @@ import {
 } from '@immich-raw/pipeline';
 import { APP_ID } from '@immich-raw/recipe';
 import { fillText, outputSize, type ExportFormat, type ExportPreset } from '../state/export-settings.ts';
-import { captureDate, exportMetadata, immichCopyExif, type MetadataAsset } from './metadata.ts';
+import { captureDate, exportMetadata, immichCopyExif, immichCopyXmp, type MetadataAsset } from './metadata.ts';
 
 export type OutputStep = 'resize' | 'sharpen' | 'encode';
 
@@ -90,7 +90,7 @@ export async function finishExport(rendered: ImageData, asset: MetadataAsset, pr
 
   if (o.forImmich) {
     const jpeg = insertExif(await encodeJpeg(image, preset.quality / 100), immichCopyExif(asset, APP_ID, width, height));
-    return { bytes: jpeg, width, height, mime: FORMAT_MIME.jpeg };
+    return { bytes: insertXmp(jpeg, immichCopyXmp(asset)), width, height, mime: FORMAT_MIME.jpeg };
   }
 
   const meta = exportMetadata(asset, preset.metadata, { copyright: o.copyright, owner: o.owner, software: APP_ID, ppi: preset.ppi, width, height });
