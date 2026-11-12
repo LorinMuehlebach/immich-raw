@@ -77,8 +77,10 @@ and your edit all move to the DNG; then the original is deleted (to the trash, o
   (Subject, Sky, which People parts), not its pixels: the mask is found again when the photo is
   opened, and on another photo when it is copied or saved in a preset.
 - **Culler (optional):** a separate small service that groups bursts of similar shots into stacks,
-  puts the best one on top and tags why the others lost (lighting, blur, closed eyes). For RAW files
-  it measures exposure on the RAW file itself, because Immich's RAW previews are auto-brightened. See
+  puts the best one on top and tags why the others lost (lighting, blur, closed eyes). People come
+  first: their faces' exposure counts most, and among good shots the one with the most smiles wins.
+  For RAW files it measures exposure on the RAW file itself, because Immich's RAW previews are
+  auto-brightened. See
   [Optional: the culler](#optional-the-culler-auto-stack-and-best-pick) and
   [docs/culler.md](docs/culler.md).
 
@@ -334,7 +336,8 @@ The **stack window** (the number on a stack in the filmstrip, or **Compare stack
 viewer) shows a stack's shots one at a time with what the culler measured; pick the one you prefer
 and move the others to Immich's trash.
 
-It runs small AI models (CLIP, YuNet, MediaPipe) on the server's CPU; they are part of the image,
+It runs small AI models (CLIP, YuNet, MediaPipe's face landmarker and object detector) on the
+server's CPU; they are part of the image,
 which is about a 1.8 GB download. How it decides, all settings and the command line are in
 [docs/culler.md](docs/culler.md).
 

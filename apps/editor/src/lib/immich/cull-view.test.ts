@@ -113,3 +113,28 @@ describe('metricRows', () => {
     expect(metricRows(info('A', 3, 'rejected', 'lighting', { evVsBest: -1.5 }))[1]?.value).toBe('−1.5 EV vs best');
   });
 });
+
+describe('people and smiles', () => {
+  const people = { evVsBest: -0.3, sharpPct: 92, faces: 2, closed: 0, judgedOn: 'faces' as const, subjectEv: -2.45, subjectClipHiPct: 3.4, subjectClipLoPct: 0, people: 2, smiling: 1, smileFaces: 2 };
+
+  it('shows what the exposure was judged on, smiles and people', () => {
+    const rows = metricRows(info('A', 2, 'runner-up', null, people));
+    const value = (label: string) => rows.find((r) => r.label === label)?.value;
+    expect(value("Faces' exposure")).toBe('−2.5 EV vs ideal · 3 % blown');
+    expect(value('Smiles')).toBe('1 of 2 smiling');
+    expect(value('People')).toBe('2 found');
+    expect(rows.map((r) => r.label)).toEqual(['Verdict', 'Sharpness', 'Exposure', "Faces' exposure", 'Eyes', 'Smiles', 'People']);
+  });
+
+  it("marks the people's exposure when a shot lost for lighting", () => {
+    const rows = metricRows(info('A', 3, 'rejected', 'lighting', { ...people, judgedOn: 'people', subjectEv: 1.2, subjectClipHiPct: 0 }));
+    expect(rows.find((r) => r.label === "People's exposure")).toEqual({ label: "People's exposure", value: '+1.2 EV vs ideal', bad: true });
+    expect(describeMetrics(info('A', 3, 'rejected', 'lighting', { ...people, judgedOn: 'people', subjectEv: 1.2 }))).toContain('people +1.2 EV vs ideal');
+  });
+
+  it('judged on the whole photo: no extra row; one face: smiling or not', () => {
+    const rows = metricRows(info('A', 2, 'runner-up', null, { judgedOn: 'photo', faces: 1, smiling: 0, smileFaces: 1 }));
+    expect(rows.some((r) => r.label.endsWith("' exposure"))).toBe(false);
+    expect(rows.find((r) => r.label === 'Smiles')?.value).toBe('not smiling');
+  });
+});

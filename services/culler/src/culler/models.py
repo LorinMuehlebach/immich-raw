@@ -166,6 +166,13 @@ class ExposureStats:
     range: float  # stops between the 5th and 95th percentile
     badness: float = 0.0
 
+    def to_json(self) -> dict[str, Any]:
+        return {"key": self.key, "clipHi": self.clip_hi, "clipLo": self.clip_lo, "range": self.range}
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any] | None) -> ExposureStats | None:
+        return cls(d["key"], d["clipHi"], d["clipLo"], d["range"]) if d else None
+
 
 @dataclass
 class FaceInfo:
@@ -177,6 +184,7 @@ class FaceInfo:
     ear: tuple[float, float] | None = None  # eye opening, left and right
     yaw: float | None = None
     pitch: float | None = None
+    smile: float | None = None  # 0 = neutral, 1 = a broad smile (both mouth corners averaged)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -188,6 +196,7 @@ class FaceInfo:
             "ear": list(self.ear) if self.ear else None,
             "yaw": self.yaw,
             "pitch": self.pitch,
+            "smile": self.smile,
         }
 
     @classmethod
@@ -201,7 +210,23 @@ class FaceInfo:
             ear=tuple(d["ear"]) if d.get("ear") else None,
             yaw=d.get("yaw"),
             pitch=d.get("pitch"),
+            smile=d.get("smile"),
         )
+
+
+@dataclass
+class BodyInfo:
+    """A person found by the object detector (also without a usable face)."""
+
+    box: tuple[float, float, float, float]  # x, y, w, h in analysis-image pixels
+    score: float
+
+    def to_json(self) -> dict[str, Any]:
+        return {"box": list(self.box), "score": self.score}
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> BodyInfo:
+        return cls(box=tuple(d["box"]), score=d["score"])
 
 
 @dataclass
@@ -210,11 +235,17 @@ class Features:
     source: Literal["raw", "jpeg", "render"]
     width: int
     height: int
-    exposure: ExposureStats
+    exposure: ExposureStats  # the whole photo, its centre weighted
     sharpness: float
     faces: list[FaceInfo] = field(default_factory=list)
     embedding: np.ndarray | None = None
     exposure_source: Literal["preview", "raw"] = "preview"
+    bodies: list[BodyInfo] = field(default_factory=list)
+    face_exposure: ExposureStats | None = None  # the faces only
+    body_exposure: ExposureStats | None = None  # the people found by the object detector
+    # `sharpness` is the face's eye band when there is a face, else this: the sharpest 5 % of tiles.
+    photo_sharpness: float | None = None
+    face_sharpness: bool = False  # `sharpness` was measured on a face
 
     @property
     def faces_known(self) -> int:
@@ -224,6 +255,9 @@ class Features:
     def faces_closed(self) -> int:
         return sum(1 for f in self.faces if f.state == "closed")
 
+    def faces_smiling(self, min_score: float) -> int:
+        return sum(1 for f in self.faces if f.smile is not None and f.smile >= min_score)
+
     def to_json(self) -> dict[str, Any]:
         e = self.exposure
         return {
@@ -231,25 +265,34 @@ class Features:
             "source": self.source,
             "width": self.width,
             "height": self.height,
-            "exposure": {"key": e.key, "clipHi": e.clip_hi, "clipLo": e.clip_lo, "range": e.range},
+            "exposure": e.to_json(),
             "sharpness": self.sharpness,
             "faces": [f.to_json() for f in self.faces],
             "exposureSource": self.exposure_source,
+            "bodies": [b.to_json() for b in self.bodies],
+            "faceExposure": self.face_exposure.to_json() if self.face_exposure else None,
+            "bodyExposure": self.body_exposure.to_json() if self.body_exposure else None,
+            "photoSharpness": self.photo_sharpness,
+            "faceSharpness": self.face_sharpness,
         }
 
     @classmethod
     def from_json(cls, d: dict[str, Any], embedding: np.ndarray | None) -> Features:
-        e = d["exposure"]
         return cls(
             asset_id=d["assetId"],
             source=d["source"],
             width=d["width"],
             height=d["height"],
-            exposure=ExposureStats(e["key"], e["clipHi"], e["clipLo"], e["range"]),
+            exposure=ExposureStats.from_json(d["exposure"]),
             sharpness=d["sharpness"],
             faces=[FaceInfo.from_json(f) for f in d.get("faces") or ()],
             embedding=embedding,
             exposure_source=d.get("exposureSource", "preview"),
+            bodies=[BodyInfo.from_json(b) for b in d.get("bodies") or ()],
+            face_exposure=ExposureStats.from_json(d.get("faceExposure")),
+            body_exposure=ExposureStats.from_json(d.get("bodyExposure")),
+            photo_sharpness=d.get("photoSharpness"),
+            face_sharpness=bool(d.get("faceSharpness")),
         )
 
 

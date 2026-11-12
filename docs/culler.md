@@ -45,7 +45,18 @@ Code: [services/culler/](../services/culler/).
      - How far the typical brightness is from the target. The target is the same one the editor's
        Auto tone aims for; brightness within ±0.5 stops of it costs nothing.
      - Blown highlights, crushed shadows, and a very flat image (haze, flare).
-     - Faces count more than the rest of the photo; without faces, the centre does.
+     - **People first.** When the photos show people, their exposure counts most:
+       - the faces make up 80 % of the score, the rest of the photo 20 %;
+       - faces have their own target, because well exposed skin is brighter than a scene's average
+         and differs between people: within ±1 stop of it costs nothing;
+       - the faces' own blown highlights and crushed shadows count too. A face burnt out by the
+         flash loses, even if the rest of the photo is fine;
+       - without a usable face (seen from the side or from behind, too small), the people the
+         object detector found count 60 %.
+     - **Every shot of a group is judged alike.** Faces only when every shot has a usable face,
+       else people when every shot shows some, else the whole photo with its centre weighted. A
+       shot doesn't win just because a whole figure is brighter than a face. Sharpness works the
+       same way: the eyes when every shot has a face, else the sharpest areas.
    - **Exposure of RAW files is measured on the RAW file itself.** Immich renders RAW previews with
      LibRaw's automatic brightness. In a test, that made a shot 1.5 stops darker look exactly like
      the normal one in its preview. So the culler downloads the RAW and decodes it without that
@@ -61,8 +72,12 @@ Code: [services/culler/](../services/culler/).
      - MediaPipe's face landmarks give how far each eye is open. An eye counts as closed when it is
        less than 0.155 open (height/width, both eyes averaged), or both blink scores are at least 0.5.
        These values were checked on real stage photos.
-   - **Best:** the survivor with the best mix of sharpness (45 %), exposure (35 %) and open eyes
-     (20 %); if that is a tie, the earliest shot.
+   - **Smiles:** among the survivors, the shot with the most smiling faces is the best. The others
+     stay runner-ups, not rejected: a serious face is no flaw.
+     - The smile is MediaPipe's score for both mouth corners, averaged. A face counts as smiling
+       from 0.4; on real portraits neutral faces measured 0.00–0.17, smiles 0.48–0.87.
+   - **Best:** the survivor with the most smiles, then the best mix of sharpness (45 %), exposure
+     (35 %) and open eyes (20 %); if that is a tie, the earliest shot.
    - **Your choice comes first:** a shot you put in front yourself is always the best. So is the only
      favourite in a group.
    - The other survivors are runner-ups (`Culling/Runner-up`). The best gets `Culling/Best`.
@@ -114,7 +129,13 @@ A run that finds nothing new changes nothing.
 - **Stack controls:** the number on a stack opens the stack window (below). ★ on another photo makes
   that one the best. **Collapse stacks** in the filmstrip's header shows only the best photo of each
   stack.
-- **Auto-stack…** previews a run (a dry run), applies it, or undoes the last one.
+- **Auto-stack…** previews a run (a dry run), applies it, or undoes the last one. Its checkboxes
+  choose what that run takes into account; the browser remembers them. Automatic runs use the
+  culler's own settings (`culler.toml`).
+  - **People's exposure counts most:** the faces, or else the people, before the rest of the photo.
+  - **Find people without a visible face.**
+  - **Prefer the most smiles.**
+  - **Set aside closed eyes.**
 - **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6" or
   "rejected: not sharp". Click it to open the stack window.
 
@@ -124,8 +145,9 @@ A run that finds nothing new changes nothing.
   with at least two shots. It opens the window as a page of its own; Esc goes back to Immich.
 - **Switching shots:** ← / →, Home / End, the thumbnails at the bottom, or a swipe on touch screens.
 - **Details:** the verdict and its place in the stack, sharpness and exposure compared with the best
-  shot, blown highlights, crushed shadows, the exposure error, eyes, the camera settings and the
-  files of the shot. The measurement a shot was rejected for is shown in red.
+  shot, the faces' or people's own exposure, blown highlights, crushed shadows, the exposure error,
+  eyes, smiles, the people found, the camera settings and the files of the shot. The measurement a
+  shot was rejected for is shown in red.
 - **Pictures:** each shot shows its edit if it has one, else the camera JPEG, else the RAW. Immich's
   RAW previews are auto-brightened, so for exposure trust the numbers more than the RAW's picture.
 - **★ Make preferred** (or P) puts the shot in front, the same as ★ in the filmstrip.
@@ -220,12 +242,26 @@ respect_favorites = true
 
 [eyes]
 enabled = true
+
+[lighting]
+people_first = true      # faces, or else people, count most for exposure
+face_weight = 0.8
+
+[people]
+enabled = true           # people without a usable face (MediaPipe object detector)
+
+[smiles]
+enabled = true
+min_score = 0.4          # a face counts as smiling from this score
 ```
 
 ## Resources
 
-- **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms). Only photos that have a
-  neighbour within 90 s are measured.
+- **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms, the people detector about
+  30 ms). Only photos that have a neighbour within 90 s are measured.
+- **Models:** CLIP, YuNet (faces), MediaPipe's face landmarker (eyes, smiles) and its object
+  detector EfficientDet-Lite0 (people, 7 MB). Updating to this version measures every photo once
+  again, because faces, people and smiles are now stored apart.
 - **Downloads:** for RAW files the original is downloaded as well.
 - **Cache:** measurements are cached in `/data`, so re-runs are quick.
 - **Memory and size:** about 1 GB of RAM while working; the image is about 1.8 GB including the
@@ -234,7 +270,9 @@ enabled = true
 ## Known limits
 
 - **Reject flag:** see the Immich 3.4 note above.
-- **Small faces:** faces under 40 px, as in group photos taken from afar, get no eyes verdict.
+- **Small faces:** faces under 40 px, as in group photos taken from afar, get no eyes verdict and no
+  smile. The people detector still finds those people for exposure.
+- **Smiles count, not how broad:** a shot with three slight smiles beats one with two big ones.
 - **Starting values:** the thresholds were tuned on test bursts. Check a dry run or `calibrate` on
   your own photos.
 - **Filmstrip:** it lists RAWs only. Stacks of JPEGs can still be opened in the stack window from

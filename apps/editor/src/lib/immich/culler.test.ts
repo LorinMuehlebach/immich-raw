@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CullerError, cullerStatus, lookupCull, recullGroup, setCullerFetch, startRun, waitForRun } from './culler.ts';
+import { CullerError, cullerStatus, DEFAULT_CULL_OPTIONS, lookupCull, parseCullOptions, recullGroup, setCullerFetch, startRun, waitForRun } from './culler.ts';
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -50,6 +50,24 @@ describe('culler client', () => {
     expect(url).toBe(`${import.meta.env.BASE_URL}culler/api/v1/groups/g%2F1/recull`);
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['X-Raw-Editor']).toBe('1');
+  });
+
+  it("sends the Auto-stack options as the service's settings sections", async () => {
+    const f = vi.fn(async () => json(202, { runId: 'r3' }));
+    setCullerFetch(f);
+    await startRun({ kind: 'day', date: '2024-05-01' }, true, { ...DEFAULT_CULL_OPTIONS, smiles: false, people: false });
+    const [, init] = f.mock.calls[0]! as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).options).toEqual({
+      lighting: { people_first: true },
+      people: { enabled: false },
+      smiles: { enabled: false },
+      eyes: { enabled: true },
+    });
+  });
+
+  it('reads stored options, with defaults for anything missing', () => {
+    expect(parseCullOptions(null)).toEqual(DEFAULT_CULL_OPTIONS);
+    expect(parseCullOptions({ smiles: false, eyes: 'no' })).toEqual({ ...DEFAULT_CULL_OPTIONS, smiles: false });
   });
 
   it('waits for a run to finish', async () => {

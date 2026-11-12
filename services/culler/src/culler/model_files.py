@@ -11,7 +11,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 # name: (url, sha256). Licences: CLIP MIT (OpenAI, ONNX export by Immich), YuNet MIT (OpenCV Zoo),
-# FaceLandmarker Apache-2.0 (Google MediaPipe).
+# FaceLandmarker and EfficientDet-Lite0 Apache-2.0 (Google MediaPipe).
 MODELS: dict[str, tuple[str, str]] = {
     "clip_visual.onnx": (
         "https://huggingface.co/immich-app/ViT-B-32__openai/resolve/main/visual/model.onnx",
@@ -29,10 +29,15 @@ MODELS: dict[str, tuple[str, str]] = {
         "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
         "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
     ),
+    "efficientdet_lite0.tflite": (
+        "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite",
+        "4b59100025bea1235a84c1038879a6cccc9f6c49f5e41144e91e74d99e780993",
+    ),
 }
 
 EMBEDDING_FILES = ("clip_visual.onnx", "clip_preprocess_cfg.json")
 EYES_FILES = ("yunet.onnx", "face_landmarker.task")
+PEOPLE_FILES = ("efficientdet_lite0.tflite",)
 
 
 def sha256_of(path: Path) -> str:

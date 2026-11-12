@@ -12,9 +12,22 @@ from datetime import datetime
 from typing import Protocol
 
 from culler.config import Config
-from culler.features.exposure import lighting_badness
+from culler.features.exposure import exposure_basis, judge
 from culler.features.eyes import EyeMeasure, classify_eyes
-from culler.models import Features, Frame, Reason
+from culler.models import ExposureStats, Features, Frame, Reason
+
+
+@dataclass(frozen=True)
+class Basis:
+    """What every shot of a group is compared on, so that all are measured alike."""
+
+    exposure: str = "photo"  # 'faces', 'people' or 'photo'
+    sharpness: str = "photo"  # 'faces' (the eye band) or 'photo' (the sharpest tiles)
+
+    @classmethod
+    def of(cls, feats: list[Features], cfg: Config) -> Basis:
+        faces = bool(feats) and all(f.face_sharpness or f.photo_sharpness is None for f in feats)
+        return cls(exposure_basis(feats, cfg), "faces" if faces else "photo")
 
 
 @dataclass
@@ -22,6 +35,9 @@ class Candidate:
     frame: Frame
     features: Features
     badness: float
+    exposure: ExposureStats  # as the lighting check judges it (people first)
+    sharpness: float
+    basis: Basis
 
     @property
     def frame_id(self) -> str:
@@ -31,13 +47,23 @@ class Candidate:
     def taken(self) -> datetime:
         return self.frame.taken
 
+    @property
+    def judged_on(self) -> str:
+        return self.basis.exposure
+
     @classmethod
-    def of(cls, frame: Frame, features: Features, cfg: Config) -> Candidate:
+    def of(cls, frame: Frame, features: Features, cfg: Config, basis: Basis | None = None) -> Candidate:
+        """`basis`: the group's (`Basis.of` all its shots); without it, this shot's own."""
         # Eye state comes from the cached measurements, so a run's own thresholds apply.
         for face in features.faces:
             if face.blink and face.ear:
                 face.state = classify_eyes(EyeMeasure(face.blink, face.ear, face.yaw, face.pitch), cfg.eyes)
-        return cls(frame, features, lighting_badness(features.exposure, cfg.lighting))
+        basis = basis or Basis.of([features], cfg)
+        exposure, badness = judge(features, cfg, basis.exposure)
+        sharp = features.sharpness
+        if basis.sharpness == "photo" and features.photo_sharpness is not None:
+            sharp = features.photo_sharpness
+        return cls(frame, features, badness, exposure, sharp, basis)
 
 
 class Check(Protocol):
@@ -60,7 +86,7 @@ class LightingCheck:
         out = set()
         for x in cands:
             worse = x.badness - best.badness
-            gap = abs(x.features.exposure.key - best.features.exposure.key)
+            gap = abs(x.exposure.key - best.exposure.key)
             # Frames more than a stop apart: keep only the better side, however close the scores.
             if worse > c.tolerance or (gap > c.max_ev_gap and worse > 0):
                 out.add(x.frame_id)
@@ -74,10 +100,10 @@ class BlurCheck:
         return cfg.blur.enabled
 
     def eliminate(self, cands: list[Candidate], cfg: Config) -> set[str]:
-        top = max(x.features.sharpness for x in cands)
+        top = max(x.sharpness for x in cands)
         if top <= 0:
             return set()
-        return {x.frame_id for x in cands if x.features.sharpness < cfg.blur.min_ratio * top}
+        return {x.frame_id for x in cands if x.sharpness < cfg.blur.min_ratio * top}
 
 
 class EyesCheck:

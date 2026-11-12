@@ -1,9 +1,9 @@
-"""Open or closed eyes, per face.
+"""Open or closed eyes, and smiles, per face.
 
 MediaPipe's FaceLandmarker runs on a square crop around each face that YuNet found (it misses
-small faces in a whole photo) and gives blink scores, landmarks and the head pose. The eye
-opening from the landmarks (height / width, "eye aspect ratio") separates open from closed eyes
-more reliably than the blink scores alone, so both are used.
+small faces in a whole photo) and gives blink and smile scores, landmarks and the head pose. The
+eye opening from the landmarks (height / width, "eye aspect ratio") separates open from closed
+eyes more reliably than the blink scores alone, so both are used.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ class EyeMeasure:
     ear: tuple[float, float]  # eye opening, left and right
     yaw: float | None = None  # degrees
     pitch: float | None = None
+    smile: float | None = None  # 0 = neutral, 1 = a broad smile
 
 
 class EyeStateDetector(Protocol):
@@ -50,6 +51,12 @@ def classify_eyes(m: EyeMeasure, cfg: EyesConfig) -> Literal["open", "closed", "
     if opening < cfg.ear_closed or min(m.blink) >= cfg.blink_closed:
         return "closed"
     return "open"
+
+
+def smile_score(blendshapes: dict[str, float]) -> float | None:
+    """Both mouth corners averaged: one side alone smiles less on a face turned away."""
+    sides = [blendshapes[k] for k in ("mouthSmileLeft", "mouthSmileRight") if k in blendshapes]
+    return sum(sides) / len(sides) if sides else None
 
 
 def eye_aspect_ratio(points: list[tuple[float, float]], idx: tuple[int, ...]) -> float:
@@ -116,4 +123,5 @@ class MediaPipeEyes:
             ear=(eye_aspect_ratio(points, LEFT_EYE), eye_aspect_ratio(points, RIGHT_EYE)),
             yaw=yaw,
             pitch=pitch,
+            smile=smile_score(scores),
         )

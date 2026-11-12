@@ -1,7 +1,8 @@
 """Settings: built-in defaults, then a TOML file, then environment variables.
 
 The TOML file is CULLER_CONFIG, or <data dir>/culler.toml when it exists. Its sections match the
-dataclasses below ([grouping], [lighting], [blur], [eyes], [ranking], [tags], [watcher]).
+dataclasses below ([grouping], [lighting], [blur], [eyes], [people], [smiles], [ranking], [tags],
+[watcher]).
 Runs started from the editor may pass `options` with the same shape to try other thresholds.
 """
 
@@ -39,7 +40,16 @@ class LightingConfig:
     clip_lo_weight: float = 5.0
     min_range_ev: float = 3.5  # flatter than this (haze, flare) costs a little
     range_weight: float = 0.25
-    face_weight: float = 0.6
+    # The people in a photo count most for its exposure: its faces, or else the people found without
+    # a usable face. Their brightness and their own blown / crushed areas get this share of the score.
+    # A group is judged on faces when every shot has one, else on people when every shot shows some.
+    people_first: bool = True
+    face_weight: float = 0.8
+    body_weight: float = 0.6
+    # Well exposed skin is brighter than a whole scene's average and differs between people: its own
+    # target, with a wider band that costs nothing.
+    face_target_key: float = math.log2(0.21)
+    face_dead_band_ev: float = 1.0
     # RAW frames: measure from the RAW file ("file") or from Immich's preview ("preview"). Immich
     # renders RAW previews with automatic brightness, which hides a darker or brighter frame.
     raw_source: str = "file"
@@ -66,6 +76,27 @@ class EyesConfig:
     # closed eyes measured 0.08-0.13, open ones 0.19-0.35.
     ear_closed: float = 0.155
     blink_closed: float = 0.5
+
+
+@dataclass(frozen=True)
+class PeopleConfig:
+    """People found by MediaPipe's object detector (EfficientDet-Lite0, COCO 'person'): also seen
+    from the side, from behind or too small for a face. Used for exposure when no face is usable."""
+
+    enabled: bool = True
+    min_score: float = 0.5
+    min_area: float = 0.02  # share of the photo: drops people far in the background
+    min_area_ratio: float = 0.15  # of the largest person
+
+
+@dataclass(frozen=True)
+class SmilesConfig:
+    """Among the shots that pass every check, the one with the most smiling faces is the best."""
+
+    enabled: bool = True
+    # MediaPipe's mouthSmile scores, both mouth corners averaged. Measured on real portraits:
+    # neutral faces 0.00-0.17, smiles 0.48-0.87.
+    min_score: float = 0.4
 
 
 @dataclass(frozen=True)
@@ -102,6 +133,8 @@ class Config:
     lighting: LightingConfig = field(default_factory=LightingConfig)
     blur: BlurConfig = field(default_factory=BlurConfig)
     eyes: EyesConfig = field(default_factory=EyesConfig)
+    people: PeopleConfig = field(default_factory=PeopleConfig)
+    smiles: SmilesConfig = field(default_factory=SmilesConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
     tags: TagConfig = field(default_factory=TagConfig)
     watcher: WatcherConfig = field(default_factory=WatcherConfig)
@@ -112,16 +145,16 @@ class Config:
 
     def analysis_dict(self) -> dict[str, Any]:
         """The settings that change measured features (part of the feature cache key)."""
-        e = self.eyes
+        e, p = self.eyes, self.people
         return {
-            "eyes": [e.enabled, e.detector_score, e.min_face_px, e.min_face_area_ratio, e.max_yaw_proxy],
-            "face_weight": self.lighting.face_weight,
+            "faces": [e.detector_score, e.min_face_px, e.min_face_area_ratio, e.max_yaw_proxy],
+            "people": [p.min_score, p.min_area, p.min_area_ratio],
             "raw": [self.lighting.raw_source, self.lighting.raw_headroom_ev],
         }
 
 
 # Section names a run's `options` may change. Connection settings and the tag root are not.
-OVERRIDABLE = {"grouping", "lighting", "blur", "eyes", "ranking"}
+OVERRIDABLE = {"grouping", "lighting", "blur", "eyes", "people", "smiles", "ranking"}
 
 
 def _coerce(name: str, current: Any, value: Any) -> Any:

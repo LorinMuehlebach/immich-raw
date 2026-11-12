@@ -17,6 +17,17 @@ export interface CullMetrics {
   sharpPct?: number | null;
   faces?: number;
   closed?: number;
+  /** What the exposure was judged on first: the faces, the people, or only the whole photo. */
+  judgedOn?: 'faces' | 'people' | 'photo';
+  /** Brightness of those faces or people vs their ideal, in stops, and their own clipping. */
+  subjectEv?: number;
+  subjectClipHiPct?: number;
+  subjectClipLoPct?: number;
+  /** People found (also without a visible face). */
+  people?: number;
+  /** Smiling faces, of the faces whose smile could be read. */
+  smiling?: number;
+  smileFaces?: number;
 }
 
 /** What the service last decided for one photo. */
@@ -68,6 +79,8 @@ export interface CullerStatus {
   ok: boolean;
   tagRoot: string;
   eyes: boolean | null;
+  /** The people model is there (null until the service's first run). */
+  people?: boolean | null;
   owner?: string | null;
   watcher?: { enabled: boolean; autoApply: boolean };
 }
@@ -145,7 +158,39 @@ const runId = (r: { runId: string } | null): string => {
   return r.runId;
 };
 
-export const startRun = async (scope: RunScope, dryRun: boolean): Promise<string> => runId(await call('POST', '/runs', { scope, dryRun }));
+/** What a run started from the editor takes into account (the Auto-stack panel's checkboxes). */
+export interface CullOptions {
+  /** The exposure of the faces, or else of the people, counts most. */
+  peopleFirst: boolean;
+  /** Also find people without a visible face. */
+  people: boolean;
+  /** Among the good shots, the one with the most smiles is the best. */
+  smiles: boolean;
+  /** Set aside shots with closed eyes. */
+  eyes: boolean;
+}
+
+export const DEFAULT_CULL_OPTIONS: CullOptions = { peopleFirst: true, people: true, smiles: true, eyes: true };
+
+/** Stored or partial options, with the defaults for anything missing or of the wrong type. */
+export function parseCullOptions(value: unknown): CullOptions {
+  const o = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const flag = (k: keyof CullOptions) => (typeof o[k] === 'boolean' ? (o[k] as boolean) : DEFAULT_CULL_OPTIONS[k]);
+  return { peopleFirst: flag('peopleFirst'), people: flag('people'), smiles: flag('smiles'), eyes: flag('eyes') };
+}
+
+/** The service's `options` (its settings sections) for these choices. */
+export function runOptions(o: CullOptions): Record<string, Record<string, boolean>> {
+  return {
+    lighting: { people_first: o.peopleFirst },
+    people: { enabled: o.people },
+    smiles: { enabled: o.smiles },
+    eyes: { enabled: o.eyes },
+  };
+}
+
+export const startRun = async (scope: RunScope, dryRun: boolean, options?: CullOptions): Promise<string> =>
+  runId(await call('POST', '/runs', options ? { scope, dryRun, options: runOptions(options) } : { scope, dryRun }));
 export const applyRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/apply`));
 export const undoRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/undo`));
 export const makeBest = async (groupId: string, assetId: string): Promise<string> =>

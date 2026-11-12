@@ -1,15 +1,19 @@
 <script lang="ts">
-  // "Auto-stack…" popover above the filmstrip: preview (dry run), apply, undo the last run.
+  // "Auto-stack…" popover above the filmstrip: preview (dry run), apply, undo the last run, and
+  // what the run takes into account (remembered in this browser; automatic runs use the culler's
+  // own settings).
   import type { AssetResponseDto } from '@immich/sdk';
   import { onMount } from 'svelte';
   import { parseContext } from '../immich/context.ts';
   import {
     applyRun,
     lastUndoableRun,
+    parseCullOptions,
     startRun,
     undoRun,
     waitForRun,
     type CullerStatus,
+    type CullOptions,
     type CullRun,
     type RunCounts,
     type RunScope,
@@ -41,6 +45,36 @@
   let error = $state<string | null>(null);
   let undoable = $state<CullRun | null>(null);
   const controller = new AbortController();
+
+  const OPTIONS_KEY = 'raw-editor.cull.options';
+  let options = $state<CullOptions>(readOptions());
+
+  function readOptions(): CullOptions {
+    try {
+      return parseCullOptions(JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? 'null'));
+    } catch {
+      return parseCullOptions(null);
+    }
+  }
+
+  function setOption(key: keyof CullOptions, on: boolean) {
+    options = { ...options, [key]: on };
+    preview = null; // it was made with the other choice
+    try {
+      localStorage.setItem(OPTIONS_KEY, JSON.stringify(options));
+    } catch {
+      // storage blocked: the choice holds while the panel is open
+    }
+  }
+
+  const CHOICES: { key: keyof CullOptions; label: string; title: string }[] = [
+    { key: 'peopleFirst', label: "People's exposure counts most", title: 'Judge the exposure on the faces, or else on the people, before the rest of the photo' },
+    { key: 'people', label: 'Find people without a visible face', title: 'Also people seen from the side, from behind or far away' },
+    { key: 'smiles', label: 'Prefer the most smiles', title: 'Among the good shots, the one with the most smiling faces is the best' },
+    { key: 'eyes', label: 'Set aside closed eyes', title: 'Shots with more closed eyes than the best one are rejected' },
+  ];
+  const unavailable = (key: keyof CullOptions) =>
+    (key === 'people' && status?.people === false) || ((key === 'eyes' || key === 'smiles') && status?.eyes === false);
 
   onMount(() => {
     void refreshUndoable();
@@ -76,7 +110,7 @@
   }
 
   async function doPreview() {
-    preview = await track(() => startRun(scope, true), 'preview');
+    preview = await track(() => startRun(scope, true, options), 'preview');
   }
 
   async function doApply() {
@@ -128,6 +162,15 @@
     sharpness, then closed eyes.
   </p>
 
+  <fieldset class="choices" disabled={!!busy}>
+    {#each CHOICES as c (c.key)}
+      <label title={c.title} class:off={unavailable(c.key)}>
+        <input type="checkbox" checked={options[c.key] && !unavailable(c.key)} disabled={unavailable(c.key)} onchange={(e) => setOption(c.key, e.currentTarget.checked)} />
+        {c.label}
+      </label>
+    {/each}
+  </fieldset>
+
   {#if busy}
     <p class="progress">{busy === 'preview' ? 'Checking' : busy === 'apply' ? 'Applying' : 'Undoing'}: {phaseText(progress)}</p>
   {:else if preview}
@@ -153,7 +196,9 @@
     <p class="dim small">
       {#if status.watcher?.enabled}New uploads are stacked {status.watcher.autoApply ? 'automatically' : 'as suggestions'}.{:else}Automatic
         stacking of new uploads is off.{/if}
-      {#if status.eyes === false}The closed-eyes check is off (face models missing).{/if}
+      {#if status.eyes === false}Faces, eyes and smiles are off (face models missing).{/if}
+      {#if status.people === false}People without a visible face aren't found (model missing).{/if}
+      These choices are for runs started here; automatic runs use the culler's settings.
     </p>
   {/if}
 </div>
@@ -196,6 +241,32 @@
   }
   .buttons {
     margin-top: 8px;
+  }
+  .choices {
+    border: none;
+    margin: 6px 0;
+    padding: 0;
+    display: grid;
+    gap: 3px;
+  }
+  .choices label {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    cursor: pointer;
+  }
+  .choices label.off {
+    color: var(--text-dim);
+    cursor: default;
+  }
+  .choices input {
+    accent-color: var(--accent);
+    margin: 0;
+  }
+  @media (pointer: coarse) {
+    .choices label {
+      min-height: 32px;
+    }
   }
   .spacer {
     flex: 1;

@@ -102,8 +102,25 @@ export function describeMetrics(info: CullInfo): string[] {
   if ((m.clipHiPct ?? 0) >= 1) lines.push(`${Math.round(m.clipHiPct!)} % blown highlights`);
   if ((m.clipLoPct ?? 0) >= 5) lines.push(`${Math.round(m.clipLoPct!)} % crushed shadows`);
   if (m.sharpPct != null && (info.reason === 'blur' || m.sharpPct < 90)) lines.push(`sharpness ${m.sharpPct} % of best`);
+  if (info.reason === 'lighting' && m.subjectEv != null && (m.judgedOn === 'faces' || m.judgedOn === 'people')) {
+    lines.push(`${m.judgedOn} ${signed(m.subjectEv, 1)} EV vs ideal`);
+  }
   if (m.faces) lines.push(m.closed ? `${m.closed} of ${m.faces} faces with eyes closed` : `${m.faces} ${m.faces === 1 ? 'face' : 'faces'}, eyes open`);
+  if (m.smileFaces) lines.push(smilesText(m.smiling ?? 0, m.smileFaces));
   return lines;
+}
+
+function smilesText(smiling: number, faces: number): string {
+  if (faces === 1) return smiling ? 'smiling' : 'not smiling';
+  return `${smiling} of ${faces} smiling`;
+}
+
+/** "3 % blown" / "8 % crushed", only when there is some. */
+function clipText(hi: number | undefined, lo: number | undefined): string {
+  const parts = [];
+  if ((hi ?? 0) >= 1) parts.push(`${Math.round(hi!)} % blown`);
+  if ((lo ?? 0) >= 5) parts.push(`${Math.round(lo!)} % crushed`);
+  return parts.length ? ` · ${parts.join(', ')}` : '';
 }
 
 export interface MetricRow {
@@ -133,6 +150,13 @@ export function metricRows(info: CullInfo): MetricRow[] {
   }
   if (m.sharpPct != null) rows.push({ label: 'Sharpness', value: best ? 'reference' : `${m.sharpPct} % of best`, bad: info.reason === 'blur' });
   if (m.evVsBest != null) rows.push({ label: 'Exposure', value: best ? 'reference' : `${signed(m.evVsBest, 1)} EV vs best`, bad: info.reason === 'lighting' });
+  if (m.subjectEv != null && (m.judgedOn === 'faces' || m.judgedOn === 'people')) {
+    rows.push({
+      label: m.judgedOn === 'faces' ? "Faces' exposure" : "People's exposure",
+      value: `${signed(m.subjectEv, 1)} EV vs ideal${clipText(m.subjectClipHiPct, m.subjectClipLoPct)}`,
+      bad: info.reason === 'lighting',
+    });
+  }
   if (m.lighting != null) rows.push({ label: 'Exposure error', value: `${m.lighting.toFixed(2)} (0 = ideal)`, bad: info.reason === 'lighting' });
   if (m.clipHiPct != null) rows.push({ label: 'Blown highlights', value: `${m.clipHiPct} %` });
   if (m.clipLoPct != null) rows.push({ label: 'Crushed shadows', value: `${m.clipLoPct} %` });
@@ -141,6 +165,8 @@ export function metricRows(info: CullInfo): MetricRow[] {
     const value = !m.faces ? 'no faces found' : m.closed ? `${m.closed} of ${faces} with eyes closed` : `${faces}, eyes open`;
     rows.push({ label: 'Eyes', value, bad: info.reason === 'eyes' });
   }
+  if (m.smileFaces) rows.push({ label: 'Smiles', value: smilesText(m.smiling ?? 0, m.smileFaces) });
+  if (m.people) rows.push({ label: 'People', value: `${m.people} found` });
   return rows;
 }
 
