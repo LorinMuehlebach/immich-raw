@@ -46,11 +46,11 @@ watermark and keeps the RAW's own metadata.
 
 ![Back in Immich: the edited photo on top of its stack](docs/images/5-immich-result.jpg)
 
-**5. Optional: convert to DNG to save space.** The DNG… button replaces the RAW in Immich with a
-DNG, either lossless (the exact sensor data) or lossy (Adobe's lossy DNG, typically 7 to 15 times
-smaller). Before anything is uploaded, the DNG is decoded again and compared with the original.
-Albums, stack, tags, rating, favourite, shared links and your edit all move to the DNG; then the
-original is deleted (to the trash, or permanently).
+**5. Optional: convert to DNG to save space.** The Convert to DNG… button at the bottom of the left
+panel replaces the RAW in Immich with a DNG, either lossless (the exact sensor data) or lossy
+(Adobe's lossy DNG, typically 7 to 15 times smaller). Before anything is uploaded, the DNG is
+decoded again and compared with the original. Albums, stack, tags, rating, favourite, shared links
+and your edit all move to the DNG; then the original is deleted (to the trash, or permanently).
 
 ![The Convert to DNG dialog after checking a lossy DNG](docs/images/4-dng.jpg)
 
