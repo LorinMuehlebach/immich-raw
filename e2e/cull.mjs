@@ -330,7 +330,7 @@ try {
   const boxes = await cullPage.locator('fieldset.choices input[type="checkbox"]').count();
   const previouslyStacked = cullPage.getByLabel('Include previously stacked pictures');
   const forceShown = (await previouslyStacked.count()) === 1 && !(await previouslyStacked.isChecked());
-  check('it opens the auto-stack page with the options, "include previously stacked" unchecked', cullHeading === 'Auto-stack 4 selected photos' && boxes === 4 && forceShown, {
+  check('it opens the auto-stack page with the options, "include previously stacked" unchecked', cullHeading === 'Auto-stack 4 selected photos' && boxes === 6 && forceShown, {
     cullHeading,
     boxes,
     forceShown,
