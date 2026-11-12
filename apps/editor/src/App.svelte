@@ -21,6 +21,7 @@
   import CropOverlay from './lib/ui/CropOverlay.svelte';
   import CropPanel from './lib/ui/CropPanel.svelte';
   import DetailPanel from './lib/ui/DetailPanel.svelte';
+  import DngPanel from './lib/ui/DngPanel.svelte';
   import Filmstrip from './lib/ui/Filmstrip.svelte';
   import Histogram from './lib/ui/Histogram.svelte';
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
@@ -463,7 +464,6 @@
       <button class:active={editor.tool === 'mask'} onclick={() => editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask')} disabled={editor.status !== 'ready' || editor.readOnly} title="Masking: local adjustments with gradients and ranges (Shift+W)">
         Masks{editor.recipe.masks.length ? ` (${editor.recipe.masks.length})` : ''}
       </button>
-      <button onclick={() => editor.openDngDialog()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving} title="Convert to DNG: replaces the original RAW with a smaller DNG">DNG…</button>
       <button class="primary" onclick={() => editor.save()} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving || (!editor.dirty && !!editor.recipe.render)} title="Save to Immich (Ctrl+S)">
         {editor.recipe.render ? 'Save' : 'Save to Immich'}
       </button>
@@ -498,6 +498,7 @@
       <button onclick={() => editor.pastePrevious()} disabled={!editor.hasPrevious || editor.readOnly} title="Paste settings of the last saved photo (Ctrl+Alt+V)">Previous</button>
     </div>
     <ExportPanel />
+    <DngPanel />
   {/snippet}
 
   {#if layout === 'desktop'}
