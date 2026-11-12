@@ -96,7 +96,8 @@ function staticRuntimeFiles(): Plugin {
         }
         const hit = files().find((f) => url === `${BASE}${f.name}`);
         if (!hit) return next();
-        res.setHeader('Content-Type', MIME[extname(hit.path)] ?? 'application/octet-stream');
+        // By the served name: the ONNX Runtime and MediaPipe files are .mjs on disk, served as .js.
+        res.setHeader('Content-Type', MIME[extname(hit.name)] ?? 'application/octet-stream');
         res.setHeader('Content-Length', statSync(hit.path).size);
         for (const [k, v] of Object.entries(isolation)) res.setHeader(k, v);
         createReadStream(hit.path).pipe(res);
