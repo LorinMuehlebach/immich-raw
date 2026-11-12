@@ -268,7 +268,7 @@ try {
   await firstWindow.waitFor({ state: 'detached', timeout: 5000 });
   await page.getByRole('button', { name: 'Auto-stack…' }).click();
   await page.locator('.panel[role="dialog"]').waitFor();
-  await page.getByRole('button', { name: 'Preview' }).click();
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
   await page.locator('.panel[role="dialog"] p', { hasText: 'from' }).or(page.locator('.panel[role="dialog"] .err')).first().waitFor({ timeout: 120000 });
   await page.screenshot({ path: join(outDir, 'auto-stack-panel.png') });
   const panelText = await page.locator('.panel[role="dialog"]').textContent();
@@ -316,11 +316,17 @@ try {
   await cullPage.locator('h2', { hasText: 'Auto-stack' }).waitFor({ timeout: 60000 });
   const cullHeading = (await cullPage.locator('h2').first().textContent())?.trim();
   const boxes = await cullPage.locator('fieldset.choices input[type="checkbox"]').count();
-  check('it opens the auto-stack page with the options', cullHeading === 'Auto-stack 4 selected photos' && boxes === 4, { cullHeading, boxes });
+  const previouslyStacked = cullPage.getByLabel('Include previously stacked pictures');
+  const forceShown = (await previouslyStacked.count()) === 1 && !(await previouslyStacked.isChecked());
+  check('it opens the auto-stack page with the options, "include previously stacked" unchecked', cullHeading === 'Auto-stack 4 selected photos' && boxes === 4 && forceShown, {
+    cullHeading,
+    boxes,
+    forceShown,
+  });
 
   const result = cullPage.locator('section.result');
   const resultText = async () => (await result.textContent().catch(() => ''))?.replace(/\s+/g, ' ').trim();
-  await cullPage.getByRole('button', { name: 'Preview' }).click();
+  await cullPage.getByRole('button', { name: 'Preview', exact: true }).click();
   await result.or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
   const previewText = await resultText();
   const previewCards = await result.locator('.stack').count();
@@ -362,6 +368,39 @@ try {
     afterUndo.every((a) => !a.stack && cullTags(a).length === 0),
     afterUndo.map((a) => ({ n: nameOf[a.id], stack: !!a.stack, tags: cullTags(a) })),
   );
+
+  // A stack taken apart in Immich is left alone, and the page says so and can include it.
+  const selIds = ['c0', 'd0', 'd1', 'd2'].map((k) => id[k]);
+  await startRun({ scope: { kind: 'assets', ids: selIds }, dryRun: false });
+  await api('DELETE', `/stacks/${(await info(id.d0)).stack?.id}`);
+  await cullPage.evaluate(
+    (ids) => localStorage.setItem('immich-raw.export.e2e-apart', JSON.stringify({ ids, context: 'timeline', expected: ids.length, returnPath: '/photos', createdAt: Date.now() })),
+    selIds,
+  );
+  await cullPage.goto(`${BASE}/immich-raw/?cull=e2e-apart`);
+  await cullPage.getByRole('button', { name: 'Preview', exact: true }).click();
+  const note = cullPage.locator('section.result .note');
+  await note.or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  const noteText = (await note.textContent().catch(() => ''))?.replace(/\s+/g, ' ');
+  check('a stack taken apart in Immich: left alone, and the page says so', /0 stacks from 4 photos/.test(await resultText()) && /3 shots were left alone/.test(noteText), {
+    result: await resultText(),
+  });
+  await cullPage.screenshot({ path: join(outDir, 'auto-stack-taken-apart.png') });
+  await note.getByRole('button', { name: 'Include them' }).click();
+  await result.locator('.stack').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  const included = await resultText();
+  check(
+    'Include them: the preview stacks them again, nothing changed yet',
+    /Preview: 1 stack from 4 photos/.test(included) && (await cullPage.getByLabel('Include previously stacked pictures').isChecked()) && !(await info(id.d0)).stack,
+    { included },
+  );
+  await cullPage.getByRole('button', { name: 'Stack and pick the best' }).click();
+  await result.locator('button.stack').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  const forcedRun = ((await culler('GET', '/runs?limit=5')).body?.runs ?? []).find((r) => !r.dryRun && r.origin === 'apply');
+  if (forcedRun) cleanup.runs.push(forcedRun.id);
+  check('applying that preview stacks them', (await stackOf('d0'))?.assets?.length === 3 && forcedRun?.force === true, { force: forcedRun?.force });
+  await cullPage.getByRole('button', { name: 'Undo' }).click();
+  await cullPage.locator('p.ok', { hasText: 'Undone' }).or(cullPage.locator('.err')).first().waitFor({ timeout: 120000 });
   await cullPage.close();
   await immich.close();
 

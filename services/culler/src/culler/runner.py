@@ -366,10 +366,11 @@ class Runner:
             group = self.store.groups_by_ids([gid]).get(gid)
             if group:
                 self.store.set_excluded(json.loads(group["frame_ids"]), "stack deleted")
-        if force:
+        # Force includes the shots the user took apart; only applying it forgets that they did.
+        if force and not dry_run:
             self.store.set_excluded(frames_by_id, None)
         rows = self.store.frame_rows(frames_by_id)
-        excluded = {fid for fid, r in rows.items() if r["excluded"]}
+        excluded = set() if force else {fid for fid, r in rows.items() if r["excluded"]}
         active = [f for f in fs.frames if f.id not in excluded]
 
         if release:
@@ -514,6 +515,8 @@ class Runner:
                 "released": len(released),
                 "pending": len(pending),
                 "excluded": len(excluded) + len({fs.frame_of.get(a, a) for a in fs.excluded}),
+                # Of those: shots whose stack the user took apart (a run with force includes them).
+                "takenApart": len(excluded),
                 "changes": len(ops),
             },
             "groups": groups,

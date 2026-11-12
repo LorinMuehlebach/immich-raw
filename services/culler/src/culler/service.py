@@ -71,7 +71,7 @@ class Service:
         parsed = Scope.from_json(scope)
         run_overrides(self.cfg, options)  # validate now, so the caller hears about bad options
         rid = new_run_id()
-        self.store.create_run(rid, origin, parsed.to_json(), options, dry_run, source_run)
+        self.store.create_run(rid, origin, parsed.to_json(), options, dry_run, source_run, force=force)
         self._jobs.put(("run", rid, parsed, dry_run, options, force, release, before, after))
         return rid
 
@@ -79,7 +79,7 @@ class Service:
         run = self._run_or_fail(run_id)
         if not run["dryRun"]:
             raise RunError("this run was already applied")
-        return self.submit_run(run["scope"], False, run["options"], "apply", source_run=run_id)
+        return self.submit_run(run["scope"], False, run["options"], "apply", force=run["force"], source_run=run_id)
 
     def submit_undo(self, run_id: str) -> str:
         run = self._run_or_fail(run_id)
