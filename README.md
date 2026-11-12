@@ -23,9 +23,9 @@ Each feature has a guide with screenshots.
 - **[Lightroom-style editing](docs/editing.md):** white balance, tone, Auto tone, profiles
   (including Fujifilm film looks), curves, Color Mixer, Color Grading, sharpening and noise
   reduction, lens corrections (Lensfun), transform, vignette and grain, crop.
-- **[Masks](docs/masks.md):** linear and radial gradients, brush, colour and luminance ranges, and
-  AI masks: subject, sky, background, people and their parts, landscape, objects. Edges can be
-  grown, feathered and smoothed.
+- **[Masks](docs/masks.md):** linear and radial gradients, brush, polygon and lasso, colour and
+  luminance ranges, and AI masks: subject, sky, background, people and their parts, landscape,
+  objects. Edges can be grown, feathered and smoothed.
 - **[Workflow](docs/workflow.md):** histogram and clipping, before/after, zoom to 800 %, history,
   snapshots, presets, copy and paste, a filmstrip, keyboard shortcuts, and
   [Lightroom import](docs/workflow.md#lightroom-import) of XMP sidecars and presets.

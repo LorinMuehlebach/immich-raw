@@ -3,12 +3,17 @@
 Masks apply exposure, contrast, colour, sharpness and the other local sliders to part of the photo.
 **Masks** in the header (Shift+W) opens the mask panel. The red overlay shows where a mask applies.
 
-## Gradients, brush and ranges
+## Gradients, brush, polygons and ranges
 
 - **Linear gradient (M):** drag across the photo. Here it darkens and cools the sky.
 - **Radial gradient (Shift+M):** drag out an ellipse; its handles move, resize and turn it.
 - **Brush (K):** paint the mask. Alt erases, `[` and `]` change the size; Size, Feather, Flow and
   Density are in the panel.
+- **Polygon (Shift+K):** click the corners of the area. Click the first corner, double-click or
+  press Enter to close it; Backspace takes back a corner. Then drag a corner to move it, drag an
+  edge to add one, Alt+click a corner to remove it, or drag the pin to move the whole shape.
+  Its edge is sharp: Feather in the panel softens it.
+- **Lasso:** drag around the area; the shape closes when you let go.
 - **Color range:** click a colour in the photo, Shift+click to add another.
 - **Luminance range:** the bright or dark parts, with "Range from", "Range to" and Smoothness.
 
@@ -17,6 +22,8 @@ Masks apply exposure, contrast, colour, sharpness and the other local sliders to
 ![A radial gradient around the house](images/masks/radial.jpg)
 
 ![Painting a mask with the brush](images/masks/brush.jpg)
+
+![A polygon around the solar panels](images/masks/polygon.jpg)
 
 ![A colour range: the red roof](images/masks/color-range.jpg)
 
@@ -45,7 +52,7 @@ the computer, a few seconds with WebGPU, and it is remembered for the photo.
 ## Combining parts and refining edges
 
 A mask can have several parts: **Add**, **Subtract** or **Intersect** another one (a gradient,
-the brush, a range or an AI part).
+the brush, a polygon or lasso, a range or an AI part).
 
 The gear next to each part, and next to the mask itself, opens its edge settings, in pixels of the
 full-size photo:
@@ -67,7 +74,7 @@ O brings the overlay back or switches it off.
 
 Masks from Lightroom sidecars and presets are imported, AI masks included (they are found again in
 the photo): see [Lightroom import](workflow.md#lightroom-import). Lightroom has no edge settings, so
-imported masks start without them.
+imported masks start without them. It has no polygon or lasso mask either.
 
 ## How AI masks work
 

@@ -90,6 +90,13 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
 
   To compare builds side by side, run the editor's dev server from each checkout on its own port
   and point `IMMICH_URL` at it, e.g. `IMMICH_URL=http://localhost:5174`.
+- Polygon masks: `node e2e/probe-polygon.mjs <out-dir> [file name part]` draws polygons and a lasso
+  on one seeded RAW (`nikon-z7` by default):
+  - closing on the first corner, with Enter and with a double-click (which must not zoom);
+  - Backspace, Shift+K, corner editing (drag, add on an edge, Alt+click to remove);
+  - the mask changing only the inside, and undo.
+
+  Nothing is saved.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;
