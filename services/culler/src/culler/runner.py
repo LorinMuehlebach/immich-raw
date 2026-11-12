@@ -309,7 +309,8 @@ class Runner:
 
         out: dict[str, Features] = {}
         pending: list[str] = []
-        todo: list[tuple[Frame, Asset, str]] = []
+        # The frame, the photo measured, its kind, and an older measurement to bring up to date.
+        todo: list[tuple[Frame, Asset, str, Features | None]] = []
         for f, a, source in jobs:
             if not a.thumbhash:
                 pending.append(f.id)
@@ -318,18 +319,18 @@ class Runner:
             if cached is not None:
                 out[f.id] = cached
             else:
-                todo.append((f, a, source))
+                todo.append((f, a, source, self.store.features(a.id, analyzer.upgradable_key, a.thumbhash)))
 
         raw_from_file = cfg.lighting.raw_source == "file"
 
-        def fetch(a: Asset, source: str) -> tuple[bytes | None, Path | None]:
+        def fetch(a: Asset, source: str, preview_only: bool) -> tuple[bytes | None, Path | None]:
             """Immich's preview, and for RAW frames the RAW file (a temp file the caller deletes)."""
             try:
                 data = self.client.thumbnail(a.id, "preview")
             except ImmichError as e:
                 log.warning("preview of %s: %s", a.name, e)
                 return None, None
-            if source != "raw" or not raw_from_file:
+            if source != "raw" or not raw_from_file or preview_only:
                 return data, None
             fd, name = tempfile.mkstemp(prefix="culler-", suffix=extension(a.name))
             os.close(fd)
@@ -350,17 +351,21 @@ class Runner:
             queue: deque = deque()
             it = iter(todo)
             for job in it:
-                queue.append((job, pool.submit(fetch, job[1], job[2])))
+                queue.append((job, pool.submit(fetch, job[1], job[2], job[3] is not None)))
                 if len(queue) >= DOWNLOAD_AHEAD:
                     break
             while queue:
-                (f, a, source), fut = queue.popleft()
+                (f, a, source, old), fut = queue.popleft()
                 nxt = next(it, None)
                 if nxt:
-                    queue.append((nxt, pool.submit(fetch, nxt[1], nxt[2])))
+                    queue.append((nxt, pool.submit(fetch, nxt[1], nxt[2], nxt[3] is not None)))
                 data, raw_path = fut.result()
                 try:
-                    if data is not None:
+                    if data is not None and old is not None:
+                        feats = analyzer.add_animals(old, data)
+                        self.store.put_features(feats, analyzer.cache_key, a.thumbhash)
+                        out[f.id] = feats
+                    elif data is not None:
                         feats = analyzer.analyse(data, a.id, source, raw_path)
                         self.store.put_features(feats, analyzer.cache_key, a.thumbhash)
                         out[f.id] = feats
