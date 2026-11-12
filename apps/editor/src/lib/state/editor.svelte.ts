@@ -42,6 +42,7 @@ import {
   tempTintForNeutral,
   totalTurns,
   transformInverse,
+  uprightMatrix,
   uprightSize,
   viewToCrop,
   withAspect,
@@ -70,6 +71,7 @@ import {
   MAX_BRUSH_POINTS,
   MAX_OBJECT_POINTS,
   MAX_POLYGON_POINTS,
+  MAX_UPRIGHT_GUIDES,
   aiCount,
   aiLabel,
   newAiComponent,
@@ -159,8 +161,9 @@ export type Status = 'loading' | 'auth' | 'error' | 'ready';
 /**
  * 'tat': Lightroom's targeted adjustment tool (drag on the photo to change the Color Mixer).
  * 'mask': the Masking panel with its on-image handles.
+ * 'upright': Guided Upright, guides drawn on the whole (uncropped) photo.
  */
-export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale';
+export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale' | 'upright';
 
 /** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
 export interface MaskDraft {
@@ -740,7 +743,7 @@ export class Editor {
       const recipe = this.currentRecipe();
       this.ai.sync(recipe);
       const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: this.overlayMask };
-      if (this.zoom.on && this.tool !== 'crop' && this.session) {
+      if (this.zoom.on && !this.wholeView && this.session) {
         const vp = this.viewport;
         // Up to 50 % the half-size decode has a pixel for every screen pixel, and it is a
         // quarter of the full image to upload. (Further out the renderer uses its preview.)
@@ -753,7 +756,7 @@ export class Editor {
           height: Math.max(1, Math.round(vp.height * vp.dpr)),
         }, opts);
       } else {
-        const f = renderer.render(recipe, { mode: this.tool === 'crop' ? 'crop' : 'edit', ...opts });
+        const f = renderer.render(recipe, { mode: this.wholeView ? 'crop' : 'edit', ...opts });
         if (f.width !== this.frame.width || f.height !== this.frame.height) this.frame = { width: f.width, height: f.height };
       }
       this.viewVersion++;
@@ -772,7 +775,7 @@ export class Editor {
       const r = this.renderer;
       if (!r || this.status !== 'ready') return;
       // While zoomed the canvas shows a region; the histogram is of the whole image.
-      if (this.zoom.on && this.tool !== 'crop') r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
+      if (this.zoom.on && !this.wholeView) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
       else if (this.overlayMask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
       if (this.scope === 'histogram') {
         this.histogram = r.histogram();
@@ -1771,11 +1774,17 @@ export class Editor {
       this.maskSel = { mask: last.id, comp: last.components[0]?.id ?? null };
     }
     this.tool = tool;
-    if (tool === 'crop') {
+    if (tool !== 'upright') this.uprightSel = null;
+    if (this.wholeView) {
       this.before = false;
       this.setZoom(false);
     }
     this.requestRender();
+  }
+
+  /** The view shows the whole transformed photo, not the crop (Crop, Guided Upright); no zoom there. */
+  get wholeView(): boolean {
+    return this.tool === 'crop' || this.tool === 'upright';
   }
 
   toggleBefore(): void {
@@ -1821,7 +1830,7 @@ export class Editor {
    */
   zoomAnchor(x: number, y: number): { scale: number; p: [number, number] } | null {
     const r = this.renderer;
-    if (!r || !this.camera || this.tool === 'crop' || this.status !== 'ready') return null;
+    if (!r || !this.camera || this.wholeView || this.status !== 'ready') return null;
     const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
     return { scale: this.zoom.on ? this.zoom.scale : fitScale(frame, this.viewport), p: r.previewToFrame(x, y) ?? [0.5, 0.5] };
   }
@@ -1832,7 +1841,7 @@ export class Editor {
    */
   zoomFrom(anchor: { scale: number; p: [number, number] }, factor: number, at: [number, number]): void {
     const r = this.renderer;
-    if (!r || !this.camera || this.tool === 'crop' || this.status !== 'ready') return;
+    if (!r || !this.camera || this.wholeView || this.status !== 'ready') return;
     const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
     const fit = fitScale(frame, this.viewport);
     const current = this.zoom.on ? this.zoom.scale : fit;
@@ -1984,7 +1993,70 @@ export class Editor {
     const t = this.recipe.transform;
     if (!t.constrain || !isTransformActive(t)) return undefined;
     const { w, h } = this.uprightProxySize();
-    return transformInverse(t, w, h);
+    return transformInverse(t, w, h, this.uprightNow());
+  }
+
+  /** Guided Upright's correction for the current guides (null: none, or guides that ask too much). */
+  private uprightNow(): Affine | null {
+    const r = this.renderer;
+    if (!r || !this.camera) return null;
+    return uprightMatrix(this.recipe.transform, totalTurns(this.camera.flip, this.recipe.crop), r.proxyWidth, r.proxyHeight);
+  }
+
+  // ---- Guided Upright
+
+  /** The selected guide (Delete removes it). */
+  uprightSel = $state<number | null>(null);
+
+  /** Guided Upright's guides, [x0, y0, x1, y1] in the mask frame. */
+  get uprightGuides(): [number, number, number, number][] {
+    return this.recipe.transform.upright?.guides ?? [];
+  }
+
+  /** There are guides, but they would turn the photo too far, so they do nothing. */
+  get uprightFailed(): boolean {
+    void this.viewVersion;
+    return this.uprightGuides.length > 0 && !this.uprightNow();
+  }
+
+  addUprightGuide(g: [number, number, number, number]): void {
+    const guides = this.uprightGuides;
+    if (guides.length >= MAX_UPRIGHT_GUIDES) {
+      this.notice = `Up to ${MAX_UPRIGHT_GUIDES} guides.`;
+      return;
+    }
+    if (this.setUprightGuides([...guides, g], 'Guided Upright: Add Guide')) this.uprightSel = guides.length;
+  }
+
+  moveUprightGuide(index: number, g: [number, number, number, number]): void {
+    this.setUprightGuides(this.uprightGuides.map((x, i) => (i === index ? g : x)), 'Guided Upright: Move Guide');
+  }
+
+  removeUprightGuide(index: number): void {
+    if (index < 0 || index >= this.uprightGuides.length) return;
+    if (this.setUprightGuides(this.uprightGuides.filter((_, i) => i !== index), 'Guided Upright: Remove Guide')) this.uprightSel = null;
+  }
+
+  clearUprightGuides(): void {
+    if (this.uprightGuides.length && this.setUprightGuides([], 'Guided Upright: Clear Guides')) this.uprightSel = null;
+  }
+
+  /** Sets the guides; none = Guided Upright off. With Constrain Crop the crop follows. */
+  private setUprightGuides(guides: [number, number, number, number][], label: string): boolean {
+    if (this.readOnlyGuard()) return false;
+    const t = this.recipe.transform;
+    if (!guides.length) delete t.upright;
+    else t.upright = { guides: guides.map((g) => g.map(q5) as [number, number, number, number]), focal35: t.upright?.focal35 ?? this.focal35() };
+    if (t.constrain) this.constrainCrop();
+    this.changed(true, label);
+    return true;
+  }
+
+  /** 35 mm-equivalent focal length: EXIF focal length times the camera's crop factor (Lensfun); 35 when unknown. */
+  private focal35(): number {
+    const q = this.lensQuery;
+    const crop = this.lensDb && q ? findCamera(this.lensDb, q.cameraMake, q.cameraModel)?.camera.cropFactor : undefined;
+    return q?.focalLength && crop ? Math.round(q.focalLength * crop * 10) / 10 : 35;
   }
 
   /** Keeps the crop inside the transformed image (largest box when the crop wasn't set by hand). */

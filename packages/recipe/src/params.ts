@@ -148,7 +148,8 @@ export const LENS_PARAMS = {
   defringeGreenHi: p('lens.defringeGreenHi', 'Green Hue to', 0, 100, 60, 1, 0, false),
 } as const satisfies Record<string, ParamSpec>;
 
-// Transform (Lightroom's manual sliders; Upright is not supported).
+// Transform (Lightroom's manual sliders; Guided Upright is TransformParams.upright, the automatic
+// Upright modes are not supported).
 export const TRANSFORM_PARAMS = {
   vertical: p('transform.vertical', 'Vertical', -100, 100, 0),
   horizontal: p('transform.horizontal', 'Horizontal', -100, 100, 0),

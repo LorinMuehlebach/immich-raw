@@ -33,6 +33,7 @@
   import TransformPanel from './lib/ui/TransformPanel.svelte';
   import UnsavedDialog from './lib/ui/UnsavedDialog.svelte';
   import UpscaleOverlay from './lib/ui/UpscaleOverlay.svelte';
+  import UprightOverlay from './lib/ui/UprightOverlay.svelte';
   import UpscalePanel from './lib/ui/UpscalePanel.svelte';
   import MaskOverlay from './lib/ui/MaskOverlay.svelte';
   import MaskPanel from './lib/ui/MaskPanel.svelte';
@@ -92,7 +93,7 @@
     presetsTab = t === 'presets';
     const tool = t === 'crop' ? 'crop' : t === 'mask' ? 'mask' : 'edit';
     // The white balance picker and the targeted adjustment are part of Edit.
-    if (tool === 'edit' ? editor.tool === 'crop' || editor.tool === 'mask' : editor.tool !== tool) editor.setTool(tool);
+    if (tool === 'edit' ? editor.tool === 'crop' || editor.tool === 'mask' || editor.tool === 'upright' : editor.tool !== tool) editor.setTool(tool);
   }
 
   function fromMenu(action: () => void) {
@@ -101,7 +102,7 @@
   }
 
   const PAD = VIEW_PAD;
-  const zoomed = $derived(editor.zoom.on && editor.tool !== 'crop');
+  const zoomed = $derived(editor.zoom.on && !editor.wholeView);
   const display = $derived.by(() => {
     if (zoomed) return { w: Math.round(stageW), h: Math.round(stageH) };
     const aspect = editor.frame.width / editor.frame.height;
@@ -244,6 +245,15 @@
       editor.rotate90(1);
     } else if (mod || e.altKey) {
       return;
+    } else if (key === 't' && e.shiftKey) {
+      editor.setTool(editor.tool === 'upright' ? 'edit' : 'upright');
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.tool === 'upright' && !onRange) {
+      if (editor.uprightSel !== null) {
+        e.preventDefault();
+        editor.removeUprightGuide(editor.uprightSel);
+      }
+    } else if (e.key === 'Enter' && editor.tool === 'upright') {
+      editor.setTool('edit');
     } else if (key === 'w' && e.shiftKey) {
       editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask');
     } else if (key === 'm') {
@@ -280,7 +290,7 @@
       editor.setTool(editor.tool === 'crop' ? 'edit' : 'crop');
     } else if (key === 'w') {
       editor.setTool(editor.tool === 'wb' ? 'edit' : 'wb');
-    } else if (key === 'z' && editor.tool !== 'crop') {
+    } else if (key === 'z' && !editor.wholeView) {
       editor.toggleZoom();
     } else if (key === 'x' && editor.tool === 'crop') {
       editor.togglePortrait();
@@ -325,7 +335,7 @@
   }
 
   function onViewDown(e: PointerEvent) {
-    if (editor.tool === 'crop' || editor.status !== 'ready' || e.button > 0) return;
+    if (editor.wholeView || editor.status !== 'ready' || e.button > 0) return;
     if (e.pointerType === 'touch' && editor.tool !== 'tat') {
       touches.set(e.pointerId, [e.clientX, e.clientY]);
       if (touches.size > 2) return;
@@ -413,7 +423,7 @@
 
   /** Ctrl + mouse wheel (and trackpad pinch, which arrives as one) zooms around the cursor. */
   function onWheel(e: WheelEvent) {
-    if (!e.ctrlKey || editor.status !== 'ready' || editor.tool === 'crop') return;
+    if (!e.ctrlKey || editor.status !== 'ready' || editor.wholeView) return;
     e.preventDefault();
     const [x, y] = viewPoint(e);
     const s = stage.getBoundingClientRect();
@@ -472,7 +482,7 @@
         {#if menuOpen}
           <div class="menu-shade" role="presentation" onpointerdown={() => (menuOpen = false)}></div>
           <div class="menu" role="menu">
-            <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.tool === 'crop'}>
+            <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.wholeView}>
               {zoomed ? 'Fit to screen' : 'Zoom to 100 %'}
             </button>
             <button role="menuitem" onclick={() => fromMenu(() => editor.openDngDialog())} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving}>Convert to DNG…</button>
@@ -481,7 +491,7 @@
         {/if}
       </div>
     {:else}
-      <button class:active={zoomed} onclick={() => (zoomed ? editor.setZoom(false) : editor.toggleZoom())} disabled={editor.status !== 'ready' || editor.tool === 'crop'} title="Zoom 100 % (Z, or double-click the photo; Ctrl + mouse wheel zooms freely)">
+      <button class:active={zoomed} onclick={() => (zoomed ? editor.setZoom(false) : editor.toggleZoom())} disabled={editor.status !== 'ready' || editor.wholeView} title="Zoom 100 % (Z, or double-click the photo; Ctrl + mouse wheel zooms freely)">
         {zoomed ? 'Fit' : '1:1'}
       </button>
       <button class:active={editor.before} onclick={() => editor.toggleBefore()} disabled={editor.status !== 'ready'} title="Before / after (\)">Before</button>
@@ -564,6 +574,14 @@
         {/if}
         {#if editor.tool === 'upscale' && editor.status === 'ready' && !editor.before}
           <UpscaleOverlay width={display.w} height={display.h} />
+        {/if}
+        {#if editor.tool === 'upright' && editor.status === 'ready'}
+          <UprightOverlay width={display.w} height={display.h} />
+          <div class="badge bottom">
+            {editor.uprightFailed
+              ? 'These guides would turn the photo too far: move or remove one'
+              : 'Guided Upright: drag along edges that should be vertical or horizontal · Enter when done'}
+          </div>
         {/if}
         {#if editor.before}<div class="badge">Before</div>{/if}
         {#if editor.tool === 'tat'}
@@ -714,6 +732,7 @@
             <div><kbd>\</kbd> before/after</div>
             <div><kbd>J</kbd> clipping</div>
             <div><kbd>R</kbd> crop</div>
+            <div><kbd>⇧</kbd>+<kbd>T</kbd> guided upright</div>
             <div><kbd>W</kbd> WB picker</div>
             <div><kbd>Z</kbd> / double-click: 1:1</div>
             <div><kbd>Ctrl</kbd>+wheel: zoom</div>

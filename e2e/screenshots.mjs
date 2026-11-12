@@ -1,7 +1,7 @@
 // Takes the screenshots of the guides in docs/ (docs/images/<section>/<name>.jpg) on a test Immich
 // with the five seeded sample RAWs: the try-it demo (deploy/demo) or the e2e test Immich.
 // Usage: node e2e/screenshots.mjs [section ...]      (default: all sections)
-//   sections: getting-started editing masks polygon workflow scopes export upscale dng stacking mobile
+//   sections: getting-started editing upright masks polygon workflow scopes export upscale dng stacking mobile
 //   IMMICH_URL (default http://127.0.0.1:8088); HEADED=1 shows the browser.
 // - Needs internet once, for the AI mask and upscale models and the Fujifilm looks. They stay in
 //   the browser profile in e2e/out/screenshots-profile.
@@ -24,6 +24,7 @@ const HEADLESS = !process.env.HEADED;
 const SECTIONS = {
   'getting-started': gettingStarted,
   editing,
+  upright,
   masks,
   polygon,
   workflow,
@@ -207,6 +208,30 @@ async function polygon() {
   await page.keyboard.press('o');
   await settle();
   await shot('masks', 'polygon');
+}
+
+/** Guided Upright (in the editing guide): guides along the house's downpipe and gable. */
+async function upright() {
+  await openEditor(await find('fuji-xt5'));
+  // Edges that are vertical with the Transform screenshot's correction (Vertical -25), found
+  // there and kept in the mask frame, so the guides lie on them in the uncorrected photo.
+  await ed(() => globalThis.__editor.applyPatch({ transform: { vertical: -25 } }, 'Transform'));
+  await settle();
+  const guides = await ed(() => {
+    const e = globalThis.__editor;
+    const seg = (x, y0, y1) => [...e.viewToMask(x, y0), ...e.viewToMask(x, y1)];
+    return [seg(0.7565, 0.78, 0.965), seg(0.2585, 0.41, 0.58)];
+  });
+  await ed(() => globalThis.__editor.applyPatch({ transform: { vertical: 0 } }, 'Transform'));
+  await settle();
+  await openPanel('Transform');
+  await page.keyboard.press('Shift+T');
+  await ed((gs) => {
+    for (const g of gs) globalThis.__editor.addUprightGuide(g);
+  }, guides);
+  await settle(1200);
+  await shot('editing', 'upright');
+  await page.keyboard.press('Enter');
 }
 
 async function masks() {
