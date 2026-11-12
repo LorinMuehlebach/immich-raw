@@ -82,7 +82,7 @@ await page.waitForTimeout(500);
 // 4. Save to Immich, then build a lossy DNG (cancelled afterwards: the RAW stays).
 await page.keyboard.press('Control+s');
 await page.locator('.sub', { hasText: /· saved/ }).waitFor({ timeout: 300000 });
-await page.getByRole('button', { name: 'DNG…' }).click();
+await page.getByRole('button', { name: 'Convert to DNG…' }).click();
 await page.locator('input[name="dng-mode"]').first().check();
 await page.getByRole('button', { name: 'Create DNG' }).click();
 await page.getByRole('button', { name: 'Replace original' }).waitFor({ timeout: 600000 });
