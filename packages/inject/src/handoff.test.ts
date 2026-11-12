@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HANDOFF_MAX_AGE_MS, HANDOFF_PREFIX, exportPageUrl, newHandoffKey, parseHandoff, staleHandoffKeys } from './handoff.ts';
+import { HANDOFF_MAX_AGE_MS, HANDOFF_PREFIX, cullPageUrl, exportPageUrl, newHandoffKey, parseHandoff, staleHandoffKeys } from './handoff.ts';
 
 const A = '1801b1cb-a19e-4e11-95f0-1324647e05c2';
 const B = '5F545228-F581-46FA-AA2D-B117D3CD4047';
@@ -8,6 +8,11 @@ describe('handoff', () => {
   it('builds the export page URL', () => {
     expect(exportPageUrl('/immich-raw/', 'abc')).toBe('/immich-raw/?export=abc');
     expect(exportPageUrl('/immich-raw/?x=1', 'abc')).toBe('/immich-raw/?x=1&export=abc');
+  });
+
+  it('builds the auto-stack page URL', () => {
+    expect(cullPageUrl('/immich-raw/', 'abc')).toBe('/immich-raw/?cull=abc');
+    expect(cullPageUrl('https://x.test/raw/?a=1', 'k')).toBe('https://x.test/raw/?a=1&cull=k');
   });
 
   it('makes random hex keys', () => {

@@ -13,6 +13,8 @@ Code: [services/culler/](../services/culler/).
 1. **Which photos.**
    - **Auto-stack… in the editor:** the album the editor was opened from, or else the day of the
      photo being edited.
+   - **Auto-stack in Immich's selection bar:** the selected photos, with the rest of any stack
+     they're in (Immich shows a stack as one photo).
    - **Automatic run:** every new upload, plus the photos taken around it, so a burst uploaded in two
      parts is seen whole.
    - Trashed, hidden and locked photos are left out.
@@ -145,6 +147,17 @@ A run that finds nothing new changes nothing.
   - **Set aside closed eyes** (also half-blinks).
 - **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6" or
   "rejected: not sharp". Click it to open the stack window.
+
+**From Immich's selection.** Select two photos or more in Immich (in the timeline, an album or a
+person's page) and click **Auto-stack** (a stack of photos with a star) in the selection bar. It
+opens a page for those photos with the same checkboxes as **Auto-stack…** in the editor.
+- **Preview** shows the stacks it would make, each with its best shot in front, and changes nothing.
+- **Stack and pick the best** makes them. If a preview is on show, it applies that preview.
+- Afterwards a click on a stack opens it in the stack window, to check the pick or delete the others.
+- **Undo** takes the stacks apart again. After a change in the stack window the run can no longer be
+  undone there (undo goes newest run first).
+- The button shows only when the culler works for you: on the same address as Immich, and run with
+  your API key.
 
 **The stack window.** It shows the shots of one stack, best first, one at a time and large.
 - **Opening it:** the number on a stack in the filmstrip, the verdict in the editor's title line, or
@@ -285,6 +298,7 @@ min_score = 0.4          # a face counts as smiling from this score
   your own photos.
 - **Filmstrip:** it lists RAWs only. Stacks of JPEGs can still be opened in the stack window from
   Immich's photo viewer.
-- **Compare stack button:** it needs the culler on the same address as Immich (the immich-raw
-  container or the proxy setup). With the userscript on another address it doesn't show.
+- **Compare stack and Auto-stack buttons:** they need the culler on the same address as Immich
+  (the immich-raw container or the proxy setup). With the userscript on another address they don't
+  show.
 - **One library per container:** run one container per user.

@@ -65,9 +65,10 @@ and your edit all move to the DNG; then the original is deleted (to the trash, o
   you drag a slider and renders full resolution for 100 % zoom and for saving.
 - **The buttons:** a small script that the immich-raw container (or your own proxy, or a browser
   userscript) adds to Immich's pages: Edit RAW in the photo viewer, Compare stack there for photos
-  in a stack the culler made, and Export in the bar shown while photos are selected. To find out which photos are selected (Immich keeps only those on screen in
-  the page), the export button presses Immich's download shortcut (Shift+D) and catches the
-  request, so nothing is downloaded. Immich then clears its selection, as after a download.
+  in a stack the culler made, and in the bar shown while photos are selected Export and, with the
+  culler, Auto-stack. To find out which photos are selected (Immich keeps only those on screen in
+  the page), these buttons press Immich's download shortcut (Shift+D) and catch the request, so
+  nothing is downloaded. Immich then clears its selection, as after a download.
 - **Stored data:** the edit settings live in Immich's asset metadata on the RAW. The original file is
   cached in the browser (over HTTPS), so reopening a photo is fast.
 - **AI masks:** small models run in a background worker in the browser (ONNX Runtime, with WebGPU
@@ -330,8 +331,9 @@ If both the proxy script and the userscript are active, only one button appears.
 
 The culler groups bursts and similar shots into Immich stacks and puts the best photo of each group
 on top. It tags the others with the reason they lost: lighting, blur or closed eyes. It works on
-RAWs, JPEGs and RAW + JPEG pairs. It sorts new uploads automatically, and you can run it on a day or
-an album from the editor's filmstrip (**Auto-stack…**), with a preview first and undo afterwards.
+RAWs, JPEGs and RAW + JPEG pairs. It sorts new uploads automatically. You can also run it on a day
+or an album from the editor's filmstrip (**Auto-stack…**), or on photos selected in Immich
+(**Auto-stack** in the selection bar), with a preview first and undo afterwards.
 The **stack window** (the number on a stack in the filmstrip, or **Compare stack** in Immich's photo
 viewer) shows a stack's shots one at a time with what the culler measured; pick the one you prefer
 and move the others to Immich's trash.

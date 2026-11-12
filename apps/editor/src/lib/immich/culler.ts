@@ -61,6 +61,36 @@ export interface RunCounts {
   errors?: number;
 }
 
+/** One shot of a stack in a run's report. */
+export interface ReportFrame {
+  frameId: string;
+  name: string;
+  /** Every file of the shot (RAW, camera JPEG, edits). */
+  assetIds: string[];
+  /** The file Immich shows for it: the newest edit, else the camera JPEG, else the RAW. */
+  faceId: string;
+  taken: string | null;
+  role: CullRole;
+  reason: CullReason | null;
+  rank: number;
+  pinned: boolean;
+  metrics: CullMetrics;
+}
+
+/** A stack the run made (or, in a preview, would make). */
+export interface ReportGroup {
+  id: string;
+  primaryId: string | null;
+  frames: ReportFrame[];
+}
+
+export interface RunReport {
+  counts?: Partial<RunCounts>;
+  groups?: ReportGroup[];
+  errors?: string[];
+  notes?: string[];
+}
+
 export interface CullRun {
   id: string;
   origin: string;
@@ -76,6 +106,8 @@ export interface CullRun {
   finishedAt: string | null;
   undoneAt: string | null;
   sourceRun: string | null;
+  /** Only when asked for one run (getRun), not in the list. */
+  report?: RunReport | null;
 }
 
 export interface CullerStatus {
@@ -180,6 +212,25 @@ export function parseCullOptions(value: unknown): CullOptions {
   const o = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
   const flag = (k: keyof CullOptions) => (typeof o[k] === 'boolean' ? (o[k] as boolean) : DEFAULT_CULL_OPTIONS[k]);
   return { peopleFirst: flag('peopleFirst'), people: flag('people'), smiles: flag('smiles'), eyes: flag('eyes') };
+}
+
+const OPTIONS_KEY = 'raw-editor.cull.options';
+
+/** The choices last made in this browser (the Auto-stack panel and page share them). */
+export function loadCullOptions(): CullOptions {
+  try {
+    return parseCullOptions(JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? 'null'));
+  } catch {
+    return parseCullOptions(null);
+  }
+}
+
+export function saveCullOptions(o: CullOptions): void {
+  try {
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify(o));
+  } catch {
+    // storage blocked: the choice holds while the page is open
+  }
 }
 
 /** The service's `options` (its settings sections) for these choices. */

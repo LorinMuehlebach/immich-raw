@@ -1,12 +1,14 @@
 // Adds an "Edit RAW" icon button to Immich's asset viewer toolbar, a "Compare stack" button there
-// for photos in a culler stack (opens the editor's stack window), and an "Export" button to the
-// toolbar shown while photos are selected (opens the editor's export page for them).
+// for photos in a culler stack (opens the editor's stack window), and to the toolbar shown while
+// photos are selected an "Export" button (the editor's export page) and, with two or more photos
+// and the culler installed, an "Auto-stack" button (the editor's auto-stack page).
 // Loaded into Immich's page by the reverse proxy (/immich-raw/inject.js) or as a userscript.
-import { HANDOFF_PREFIX, exportPageUrl, newHandoffKey, staleHandoffKeys, type ExportHandoff } from './handoff.ts';
+import { createCullerCheck } from './culler.ts';
+import { HANDOFF_PREFIX, cullPageUrl, exportPageUrl, newHandoffKey, staleHandoffKeys, type SelectionHandoff } from './handoff.ts';
 import { createEditTargetResolver } from './raw.ts';
 import { editorUrl, isExcludedPath, pageContext, parseViewerRoute, stackPageUrl, type ViewerRoute } from './routes.ts';
 import { captureSelectedIds, installDownloadCatcher, selectedCount, selectionBar, visibleSelectedIds } from './selection.ts';
-import { ACTIONS_SELECTOR, BUTTON_ATTR, EXPORT_BUTTON_ATTR, STACK_BUTTON_ATTR } from './selectors.ts';
+import { ACTIONS_SELECTOR, BUTTON_ATTR, CULL_BUTTON_ATTR, EXPORT_BUTTON_ATTR, STACK_BUTTON_ATTR } from './selectors.ts';
 import { createCullerStackResolver } from './stack.ts';
 
 // The userscript build declares this at the top of the file so users can change it.
@@ -30,6 +32,10 @@ const STACK_ICON_PATH =
 // Material Design Icons "export-variant" (Apache-2.0).
 const EXPORT_ICON_PATH =
   'M12,1L8,5H11V14H13V5H16M18,23H6C4.89,23 4,22.1 4,21V9A2,2 0 0,1 6,7H9V9H6V21H18V9H15V7H18A2,2 0 0,1 20,9V21A2,2 0 0,1 18,23Z';
+
+// Material Design Icons "star-box-multiple-outline" (Apache-2.0): a stack of photos, the best starred.
+const CULL_ICON_PATH =
+  'M4 6V20H18V22H3C2.4 22 2 21.6 2 21V6H4M12.1 10.6L10.2 8.8L12.8 8.4L14 6L15.2 8.4L17.8 8.8L15.9 10.7L16.3 13.3L14 12L11.6 13.2L12.1 10.6M8 2H20C21.11 2 22 2.9 22 4V16C22 17.11 21.11 18 20 18H8C6.9 18 6 17.11 6 16V4C6 2.9 6.9 2 8 2M8 4V16H20V4H8Z';
 
 /** A round icon button styled like `ref` (one of Immich's own). */
 function iconButton(ref: Element | null | undefined, label: string, iconPath: string): HTMLButtonElement {
@@ -69,14 +75,16 @@ function iconButton(ref: Element | null | undefined, label: string, iconPath: st
   return button;
 }
 
-/** Hands the selected photos to the editor's export page, in a new tab. */
-async function exportSelection(bar: Element, sameTab: boolean): Promise<void> {
+type PageUrl = (base: string, key: string) => string;
+
+/** Hands the selected photos to an editor page (`pageUrl` of the handoff key), in a new tab. */
+async function handOffSelection(bar: Element, sameTab: boolean, pageUrl: PageUrl): Promise<void> {
   const expected = selectedCount(bar) ?? 0;
   let ids = visibleSelectedIds();
   if (ids.length < expected) ids = (await captureSelectedIds()) ?? ids;
   if (!ids.length) return;
   const key = newHandoffKey();
-  const handoff: ExportHandoff = {
+  const handoff: SelectionHandoff = {
     ids,
     context: pageContext(location.pathname),
     expected,
@@ -92,24 +100,25 @@ async function exportSelection(bar: Element, sameTab: boolean): Promise<void> {
     for (const k of staleHandoffKeys(entries, Date.now())) localStorage.removeItem(k);
     localStorage.setItem(HANDOFF_PREFIX + key, JSON.stringify(handoff));
   } catch (e) {
-    console.warn('immich-raw: could not hand the selection to the export page', e);
+    console.warn('immich-raw: could not hand the selection to the editor', e);
     return;
   }
-  const url = exportPageUrl(EDITOR_BASE, key);
+  const url = pageUrl(EDITOR_BASE, key);
   if (sameTab) location.assign(url);
   else window.open(url, '_blank');
 }
 
-function createExportButton(group: Element): HTMLButtonElement {
-  const button = iconButton(group.querySelector('button'), 'Export with immich-raw', EXPORT_ICON_PATH);
-  button.setAttribute(EXPORT_BUTTON_ATTR, '');
-  button.title = 'Export with immich-raw: renders the selected photos (RAWs with their edit) in the browser';
+/** A selection toolbar button that opens an editor page for the selected photos (Shift: this tab). */
+function selectionButton(group: Element, attr: string, label: string, title: string, iconPath: string, pageUrl: PageUrl): HTMLButtonElement {
+  const button = iconButton(group.querySelector('button'), label, iconPath);
+  button.setAttribute(attr, '');
+  button.title = title;
   let busy = false;
   const run = (sameTab: boolean) => {
     if (busy) return;
     busy = true;
     const bar = button.closest('nav') ?? group;
-    void exportSelection(bar, sameTab).finally(() => (busy = false));
+    void handOffSelection(bar, sameTab, pageUrl).finally(() => (busy = false));
   };
   button.addEventListener('click', (e) => {
     e.preventDefault();
@@ -118,6 +127,26 @@ function createExportButton(group: Element): HTMLButtonElement {
   });
   return button;
 }
+
+const createExportButton = (group: Element) =>
+  selectionButton(
+    group,
+    EXPORT_BUTTON_ATTR,
+    'Export with immich-raw',
+    'Export with immich-raw: renders the selected photos (RAWs with their edit) in the browser',
+    EXPORT_ICON_PATH,
+    exportPageUrl,
+  );
+
+const createCullButton = (group: Element) =>
+  selectionButton(
+    group,
+    CULL_BUTTON_ATTR,
+    'Auto-stack and pick the best',
+    'Auto-stack with immich-raw: stacks similar photos of the selection and picks the best of each (you choose what counts first)',
+    CULL_ICON_PATH,
+    cullPageUrl,
+  );
 
 /** Opens `url` on click; Ctrl/Shift/middle click opens it in a new tab. */
 function linkTo(button: HTMLButtonElement, url: string): void {
@@ -161,6 +190,8 @@ function install() {
   installDownloadCatcher();
   const resolve = createEditTargetResolver();
   const resolveStack = createCullerStackResolver(`${EDITOR_BASE}culler/api/v1`);
+  const cullerCheck = createCullerCheck(`${EDITOR_BASE}culler/api/v1`);
+  let cullerOk = false;
   let generation = 0;
 
   const removeButtons = (attr: string, keep?: (b: HTMLElement) => boolean) => {
@@ -169,15 +200,32 @@ function install() {
     }
   };
 
-  /** The export button in the selection toolbar, while photos are selected. */
+  /** The export and auto-stack buttons in the selection toolbar, while photos are selected. */
   function updateSelection() {
     const bar = isExcludedPath(location.pathname) ? null : selectionBar();
     // Immich's actions on the right (share, add to album, ...); else the toolbar itself.
     const group = bar ? (bar.querySelector('.ms-auto') ?? bar) : null;
-    for (const b of document.querySelectorAll<HTMLElement>(`[${EXPORT_BUTTON_ATTR}]`)) {
-      if (b.parentElement !== group) b.remove();
-    }
+    const inGroup = (b: HTMLElement) => !!group && b.parentElement === group;
+    removeButtons(EXPORT_BUTTON_ATTR, inGroup);
     if (group && !group.querySelector(`[${EXPORT_BUTTON_ATTR}]`)) group.prepend(createExportButton(group));
+
+    // Auto-stack: two photos or more, and only where the culler works for this user (asked in
+    // the background; a changed answer updates the toolbar).
+    const several = !!bar && (selectedCount(bar) ?? 0) >= 2;
+    if (several) {
+      void cullerCheck().then((ok) => {
+        if (ok === cullerOk) return;
+        cullerOk = ok;
+        schedule();
+      });
+    }
+    const showCull = several && cullerOk;
+    removeButtons(CULL_BUTTON_ATTR, (b) => showCull && inGroup(b));
+    if (showCull && group && !group.querySelector(`[${CULL_BUTTON_ATTR}]`)) {
+      const exportButton = group.querySelector(`[${EXPORT_BUTTON_ATTR}]`);
+      if (exportButton) exportButton.after(createCullButton(group));
+      else group.prepend(createCullButton(group));
+    }
   }
 
   async function update() {

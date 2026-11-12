@@ -5,19 +5,21 @@
   import type { AssetResponseDto } from '@immich/sdk';
   import { onMount } from 'svelte';
   import { parseContext } from '../immich/context.ts';
+  import { describeRun, runPhase } from '../immich/cull-view.ts';
   import {
     applyRun,
     lastUndoableRun,
-    parseCullOptions,
+    loadCullOptions,
+    saveCullOptions,
     startRun,
     undoRun,
     waitForRun,
     type CullerStatus,
     type CullOptions,
     type CullRun,
-    type RunCounts,
     type RunScope,
   } from '../immich/culler.ts';
+  import CullOptionsFields from './CullOptionsFields.svelte';
 
   interface Props {
     ctx: string | null;
@@ -46,35 +48,13 @@
   let undoable = $state<CullRun | null>(null);
   const controller = new AbortController();
 
-  const OPTIONS_KEY = 'raw-editor.cull.options';
-  let options = $state<CullOptions>(readOptions());
+  let options = $state<CullOptions>(loadCullOptions());
 
-  function readOptions(): CullOptions {
-    try {
-      return parseCullOptions(JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? 'null'));
-    } catch {
-      return parseCullOptions(null);
-    }
-  }
-
-  function setOption(key: keyof CullOptions, on: boolean) {
-    options = { ...options, [key]: on };
+  function setOptions(o: CullOptions) {
+    options = o;
     preview = null; // it was made with the other choice
-    try {
-      localStorage.setItem(OPTIONS_KEY, JSON.stringify(options));
-    } catch {
-      // storage blocked: the choice holds while the panel is open
-    }
+    saveCullOptions(o);
   }
-
-  const CHOICES: { key: keyof CullOptions; label: string; title: string }[] = [
-    { key: 'peopleFirst', label: "People's exposure counts most", title: 'Judge the exposure on the faces, or else on the people, before the rest of the photo' },
-    { key: 'people', label: 'Find people without a visible face', title: 'Also people seen from the side, from behind or far away' },
-    { key: 'smiles', label: 'Prefer the most smiles', title: 'Among the good shots, the one with the most smiling faces is the best' },
-    { key: 'eyes', label: 'Set aside closed eyes', title: 'Shots with more closed eyes than the best one, or clearly less open eyes (a half-blink), are rejected' },
-  ];
-  const unavailable = (key: keyof CullOptions) =>
-    (key === 'people' && status?.people === false) || ((key === 'eyes' || key === 'smiles') && status?.eyes === false);
 
   onMount(() => {
     void refreshUndoable();
@@ -117,7 +97,7 @@
     if (!preview) return;
     const run = await track(() => applyRun(preview!.id), 'apply');
     if (!run) return;
-    result = `Done: ${describe(run.summary)}.`;
+    result = `Done: ${describeRun(run.summary)}.`;
     preview = null;
     onChanged();
     await refreshUndoable();
@@ -134,22 +114,6 @@
     await refreshUndoable();
   }
 
-  function describe(c: Partial<RunCounts> | null | undefined): string {
-    if (!c) return 'nothing to do';
-    const r = c.rejected ?? { lighting: 0, blur: 0, eyes: 0 };
-    const rejected = r.lighting + r.blur + r.eyes;
-    const parts = [`${c.groups ?? 0} ${c.groups === 1 ? 'stack' : 'stacks'} from ${c.photos ?? 0} photos`];
-    if (c.runnerUps) parts.push(`${c.runnerUps} runner-ups`);
-    if (rejected) {
-      const why = [r.lighting && `${r.lighting} lighting`, r.blur && `${r.blur} not sharp`, r.eyes && `${r.eyes} eyes closed`].filter(Boolean);
-      parts.push(`${rejected} set aside (${why.join(', ')})`);
-    }
-    if (c.pending) parts.push(`${c.pending} still waiting for Immich's preview`);
-    return parts.join(' · ');
-  }
-
-  const phaseText = (r: CullRun | null) =>
-    !r ? 'starting…' : r.status === 'queued' ? 'waiting for another run…' : `${r.phase ?? 'working'}${r.total ? ` ${r.done}/${r.total}` : '…'}`;
 </script>
 
 <div class="panel" role="dialog" aria-label="Auto-stack">
@@ -162,19 +126,12 @@
     sharpness, then closed eyes.
   </p>
 
-  <fieldset class="choices" disabled={!!busy}>
-    {#each CHOICES as c (c.key)}
-      <label title={c.title} class:off={unavailable(c.key)}>
-        <input type="checkbox" checked={options[c.key] && !unavailable(c.key)} disabled={unavailable(c.key)} onchange={(e) => setOption(c.key, e.currentTarget.checked)} />
-        {c.label}
-      </label>
-    {/each}
-  </fieldset>
+  <CullOptionsFields {options} {status} disabled={!!busy} onChange={setOptions} />
 
   {#if busy}
-    <p class="progress">{busy === 'preview' ? 'Checking' : busy === 'apply' ? 'Applying' : 'Undoing'}: {phaseText(progress)}</p>
+    <p class="progress">{busy === 'preview' ? 'Checking' : busy === 'apply' ? 'Applying' : 'Undoing'}: {runPhase(progress)}</p>
   {:else if preview}
-    <p>{describe(preview.summary)}.</p>
+    <p>{describeRun(preview.summary)}.</p>
     {#if preview.summary?.changes}
       <p class="dim">{preview.summary.changes} changes in Immich (stacks, tags, reject flags).</p>
     {:else}
@@ -241,32 +198,6 @@
   }
   .buttons {
     margin-top: 8px;
-  }
-  .choices {
-    border: none;
-    margin: 6px 0;
-    padding: 0;
-    display: grid;
-    gap: 3px;
-  }
-  .choices label {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    cursor: pointer;
-  }
-  .choices label.off {
-    color: var(--text-dim);
-    cursor: default;
-  }
-  .choices input {
-    accent-color: var(--accent);
-    margin: 0;
-  }
-  @media (pointer: coarse) {
-    .choices label {
-      min-height: 32px;
-    }
   }
   .spacer {
     flex: 1;

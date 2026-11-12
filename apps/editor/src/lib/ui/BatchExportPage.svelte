@@ -2,32 +2,18 @@
   // The page Immich's "Export with immich-raw" button opens (?export=<key>): renders the photos
   // selected in Immich with one of the export presets, in this tab.
   import { setLibRawUrl } from '@immich-raw/decoder';
-  import { HANDOFF_PREFIX, parseHandoff, type ExportHandoff } from '@immich-raw/inject/handoff';
+  import type { SelectionHandoff } from '@immich-raw/inject/handoff';
   import { onMount } from 'svelte';
+  import { readHandoff } from '../handoff.ts';
   import { getSession, initApi } from '../immich/api.ts';
   import { editor } from '../state/editor.svelte.ts';
   import BatchExportDialog from './BatchExportDialog.svelte';
   import ExportSettingsDialog from './ExportSettingsDialog.svelte';
 
   let status = $state<'loading' | 'auth' | 'ready' | 'error'>('loading');
-  let handoff = $state.raw<ExportHandoff | null>(null);
+  let handoff = $state.raw<SelectionHandoff | null>(null);
   let error = $state('');
   const backUrl = $derived(handoff?.returnPath ?? '/');
-
-  /** The selection the button stored. Kept for this tab, so reloading the page still works. */
-  function readHandoff(key: string): ExportHandoff | null {
-    if (!key) return null;
-    const name = HANDOFF_PREFIX + key;
-    try {
-      const raw = localStorage.getItem(name) ?? sessionStorage.getItem(name);
-      if (!raw) return null;
-      sessionStorage.setItem(name, raw);
-      localStorage.removeItem(name);
-      return parseHandoff(JSON.parse(raw));
-    } catch {
-      return null;
-    }
-  }
 
   onMount(async () => {
     document.title = 'Export · immich-raw';

@@ -3,11 +3,11 @@
   // measured. ← / → switch shots. The owner can make a shot the preferred one, or keep the
   // preferred shot and move all the others to Immich's trash.
   import { onDestroy, onMount } from 'svelte';
-  import { apiUrl, authHeaders, hasApiKey } from '../immich/api.ts';
   import { captureTime, shotSettings } from '../immich/context.ts';
   import { badgeFor, metricRows } from '../immich/cull-view.ts';
   import { makeBest, waitForRun } from '../immich/culler.ts';
   import { deleteOthers, frameIndexOf, loadStackView, planDeleteOthers, preferredFrame, step, type StackFrame, type StackView } from '../immich/stack-view.ts';
+  import { imageLoader, previewUrl, thumbUrl } from './images.ts';
 
   interface Props {
     /** A photo of the stack; the window starts on its shot. */
@@ -146,54 +146,19 @@
     if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(dx < 0 ? 1 : -1);
   }
 
-  // Images. Session cookie: plain <img src>. API key: <img> can't send the header, so fetch each
-  // image once as a blob; the object URLs live as long as the window.
-  const previewUrl = (id: string) => apiUrl(`/assets/${id}/thumbnail?size=preview`);
-  const thumbUrl = (id: string) => apiUrl(`/assets/${id}/thumbnail?size=thumbnail`);
-  const blobs = new Map<string, Promise<string | null>>();
-
-  function blobUrl(url: string): Promise<string | null> {
-    let hit = blobs.get(url);
-    if (!hit) {
-      hit = fetch(url, { headers: authHeaders(), credentials: 'same-origin' })
-        .then((r) => (r.ok ? r.blob() : null))
-        .then((b) => (b ? URL.createObjectURL(b) : null))
-        .catch(() => null);
-      blobs.set(url, hit);
-    }
-    return hit;
-  }
-
-  function img(node: HTMLImageElement, url: string) {
-    let wanted = url;
-    const show = (u: string) => {
-      wanted = u;
-      if (!hasApiKey()) {
-        node.src = u;
-        return;
-      }
-      void blobUrl(u).then((b) => {
-        if (b && wanted === u) node.src = b;
-      });
-    };
-    show(url);
-    return { update: show };
-  }
+  // Images, kept while the window is open.
+  const { img, preload, dispose } = imageLoader();
 
   // Load the shots next to this one ahead, so switching is quick.
   $effect(() => {
     const v = view;
     if (!v) return;
     for (const f of [v.frames[index - 1], v.frames[index + 1]]) {
-      if (!f) continue;
-      if (hasApiKey()) void blobUrl(previewUrl(f.face.id));
-      else new Image().src = previewUrl(f.face.id);
+      if (f) preload(previewUrl(f.face.id));
     }
   });
 
-  onDestroy(() => {
-    for (const p of blobs.values()) void p.then((u) => u && URL.revokeObjectURL(u));
-  });
+  onDestroy(dispose);
 
   function centreIf(node: HTMLElement, isCurrent: boolean) {
     const run = (c: boolean) => c && node.scrollIntoView({ block: 'nearest', inline: 'center' });

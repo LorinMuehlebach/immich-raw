@@ -39,8 +39,9 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   - written as DNG files (`raw-burst.mjs`, using `packages/dng`), RAW + JPEG pairs and JPEGs;
   - all on 2015-06-01.
 
-  Then it checks the stacks, tags, the filmstrip, the user's own choice and undo. Last comes the
-  stack window: switching shots, Make preferred, Delete others, and the Compare stack button in
+  Then it checks the stacks, tags, the filmstrip, the user's own choice and undo. Then the
+  auto-stack page from Immich's selection bar: the button, the preview, stacking and undo. Last comes
+  the stack window: switching shots, Make preferred, Delete others, and the Compare stack button in
   Immich's viewer. Run one at a time: two runs delete each other's test photos.
 - **Your own bursts.** `node e2e/seed.mjs <folder>` uploads your own RAW bursts. Then open one in
   the editor and use **Auto-stack…** in the filmstrip.

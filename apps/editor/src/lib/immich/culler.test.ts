@@ -1,11 +1,48 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CullerError, cullerStatus, DEFAULT_CULL_OPTIONS, lookupCull, parseCullOptions, recullGroup, setCullerFetch, startRun, waitForRun } from './culler.ts';
+import {
+  CullerError,
+  cullerStatus,
+  DEFAULT_CULL_OPTIONS,
+  loadCullOptions,
+  lookupCull,
+  parseCullOptions,
+  recullGroup,
+  saveCullOptions,
+  setCullerFetch,
+  startRun,
+  waitForRun,
+} from './culler.ts';
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const html = (status: number) => new Response('<html>Bad Gateway</html>', { status, headers: { 'content-type': 'text/html' } });
 
 afterEach(() => setCullerFetch((input, init) => fetch(input, init)));
+
+describe('stored options', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('remembers the choices, with defaults for anything missing', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) });
+    expect(loadCullOptions()).toEqual(DEFAULT_CULL_OPTIONS);
+    saveCullOptions({ ...DEFAULT_CULL_OPTIONS, smiles: false });
+    expect(loadCullOptions()).toEqual({ ...DEFAULT_CULL_OPTIONS, smiles: false });
+  });
+
+  it('works without storage', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+      setItem: () => {
+        throw new Error('blocked');
+      },
+    });
+    expect(() => saveCullOptions(DEFAULT_CULL_OPTIONS)).not.toThrow();
+    expect(loadCullOptions()).toEqual(DEFAULT_CULL_OPTIONS);
+  });
+});
 
 describe('culler client', () => {
   it('a missing service (proxy error page) means "not installed"', async () => {

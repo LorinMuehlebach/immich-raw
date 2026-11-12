@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { arrangeGroups, badgeFor, describeMetrics, metricRows, tooltipFor, type MetricRow } from './cull-view.ts';
-import type { CullInfo } from './culler.ts';
+import { arrangeGroups, badgeFor, describeMetrics, describeRun, metricRows, runPhase, stackCards, tooltipFor, type MetricRow } from './cull-view.ts';
+import type { CullInfo, CullRun, ReportFrame, ReportGroup } from './culler.ts';
 
 const info = (groupId: string, rank: number, role: CullInfo['role'], reason: CullInfo['reason'] = null, metrics = {}): CullInfo => ({
   groupId,
@@ -156,5 +156,69 @@ describe('how open the eyes are', () => {
   it('older results without the openness keep their wording', () => {
     expect(eyesOf({ faces: 2, closed: 0 })?.value).toBe('2 faces, eyes open');
     expect(describeMetrics(info('A', 2, 'rejected', 'eyes', { faces: 1, closed: 0, eyesOpen: 45, eyesLeast: 45 }))).toContain('eyes 45 % open');
+  });
+});
+
+describe('runs in words', () => {
+  it('sums up what a run found', () => {
+    expect(describeRun({ groups: 3, photos: 37, runnerUps: 4, rejected: { lighting: 1, blur: 2, eyes: 0 }, pending: 2 })).toBe(
+      "3 stacks from 37 photos · 4 runner-ups · 3 set aside (1 lighting, 2 not sharp) · 2 still waiting for Immich's preview",
+    );
+    expect(describeRun({ groups: 1, photos: 3, runnerUps: 1 })).toBe('1 stack from 3 photos · 1 runner-up');
+    expect(describeRun(null)).toBe('nothing to do');
+  });
+
+  it('says where a running run is', () => {
+    const at = (r: Partial<CullRun>) => runPhase({ status: 'running', phase: null, done: 0, total: 0, ...r } as CullRun);
+    expect(runPhase(null)).toBe('starting…');
+    expect(at({ status: 'queued' })).toBe('waiting for another run…');
+    expect(at({ phase: 'measuring', done: 12, total: 37 })).toBe('measuring 12/37');
+    expect(at({ phase: null })).toBe('working…');
+  });
+});
+
+describe('stackCards', () => {
+  const frame = (id: string, rank: number, role: ReportFrame['role'], reason: ReportFrame['reason'] = null, files = [id]): ReportFrame => ({
+    frameId: `f-${id}`,
+    name: `${id}.ARW`,
+    assetIds: files,
+    faceId: files.at(-1)!,
+    taken: null,
+    role,
+    reason,
+    rank,
+    pinned: false,
+    metrics: {},
+  });
+  const groups: ReportGroup[] = [
+    {
+      id: 'g1',
+      primaryId: 'a2j',
+      frames: [frame('a1', 3, 'rejected', 'blur'), frame('a2', 1, 'best', null, ['a2', 'a2j']), frame('a3', 2, 'runner-up'), frame('a4', 4, 'rejected', 'lighting')],
+    },
+    { id: 'g2', primaryId: 'b1', frames: [frame('b1', 1, 'best'), frame('b2', 2, 'runner-up')] },
+  ];
+  const live = (asset: string, frameId: string, role: CullInfo['role'], rank: number, pinned = false): Record<string, CullInfo> => ({
+    [asset]: { groupId: 'g1', frameId, role, reason: null, rank, groupSize: 4, pinned, metrics: {} },
+  });
+
+  it("shows each stack's best shot, its size and what was set aside", () => {
+    expect(stackCards(groups)).toEqual([
+      { groupId: 'g1', faceId: 'a2j', name: 'a2.ARW', pinned: false, shots: 4, runnerUps: 1, rejected: { lighting: 1, blur: 1, eyes: 0 }, assetIds: ['a1', 'a2', 'a2j', 'a3', 'a4'] },
+      { groupId: 'g2', faceId: 'b1', name: 'b1.ARW', pinned: false, shots: 2, runnerUps: 1, rejected: { lighting: 0, blur: 0, eyes: 0 }, assetIds: ['b1', 'b2'] },
+    ]);
+  });
+
+  it('follows a shot made the preferred one in the stack window', () => {
+    const now = { ...live('a3', 'f-a3', 'best', 1, true), ...live('a2j', 'f-a2', 'runner-up', 2) };
+    const [card] = stackCards(groups, now);
+    expect(card).toMatchObject({ faceId: 'a3', name: 'a3.ARW', pinned: true, runnerUps: 1, shots: 4 });
+  });
+
+  it('leaves out trashed shots, and a stack left with one shot', () => {
+    const cards = stackCards(groups, {}, new Set(['a1', 'a4', 'b2']));
+    expect(cards.map((c) => [c.groupId, c.shots, c.rejected.blur])).toEqual([['g1', 2, 0]]);
+    // A shot with one of its files left is still there.
+    expect(stackCards(groups, {}, new Set(['a2']))[0]?.shots).toBe(4);
   });
 });

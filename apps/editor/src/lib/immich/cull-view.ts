@@ -2,7 +2,7 @@
 // - A stack's photos sit together where its first photo was taken, best first, then
 //   runner-ups, then rejected ones (as the service ranked them).
 // - A collapsed stack shows only its best photo (or the photo being edited) plus a "+N" count.
-import type { CullInfo, CullMetrics } from './culler.ts';
+import type { CullInfo, CullMetrics, CullReason, CullRun, ReportGroup, RunCounts } from './culler.ts';
 
 export interface StripGroup {
   id: string;
@@ -180,4 +180,73 @@ export function tooltipFor(title: string, info: CullInfo | null): string {
   if (!info || !badge) return title;
   const place = info.rank && info.groupSize ? ` (${info.rank} of ${info.groupSize})` : '';
   return [title, `${badge.label}${place}`, ...describeMetrics(info)].join('\n');
+}
+
+/** What a run found or did, in one line: "3 stacks from 37 photos · 4 runner-ups · …". */
+export function describeRun(c: Partial<RunCounts> | null | undefined): string {
+  if (!c) return 'nothing to do';
+  const r = c.rejected ?? { lighting: 0, blur: 0, eyes: 0 };
+  const rejected = r.lighting + r.blur + r.eyes;
+  const parts = [`${c.groups ?? 0} ${c.groups === 1 ? 'stack' : 'stacks'} from ${c.photos ?? 0} photos`];
+  if (c.runnerUps) parts.push(`${c.runnerUps} ${c.runnerUps === 1 ? 'runner-up' : 'runner-ups'}`);
+  if (rejected) {
+    const why = [r.lighting && `${r.lighting} lighting`, r.blur && `${r.blur} not sharp`, r.eyes && `${r.eyes} eyes closed`].filter(Boolean);
+    parts.push(`${rejected} set aside (${why.join(', ')})`);
+  }
+  if (c.pending) parts.push(`${c.pending} still waiting for Immich's preview`);
+  return parts.join(' · ');
+}
+
+/** Where a running run is: "measuring 12/37". */
+export function runPhase(r: CullRun | null): string {
+  if (!r) return 'starting…';
+  if (r.status === 'queued') return 'waiting for another run…';
+  return `${r.phase ?? 'working'}${r.total ? ` ${r.done}/${r.total}` : '…'}`;
+}
+
+/** One stack on the auto-stack page. */
+export interface StackCard {
+  groupId: string;
+  /** The preferred shot: the file to show, and its name. */
+  faceId: string;
+  name: string;
+  /** The user's pick rather than the culler's. */
+  pinned: boolean;
+  shots: number;
+  runnerUps: number;
+  rejected: Record<CullReason, number>;
+  /** Every file of the stack's shots. */
+  assetIds: string[];
+}
+
+/**
+ * The stacks of a run's report, as they are now: `live` has the culler's current state of
+ * photos asked again since (a shot made the preferred one in the stack window), `trashed` the
+ * photos moved to the trash since. A stack left with one shot is no stack any more.
+ */
+export function stackCards(groups: readonly ReportGroup[], live: Record<string, CullInfo> = {}, trashed: ReadonlySet<string> = new Set()): StackCard[] {
+  const out: StackCard[] = [];
+  for (const g of groups) {
+    const frames = g.frames
+      .filter((f) => f.assetIds.some((id) => !trashed.has(id)))
+      .map((f) => {
+        const now = f.assetIds.map((id) => live[id]).find((i) => i?.frameId === f.frameId && i.role);
+        return now ? { ...f, role: now.role!, reason: now.reason, rank: now.rank ?? f.rank, pinned: now.pinned } : f;
+      });
+    if (frames.length < 2) continue;
+    const best = frames.find((f) => f.role === 'best') ?? frames.reduce((a, b) => (b.rank < a.rank ? b : a));
+    const rejected: Record<CullReason, number> = { lighting: 0, blur: 0, eyes: 0 };
+    for (const f of frames) if (f.role === 'rejected' && f.reason) rejected[f.reason]++;
+    out.push({
+      groupId: g.id,
+      faceId: best.faceId,
+      name: best.name,
+      pinned: best.pinned,
+      shots: frames.length,
+      runnerUps: frames.filter((f) => f.role === 'runner-up').length,
+      rejected,
+      assetIds: frames.flatMap((f) => f.assetIds),
+    });
+  }
+  return out;
 }
