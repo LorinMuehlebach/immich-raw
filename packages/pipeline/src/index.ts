@@ -28,3 +28,4 @@ export { drawWatermark, watermarkLayout, type WatermarkOptions, type WatermarkPo
 export { buildTiff as buildExifTiff, exifFromImmich, insertExif, zoneOffsetMinutes, type ExifFields, type ImmichExifLike } from './export/jpeg-segments.ts';
 export * from './brush.ts';
 export * from './scopes.ts';
+export { pointInPolygon, rasterizePolygon, simplifyPolygon } from './polygon.ts';

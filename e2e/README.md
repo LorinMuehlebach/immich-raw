@@ -94,6 +94,13 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   waveform, RGB parade and vectorscope on one seeded RAW (`nikon-z7` by default), checks that each
   counts every pixel, that the waveform rises with Exposure and that the choice survives a reload,
   and writes a picture of each. Nothing is saved.
+- Polygon masks: `node e2e/probe-polygon.mjs <out-dir> [file name part]` draws polygons and a lasso
+  on one seeded RAW (`nikon-z7` by default):
+  - closing on the first corner, with Enter and with a double-click (which must not zoom);
+  - Backspace, Shift+K, corner editing (drag, add on an edge, Alt+click to remove);
+  - the mask changing only the inside, and undo.
+
+  Nothing is saved.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

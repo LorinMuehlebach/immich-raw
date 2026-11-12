@@ -5,6 +5,9 @@
   // shape), the round handle to rotate. With a gradient armed, drag on the photo to draw it.
   // Brush: paint on the photo (Alt erases); the circle shows the brush size and feather.
   // Colour range: click to pick a colour (Shift+click adds one, drag to average an area).
+  // Polygon: click the corners, then click the first one, double-click or press Enter to close;
+  // afterwards drag a corner to move it, drag an edge to add one, Alt+click a corner to remove
+  // it. Lasso: drag around the area.
   import { brushRadius } from '@immich-raw/pipeline';
   import type { MaskComponent } from '@immich-raw/recipe';
   import { MediaQuery } from 'svelte/reactivity';
@@ -20,7 +23,7 @@
   const hs = $derived(coarse.current ? 9 : 5);
   const hr = $derived(coarse.current ? 10 : 6);
   const pinGrow = $derived(coarse.current ? 4 : 0);
-  type Kind = 'move' | 'rx' | 'ry' | 'rotate' | 'p0' | 'p1' | 'draw' | 'sample';
+  type Kind = 'move' | 'rx' | 'ry' | 'rotate' | 'p0' | 'p1' | 'draw' | 'sample' | 'vertex';
 
   const sub = (a: P, b: P): P => [a[0] - b[0], a[1] - b[1]];
   const add = (a: P, b: P): P => [a[0] + b[0], a[1] + b[1]];
@@ -77,13 +80,19 @@
     box: P[] | null;
     points: P[];
   }
+  /** A polygon or lasso: its corners in CSS pixels. */
+  interface Poly {
+    type: 'polygon';
+    pts: P[];
+    freehand: boolean;
+  }
   interface Shape {
     maskId: string;
     comp: MaskComponent;
     maskSelected: boolean;
     selected: boolean;
     pin: P;
-    geo: Radial | Linear | Samples | AiPrompt | null;
+    geo: Radial | Linear | Samples | AiPrompt | Poly | null;
     /** AI parts: the pin only selects (moving it would mean finding the object again). */
     fixed?: boolean;
   }
@@ -140,6 +149,15 @@
           if (!first) continue;
           const pin = toPx([first.points[0]!, first.points[1]!]);
           if (Number.isFinite(pin[0])) out.push({ maskId: m.id, comp: c, maskSelected, selected, pin, geo: null });
+        } else if (c.kind === 'polygon') {
+          const pts: P[] = [];
+          for (let i = 0; i + 1 < c.points.length; i += 2) pts.push(toPx([c.points[i]!, c.points[i + 1]!]));
+          if (!pts.length || !pts.every((q) => Number.isFinite(q[0]))) continue;
+          // The pin sits in the middle of the shape's bounding box.
+          const xs = pts.map((q) => q[0]);
+          const ys = pts.map((q) => q[1]);
+          const pin: P = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+          out.push({ maskId: m.id, comp: c, maskSelected, selected, pin, geo: { type: 'polygon', pts, freehand: !!c.freehand } });
         } else if (c.kind === 'color') {
           const points = c.samples
             .map((sm) => {
@@ -231,6 +249,12 @@
         let dy = Math.abs(px[1] - cPx[1]) * scale;
         if (e.shiftKey) dx = dy = Math.max(dx, dy);
         patch = { rx: Math.max(1e-3, dx), ry: Math.max(1e-3, dy), angle: deg(unit) };
+      }
+    } else if (o.kind === 'polygon') {
+      if (d.kind === 'move') patch = { points: o.points.map((v, i) => v + delta[i % 2]!) };
+      else if (d.kind === 'vertex' && d.index !== undefined) {
+        const k = d.index * 2;
+        patch = { points: o.points.map((v, i) => (i === k ? p[0] : i === k + 1 ? p[1] : v)) };
       }
     } else if (o.kind === 'color') {
       // Dragging out a sample averages the colours inside the circle.
@@ -343,6 +367,25 @@
       addEventListener('pointercancel', onPaintUp);
       return;
     }
+    if (editor.maskDraft?.kind === 'polygon') {
+      // Not a tap on the view: a double-click closes the polygon, it doesn't zoom to 100 %.
+      e.stopPropagation();
+      e.preventDefault();
+      // preventDefault keeps the focus where it was, often the panel's Add… menu; leave it so
+      // that Enter and Backspace reach the polygon.
+      if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur();
+      polygonClick(e, p);
+      return;
+    }
+    if (editor.maskDraft?.kind === 'lasso') {
+      e.stopPropagation();
+      e.preventDefault();
+      lasso = { px: [eventPx(e)], mask: [p[0], p[1]] };
+      addEventListener('pointermove', onLassoMove);
+      addEventListener('pointerup', onLassoUp);
+      addEventListener('pointercancel', onLassoUp);
+      return;
+    }
     if (editor.maskDraft?.kind === 'object') {
       e.preventDefault();
       const start = eventPx(e);
@@ -367,6 +410,91 @@
     if (compId && maskId) begin('draw', { maskId, compId }, e);
   }
 
+  // ---------------------------------------------------------------- polygon and lasso
+
+  /** Within this many CSS pixels of the first corner, a click closes the polygon. */
+  const snap = $derived(coarse.current ? 16 : 9);
+  /** The polygon being drawn: its corners in CSS pixels. */
+  const draftPts = $derived.by((): P[] => {
+    void editor.viewVersion;
+    void (width + height);
+    const pts = editor.maskDraft?.kind === 'polygon' ? (editor.maskDraft.points ?? []) : [];
+    const out: P[] = [];
+    for (let i = 0; i + 1 < pts.length; i += 2) out.push(toPx([pts[i]!, pts[i + 1]!]));
+    return out;
+  });
+  const nearFirst = $derived(!!cursor && draftPts.length >= 3 && len(sub(cursor, draftPts[0]!)) <= snap);
+  let lastClick: { t: number; px: P } | null = null;
+
+  function polygonClick(e: PointerEvent, p: P) {
+    const px = eventPx(e);
+    const now = performance.now();
+    const double = !!lastClick && now - lastClick.t < 350 && len(sub(px, lastClick.px)) < 6;
+    lastClick = { t: now, px };
+    // Click the first corner, or double-click, to close it.
+    if ((draftPts.length >= 3 && len(sub(px, draftPts[0]!)) <= snap) || double) {
+      lastClick = null;
+      editor.closePolygon();
+      return;
+    }
+    editor.addPolygonPoint(p);
+  }
+
+  /** The lasso being dragged, in CSS pixels (shown) and in the mask frame (kept). */
+  let lasso = $state<{ px: P[]; mask: number[] } | null>(null);
+
+  function onLassoMove(e: PointerEvent) {
+    const l = lasso;
+    if (!l) return;
+    const px = [...l.px];
+    const mask = [...l.mask];
+    // The browser hands over fast moves once per frame; the coalesced events hold every point.
+    for (const ev of e.getCoalescedEvents?.() ?? [e]) {
+      const q = eventPx(ev);
+      if (len(sub(q, px[px.length - 1]!)) < 2) continue;
+      const p = pxToMask(q);
+      if (!p) continue;
+      px.push(q);
+      mask.push(p[0], p[1]);
+    }
+    if (px.length > l.px.length) lasso = { px, mask };
+  }
+
+  function onLassoUp(e: PointerEvent) {
+    removeEventListener('pointermove', onLassoMove);
+    removeEventListener('pointerup', onLassoUp);
+    removeEventListener('pointercancel', onLassoUp);
+    const l = lasso;
+    lasso = null;
+    if (!l || e.type === 'pointercancel' || l.px.length < 3) return;
+    editor.drawLasso(l.mask);
+  }
+
+  /** Corner i of a polygon: drag it, or Alt+click it to remove it. */
+  function onCorner(s: Shape, i: number, e: PointerEvent) {
+    if (s.comp.kind !== 'polygon') return;
+    if (e.altKey) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (s.comp.points.length <= 6) return;
+      const points = s.comp.points.filter((_, k) => k !== i * 2 && k !== i * 2 + 1);
+      editor.updateComponent(s.maskId, s.comp.id, { points }, true, `${editor.mask(s.maskId)?.name}: Remove Corner`);
+      return;
+    }
+    begin('vertex', s, e, i);
+  }
+
+  /** The edge after corner i of a polygon: a new corner where it was grabbed, dragged from there. */
+  function onEdge(s: Shape, i: number, e: PointerEvent) {
+    if (s.comp.kind !== 'polygon') return;
+    const p = pxToMask(eventPx(e));
+    if (!p) return;
+    const points = [...s.comp.points];
+    points.splice((i + 1) * 2, 0, p[0], p[1]);
+    editor.updateComponent(s.maskId, s.comp.id, { points });
+    begin('vertex', s, e, i + 1);
+  }
+
   function onHover(e: PointerEvent) {
     cursor = eventPx(e);
     altHeld = e.altKey;
@@ -387,7 +515,28 @@
 >
   {#each shapes as s (s.comp.id)}
     {#if s.maskSelected}
-      {#if s.geo?.type === 'radial'}
+      {#if s.geo?.type === 'polygon'}
+        {@const g = s.geo}
+        {@const pts = g.pts.map((q) => q.join(',')).join(' ')}
+        <g class="outline" class:dim={!s.selected}>
+          <polygon points={pts} class="under" />
+          <polygon points={pts} />
+        </g>
+        <!-- Not while another shape is being drawn: its clicks must reach the photo. -->
+        {#if s.selected && !g.freehand && !editor.readOnly && !editor.maskDraft}
+          {#each g.pts as q, i (i)}
+            {@const r = g.pts[(i + 1) % g.pts.length]!}
+            <line x1={q[0]} y1={q[1]} x2={r[0]} y2={r[1]} class="edge-hit" role="presentation" onpointerdown={(e) => onEdge(s, i, e)}>
+              <title>Drag to add a corner</title>
+            </line>
+          {/each}
+          {#each g.pts as q, i (i)}
+            <rect x={q[0] - hs} y={q[1] - hs} width={hs * 2} height={hs * 2} class="handle corner" role="presentation" onpointerdown={(e) => onCorner(s, i, e)}>
+              <title>Drag to move; Alt+click to remove</title>
+            </rect>
+          {/each}
+        {/if}
+      {:else if s.geo?.type === 'radial'}
         {@const g = s.geo}
         <g transform="translate({g.c[0]} {g.c[1]}) rotate({g.rot})" class="outline" class:dim={!s.selected}>
           <ellipse rx={g.rx} ry={g.ry} class="under" />
@@ -468,6 +617,28 @@
     <g class="outline prompt">
       <rect {x} {y} width={w} height={h} class="under" />
       <rect {x} {y} width={w} height={h} />
+    </g>
+  {/if}
+  {#if draftPts.length}
+    {@const last = draftPts[draftPts.length - 1]!}
+    {@const corners = draftPts.map((q) => q.join(',')).join(' ')}
+    <g class="outline draft">
+      <polyline points={corners} class="under" />
+      <polyline points={corners} />
+      {#if cursor}
+        {@const to = nearFirst ? draftPts[0]! : cursor}
+        <line x1={last[0]} y1={last[1]} x2={to[0]} y2={to[1]} class="band" />
+      {/if}
+    </g>
+    {#each draftPts as q, i (i)}
+      <circle cx={q[0]} cy={q[1]} r={i === 0 ? (nearFirst ? 7 : 5) : 3.5} class="corner-dot" class:first={i === 0} class:snap={i === 0 && nearFirst} />
+    {/each}
+  {/if}
+  {#if lasso && lasso.px.length > 1}
+    {@const pts = lasso.px.map((q) => q.join(',')).join(' ')}
+    <g class="outline draft">
+      <polygon points={pts} class="under" />
+      <polygon points={pts} />
     </g>
   {/if}
   {#if brushRing}
@@ -567,6 +738,36 @@
     stroke-width: 1.2;
     pointer-events: all;
     cursor: pointer;
+  }
+  .handle.corner {
+    cursor: move;
+  }
+  .edge-hit {
+    stroke: transparent;
+    stroke-width: 12;
+    pointer-events: stroke;
+    cursor: copy;
+  }
+  .draft polyline:not(.under),
+  .draft polygon:not(.under) {
+    stroke-dasharray: 6 4;
+  }
+  .draft .band {
+    stroke-dasharray: 3 4;
+    opacity: 0.85;
+  }
+  .corner-dot {
+    fill: #fff;
+    stroke: rgba(0, 0, 0, 0.7);
+    stroke-width: 1.5;
+    pointer-events: none;
+  }
+  .corner-dot.first {
+    fill: var(--accent, #4c9aff);
+  }
+  .corner-dot.snap {
+    stroke: #fff;
+    stroke-width: 2;
   }
   .handle.rotate {
     fill: #ddd;

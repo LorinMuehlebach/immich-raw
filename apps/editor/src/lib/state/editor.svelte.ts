@@ -38,6 +38,7 @@ import {
   SCOPE_SAMPLE_WIDTH,
   sampleSource,
   scopeOf,
+  simplifyPolygon,
   tempTintForNeutral,
   totalTurns,
   transformInverse,
@@ -68,6 +69,7 @@ import {
   MAX_BRUSHES,
   MAX_BRUSH_POINTS,
   MAX_OBJECT_POINTS,
+  MAX_POLYGON_POINTS,
   aiCount,
   aiLabel,
   newAiComponent,
@@ -76,6 +78,7 @@ import {
   MAX_MASKS,
   brushCount,
   componentCount,
+  componentLabel,
   newComponent,
   newMask,
   defaultEdge,
@@ -112,6 +115,7 @@ import {
   type Mask,
   type MaskComponent,
   type MaskMode,
+  type PolygonComponent,
   type MaskEdge,
   type MixerChannel,
   type ParamSpec,
@@ -160,11 +164,16 @@ export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale';
 
 /** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
 export interface MaskDraft {
-  /** object: Lightroom's Objects (drag a box around it, or click it). */
-  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object';
+  /**
+   * object: Lightroom's Objects (drag a box around it, or click it). polygon: click the
+   * corners; lasso: drag around the area.
+   */
+  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object' | 'polygon' | 'lasso';
   mode: MaskMode;
   /** Mask to add it to; null = create a new mask. */
   maskId: string | null;
+  /** Polygon: the corners clicked so far, flat [x, y, ...] in the mask frame. */
+  points?: number[];
 }
 
 /** The People or Landscape choices before the AI mask is made. */
@@ -181,7 +190,7 @@ export interface AiPicker {
 const MODE_VERB: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
 
 /** History name of a mask part. */
-const partLabel = (c: MaskComponent) => (c.kind === 'ai' ? aiLabel(c) : COMPONENT_LABELS[c.kind]);
+const partLabel = componentLabel;
 
 /** Brush settings (Lightroom's brush panel); each stroke keeps the values it was painted with. */
 export interface BrushSettings {
@@ -1311,7 +1320,7 @@ export class Editor {
    * Arms a gradient to be drawn on the photo (Lightroom's M / Shift+M); luminance ranges
    * are added right away. mode/maskId: add to, subtract from or intersect with an existing mask.
    */
-  startMask(kind: ComponentKind, mode: MaskMode = 'add', maskId: string | null = null): void {
+  startMask(kind: ComponentKind | 'lasso', mode: MaskMode = 'add', maskId: string | null = null): void {
     if (kind === 'ai') return this.startAiMask('subject', mode, maskId);
     if (this.readOnlyGuard() || !this.maskRoom(!maskId)) return;
     if (this.tool !== 'mask') this.setTool('mask');
@@ -1322,16 +1331,63 @@ export class Editor {
       this.changed(true, `${maskId ? 'Add' : 'New Mask:'} ${COMPONENT_LABELS.luminance}`);
       return;
     }
-    if (kind === 'brush' && brushCount(this.recipe.masks) >= MAX_BRUSHES) {
-      this.notice = `Up to ${MAX_BRUSHES} brush parts are supported in total.`;
+    if ((kind === 'brush' || kind === 'polygon' || kind === 'lasso') && brushCount(this.recipe.masks) >= MAX_BRUSHES) {
+      this.notice = `Up to ${MAX_BRUSHES} brush, polygon and lasso parts are supported in total.`;
       return;
     }
-    this.maskDraft = { kind, mode: maskId ? mode : 'add', maskId };
+    this.maskDraft = { kind, mode: maskId ? mode : 'add', maskId, ...(kind === 'polygon' ? { points: [] } : {}) };
   }
 
   cancelMaskDraft(): void {
     this.maskDraft = null;
     this.aiPicker = null;
+  }
+
+  // ---- polygon and lasso
+
+  /** Polygon being drawn: a corner at mask-frame point p. */
+  addPolygonPoint(p: [number, number]): void {
+    const d = this.maskDraft;
+    if (d?.kind !== 'polygon' || this.readOnlyGuard()) return;
+    const points = d.points ?? [];
+    if (points.length >= MAX_POLYGON_POINTS * 2) {
+      this.notice = `Up to ${MAX_POLYGON_POINTS} corners per polygon.`;
+      return;
+    }
+    this.maskDraft = { ...d, points: [...points, q5(p[0]), q5(p[1])] };
+  }
+
+  /** Polygon being drawn: takes back the last corner (Backspace). */
+  removePolygonPoint(): void {
+    const d = this.maskDraft;
+    if (d?.kind !== 'polygon' || !d.points?.length) return;
+    this.maskDraft = { ...d, points: d.points.slice(0, -2) };
+  }
+
+  /** Polygon being drawn: closes it and adds it (needs three corners). */
+  closePolygon(): boolean {
+    const d = this.maskDraft;
+    if (d?.kind !== 'polygon' || (d.points?.length ?? 0) < 6) return false;
+    return this.addPolygon(d.points!, false);
+  }
+
+  /** Lasso: the outline dragged on the photo (mask frame), closed and simplified. */
+  drawLasso(points: number[]): boolean {
+    if (this.maskDraft?.kind !== 'lasso') return false;
+    // Corners closer than half a brush-map texel to the outline add nothing.
+    return this.addPolygon(simplifyPolygon(points, 0.5 / 2048, MAX_POLYGON_POINTS), true);
+  }
+
+  private addPolygon(points: number[], freehand: boolean): boolean {
+    const d = this.maskDraft;
+    if (!d || this.readOnlyGuard() || points.length < 6 || !this.maskRoom(!d.maskId)) return false;
+    this.maskDraft = null;
+    const c = newComponent('polygon', d.mode) as PolygonComponent;
+    c.points = points.map(q5);
+    if (freehand) c.freehand = true;
+    this.addComponent(c, d.maskId);
+    this.changed(true, `${d.maskId ? MODE_VERB[d.mode] : 'New Mask:'} ${partLabel(c)}`);
+    return true;
   }
 
   // ---- AI masks
@@ -1448,8 +1504,8 @@ export class Editor {
   /** Starts drawing the armed gradient at mask-frame point p; returns the new component's id. */
   beginMaskDraw(p: [number, number]): string | null {
     const d = this.maskDraft;
-    // Objects are pointed out with drawObject.
-    if (!d || d.kind === 'object' || this.readOnlyGuard()) return null;
+    // Objects are pointed out with drawObject; polygons and lassos are drawn with their own calls.
+    if (!d || d.kind === 'object' || d.kind === 'polygon' || d.kind === 'lasso' || this.readOnlyGuard()) return null;
     const c = newComponent(d.kind, d.mode);
     if (c.kind === 'linear') Object.assign(c, { x0: p[0], y0: p[1], x1: p[0], y1: p[1] + 1e-3 });
     else if (c.kind === 'radial') Object.assign(c, { cx: p[0], cy: p[1], rx: 1e-3, ry: 1e-3 });

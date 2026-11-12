@@ -248,6 +248,8 @@
       editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask');
     } else if (key === 'm') {
       editor.startMask(e.shiftKey ? 'radial' : 'linear');
+    } else if (key === 'k' && e.shiftKey) {
+      editor.startMask('polygon');
     } else if (key === 'k') {
       editor.startMask('brush');
     } else if ((e.key === '[' || e.key === ']') && editor.painting) {
@@ -256,6 +258,12 @@
       editor.setBrush({ size: e.key === ']' ? Math.min(100, s + Math.max(1, Math.round(s * 0.12))) : Math.max(1, s - Math.max(1, Math.round(s * 0.12))) });
     } else if (key === 'o' && editor.tool === 'mask') {
       editor.toggleMaskOverlay();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.maskDraft?.kind === 'polygon' && !onRange) {
+      // Takes back the last corner of the polygon being drawn.
+      e.preventDefault();
+      editor.removePolygonPoint();
+    } else if (e.key === 'Enter' && editor.maskDraft?.kind === 'polygon') {
+      editor.closePolygon();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.tool === 'mask' && !onRange) {
       const m = editor.selectedMask;
       const c = editor.selectedComponent;
@@ -718,6 +726,7 @@
             <div><kbd>⇧</kbd>+<kbd>W</kbd> masking</div>
             <div><kbd>M</kbd> / <kbd>⇧</kbd>+<kbd>M</kbd> gradients</div>
             <div><kbd>K</kbd> brush, <kbd>[</kbd> <kbd>]</kbd> size</div>
+            <div><kbd>⇧</kbd>+<kbd>K</kbd> polygon</div>
           </div>
         {/if}
       {/if}

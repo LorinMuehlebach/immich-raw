@@ -1,7 +1,7 @@
 // WebGL2 renderer: fitted preview from a <= 2560 px proxy, 1:1 zoom regions and
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
-import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, type BrushComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
+import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, type BrushComponent, type PolygonComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
 import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
 import { cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type ProfileLooks, type ProfileRender } from './color/index.ts';
 import { buildCurveLut, isCurveNeutral, LUT_SIZE } from './curves.ts';
@@ -13,6 +13,7 @@ import { NO_LENS, defringeUniforms, lensModel, lensSourcePoint, lensUniforms, ty
 import { MaskRefiner } from './mask-refine.ts';
 import { colorFeature, maskFrameScale, maskUniforms, type MaskResources } from './masks.ts';
 import { histogramOf, type Histogram, type ScopeImage } from './scopes.ts';
+import { PolygonRasterizer, polygonKey } from './polygon.ts';
 import * as S from './shaders.ts';
 import { developUniforms, finishUniforms, lookUniforms, STATIC_UNIFORMS, type CameraInfo } from './uniforms.ts';
 
@@ -135,6 +136,7 @@ export class Renderer {
   /** The decoded image the proxy was made from (colour range masks read their samples here). */
   private cpuSource: SourceImage | null = null;
   private brushRaster = new BrushRasterizer();
+  private polygonRaster = new PolygonRasterizer();
   private brushTex: WebGLTexture | null = null;
   /** What the brush atlas was built from; NO_KEY = nothing uploaded yet. */
   private brushKey = NO_KEY;
@@ -503,13 +505,21 @@ export class Renderer {
     const { camera } = this.requireSource();
     const [fx, fy] = maskFrameScale(camera.fullWidth, camera.fullHeight);
     const brushes = recipe.masks.flatMap((m) => m.components.filter((c): c is BrushComponent => c.kind === 'brush' && c.strokes.length > 0));
-    const key = brushes
-      .map((c) => `${c.id}:${c.strokes.map((st) => `${st.erase ? 'e' : 'p'}${st.size},${st.feather},${st.flow},${st.density},${st.points.length},${st.points[0]},${st.points.at(-1)}`).join(';')}`)
-      .join('|');
+    // Polygons share the brush atlas.
+    const polygons = recipe.masks.flatMap((m) => m.components.filter((c): c is PolygonComponent => c.kind === 'polygon' && c.points.length >= 6));
+    const key = [
+      ...brushes.map((c) => `${c.id}:${c.strokes.map((st) => `${st.erase ? 'e' : 'p'}${st.size},${st.feather},${st.flow},${st.density},${st.points.length},${st.points[0]},${st.points.at(-1)}`).join(';')}`),
+      ...polygons.map((c) => `${c.id}:poly${polygonKey(c.points)}`),
+    ].join('|');
     if (key !== this.brushKey) {
       this.brushKey = key;
       this.brushRaster.retain(new Set(brushes.map((c) => c.id)));
-      const atlas = packBrushAtlas(brushes.map((c) => ({ id: c.id, map: this.brushRaster.rasterize(c, fx, fy) })), this.maxTextureSize);
+      this.polygonRaster.retain(new Set(polygons.map((c) => c.id)));
+      const maps = [
+        ...brushes.map((c) => ({ id: c.id, map: this.brushRaster.rasterize(c, fx, fy) })),
+        ...polygons.map((c) => ({ id: c.id, map: this.polygonRaster.rasterize(c, fx, fy) })),
+      ];
+      const atlas = packBrushAtlas(maps, this.maxTextureSize);
       this.brushTex = this.uploadAtlas(this.brushTex, atlas);
       // No atlas: a texture of zeros, so nothing reads an unbound sampler.
       this.ctx.setShared('uBrush', atlas ? this.brushTex : this.dummy);

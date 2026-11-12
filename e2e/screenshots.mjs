@@ -1,7 +1,7 @@
 // Takes the screenshots of the guides in docs/ (docs/images/<section>/<name>.jpg) on a test Immich
 // with the five seeded sample RAWs: the try-it demo (deploy/demo) or the e2e test Immich.
 // Usage: node e2e/screenshots.mjs [section ...]      (default: all sections)
-//   sections: getting-started editing masks workflow scopes export upscale dng stacking mobile
+//   sections: getting-started editing masks polygon workflow scopes export upscale dng stacking mobile
 //   IMMICH_URL (default http://127.0.0.1:8088); HEADED=1 shows the browser.
 // - Needs internet once, for the AI mask and upscale models and the Fujifilm looks. They stay in
 //   the browser profile in e2e/out/screenshots-profile.
@@ -25,6 +25,7 @@ const SECTIONS = {
   'getting-started': gettingStarted,
   editing,
   masks,
+  polygon,
   workflow,
   scopes,
   export: exporting,
@@ -187,6 +188,25 @@ async function editing() {
   await settle();
   await shot('editing', 'crop');
   await page.keyboard.press('Enter');
+}
+
+/** A polygon mask (in the masks guide): the solar panels on the roof, clicked corner by corner. */
+async function polygon() {
+  await openEditor(await find('fuji-xt5'));
+  await page.keyboard.press('Shift+W');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Shift+K');
+  for (const p of [[0.566, 0.311], [0.999, 0.299], [0.999, 0.79], [0.829, 0.751], [0.68, 0.707], [0.52, 0.726]]) {
+    await page.mouse.click(...(await at(...p)));
+    await page.waitForTimeout(100);
+  }
+  await page.keyboard.press('Enter');
+  await setSlider('Exposure', -0.5);
+  await setSlider('Dehaze', 30);
+  await blur();
+  await page.keyboard.press('o');
+  await settle();
+  await shot('masks', 'polygon');
 }
 
 async function masks() {
