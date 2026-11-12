@@ -281,6 +281,8 @@ def plan_changes(
                 "rank": r.rank,
                 "groupSize": size,
                 "pinned": r.pinned,
+                "closeCall": g.result.close_call,
+                "margin": g.result.margin,
                 "metrics": r.metrics,
                 "at": now,
             }

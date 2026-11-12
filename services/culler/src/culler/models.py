@@ -366,6 +366,7 @@ class GroupResult:
     frame_ids: list[str]  # ranked: best first (for a bracket: the shot in front)
     results: dict[str, FrameResult]
     close_call: bool = False  # the best and the next shot nearly tied: worth a look
+    margin: float | None = None  # the best's lead over the next shot on the tie-break score
     kind: Literal["burst", "bracket"] = "burst"
 
     @property

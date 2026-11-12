@@ -200,6 +200,8 @@ class Service:
                 "rank": m.get("rank"),
                 "groupSize": m.get("groupSize"),
                 "pinned": m.get("pinned", False),
+                "closeCall": m.get("closeCall", False),
+                "margin": m.get("margin"),
                 "metrics": m.get("metrics", {}),
                 "runId": m.get("runId"),
             }

@@ -40,6 +40,8 @@ def format_report(report: dict[str, Any]) -> str:
         f"{c['groups']} stacks from {c['photos']} photos ({c['frames']} captures) · {c['runnerUps']} runner-ups · "
         f"rejected: {rej['lighting']} lighting, {rej['blur']} blur, {rej['eyes']} eyes",
     ]
+    if c.get("closeCalls"):
+        lines.append(f"{c['closeCalls']} close calls: the best and the next shot nearly tied, worth a look")
     if c.get("brackets"):
         lines.append(f"{c['brackets']} of the stacks are exposure brackets (none rejected)")
     if c.get("pending"):
@@ -49,7 +51,7 @@ def format_report(report: dict[str, Any]) -> str:
     for i, g in enumerate(report["groups"], start=1):
         frames = g["frames"]
         times = sorted(f["taken"] for f in frames)
-        kind = " (exposure bracket)" if g.get("kind") == "bracket" else ""
+        kind = " (exposure bracket)" if g.get("kind") == "bracket" else " · close call" if g.get("closeCall") else ""
         lines.append(f"\nStack {i}: {len(frames)} photos, {times[0][11:19]}-{times[-1][11:19]}{kind}")
         for f in frames:
             role = f["role"] if f["role"] != "rejected" else f"rejected ({f['reason']})"

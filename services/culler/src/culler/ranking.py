@@ -1,7 +1,8 @@
 """Picks the best frame of a group by sequential elimination, then a tie-break.
 
 Among the frames that pass every check, the one with the most smiling faces is the best (when
-smiles count), then the best mix of sharpness, exposure and open eyes.
+smiles count), then the best mix of sharpness, exposure and open eyes. When the best and the next
+shot have as many smiles and their mix is less than `close_margin` apart, the group is a close call.
 
 Order of the result: best, runner-ups (passed every check) in that order, then rejected frames,
 those that survived longer first.
@@ -11,12 +12,13 @@ from __future__ import annotations
 
 from culler.brackets import middle
 from culler.checks import CHECKS, Basis, Candidate
-from culler.config import Config
+from culler.config import Config, RankingConfig
 from culler.features.exposure import subject_exposure, subject_target
 from culler.models import Features, Frame, FrameResult, GroupResult, Reason
 
 
-def tie_break_score(c: Candidate, top_sharpness: float) -> float:
+def tie_break_parts(c: Candidate, top_sharpness: float) -> tuple[float, float, float]:
+    """(sharpness, exposure, eyes), each 0-1."""
     sharp = c.sharpness / top_sharpness if top_sharpness > 0 else 0.0
     light = 1.0 - min(1.0, c.badness / 1.5)
     f = c.features
@@ -25,7 +27,13 @@ def tie_break_score(c: Candidate, top_sharpness: float) -> float:
         eyes = sum(openness) / len(openness)
     else:
         eyes = (f.faces_known - f.faces_closed) / f.faces_known if f.faces_known else 0.5
-    return 0.45 * sharp + 0.35 * light + 0.20 * eyes
+    return sharp, light, eyes
+
+
+def tie_break_score(c: Candidate, top_sharpness: float, cfg: RankingConfig | None = None) -> float:
+    r = cfg or RankingConfig()
+    sharp, light, eyes = tie_break_parts(c, top_sharpness)
+    return r.sharpness_weight * sharp + r.exposure_weight * light + r.eyes_weight * eyes
 
 
 def rank_group(
@@ -48,7 +56,7 @@ def rank_group(
         survivors = [c for c in survivors if c.frame_id not in out]
 
     top_sharp = max(c.sharpness for c in cands)
-    score = {c.frame_id: tie_break_score(c, top_sharp) for c in cands}
+    score = {c.frame_id: tie_break_score(c, top_sharp, cfg.ranking) for c in cands}
 
     def smiles(c: Candidate) -> int:
         return c.features.faces_smiling(cfg.smiles.min_score) if cfg.smiles.enabled else 0
@@ -76,6 +84,11 @@ def rank_group(
     ordered = [by_id[best_id], *runner_ups, *losers]
 
     best = by_id[best_id]
+    close_call, margin = False, None
+    if runner_ups and not is_pinned:
+        nxt = runner_ups[0]
+        margin = round(score[best_id] - score[nxt.frame_id], 4)
+        close_call = smiles(best) == smiles(nxt) and margin < cfg.ranking.close_margin
     results: dict[str, FrameResult] = {}
     for rank, c in enumerate(ordered, start=1):
         fid = c.frame_id
@@ -89,7 +102,7 @@ def rank_group(
             pinned=is_pinned and fid == best_id,
             metrics=_metrics(c, best, cfg),
         )
-    return GroupResult(frame_ids=[c.frame_id for c in ordered], results=results)
+    return GroupResult(frame_ids=[c.frame_id for c in ordered], results=results, close_call=close_call, margin=margin)
 
 
 def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:

@@ -145,6 +145,12 @@ class SmilesConfig:
 class RankingConfig:
     order: tuple[str, ...] = ("lighting", "blur", "eyes")
     respect_favorites: bool = True
+    # Among the shots that pass every check (after smiles): the best mix of these, summing to 1.
+    sharpness_weight: float = 0.45
+    exposure_weight: float = 0.35
+    eyes_weight: float = 0.20
+    # A close call: the best and the next shot score less than this apart (0-1 scale).
+    close_margin: float = 0.03
 
 
 @dataclass(frozen=True)
