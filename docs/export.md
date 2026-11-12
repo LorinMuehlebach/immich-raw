@@ -17,7 +17,9 @@ The gear sets, for each preset:
   megapixels; never larger than the photo;
 - quality, kept for each lossy file type, or lossless for WebP and JPEG XL;
 - output sharpening (screen, matte or glossy paper; low, standard or high);
-- a text watermark (position, size, opacity);
+- a watermark: a line of text, or a logo from a PNG file with its transparency (position, size,
+  opacity). The logo is kept in this browser, like the settings; a preset whose logo isn't there
+  exports without a watermark and says so;
 - metadata: all, all except location, or copyright only, with a copyright line such as
   `© {year} {owner}`;
 - the file name: the original name, with the preset or date, album and number, or your own pattern.

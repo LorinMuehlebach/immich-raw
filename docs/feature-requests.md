@@ -19,5 +19,3 @@ Ideas that are wanted but not built yet, with what stands in the way.
 - **Content Credentials (C2PA).** Signing an export needs a C2PA manifest (JUMBF in JPEG APP11
   segments), a hash of the file and a signature with an X.509 certificate. A self-signed certificate
   shows as an unknown signer, so this needs a certificate the user brings, or signing on a server.
-- **Image watermarks.** The watermark is text only; a logo (PNG with transparency) would need an
-  upload and somewhere to keep it.

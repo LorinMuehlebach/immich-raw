@@ -133,6 +133,7 @@ import {
   type SaveSettings,
 } from './export-settings.ts';
 import { downloadBlob } from '../download.ts';
+import { loadLogoBitmap } from './logos.ts';
 import { captureDate } from '../export/metadata.ts';
 import { finishExport, type ExportFile } from '../export/output.ts';
 import { parseContext } from '../immich/context.ts';
@@ -2033,13 +2034,20 @@ export class Editor {
   }
 
   /** A rendered image made into the file `preset` describes. */
-  private finish(image: ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
-    return finishExport(image, asset, preset, {
-      copyright: this.exportSettings.copyright,
-      owner: this.ownerName(asset),
-      forImmich,
-      onStep: (s) => step(s),
-    });
+  private async finish(image: ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
+    const wm = preset.watermark;
+    const logo = !forImmich && wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
+    try {
+      return await finishExport(image, asset, preset, {
+        copyright: this.exportSettings.copyright,
+        owner: this.ownerName(asset),
+        forImmich,
+        logo,
+        onStep: (s) => step(s),
+      });
+    } finally {
+      logo?.close();
+    }
   }
 
   /** The photographer, for the copyright line: the asset owner's Immich name. */
@@ -2085,7 +2093,7 @@ export class Editor {
       });
       downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
       this.error = null;
-      this.notice = `Exported ${name} (${file.width} × ${file.height}).${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
+      this.notice = [`Exported ${name} (${file.width} × ${file.height}).`, ...file.notes, fallback ? COLOR_FALLBACK : ''].filter(Boolean).join(' ');
       return true;
     } catch (e) {
       console.error(e);
@@ -2165,7 +2173,7 @@ export class Editor {
       if (target === 'download') {
         const name = upscaledDownloadName(asset.originalFileName, s.scale, s.format);
         downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
-        this.notice = `Exported ${name} (${file.width} × ${file.height}).`;
+        this.notice = [`Exported ${name} (${file.width} × ${file.height}).`, ...file.notes].join(' ');
       } else {
         await saveUpscaled({
           raw: asset,

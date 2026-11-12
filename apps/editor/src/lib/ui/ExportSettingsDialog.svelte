@@ -7,6 +7,7 @@
     FAVORITE_LABELS,
     FORMAT_LABELS,
     FRONT_LABELS,
+    LOGO_SIZE,
     METADATA_LABELS,
     NAMING_CHOICES,
     POSITION_LABELS,
@@ -16,6 +17,7 @@
     SHARPEN_LABELS,
     SIZE_MODE_LABELS,
     UNIT_LABELS,
+    WATERMARK_KIND_LABELS,
     WATERMARK_OPACITY,
     WATERMARK_SIZE,
     exportFilename,
@@ -28,6 +30,7 @@
     type ExportFormat,
     type ExportPreset,
     type ExportPresetId,
+    type ExportWatermark,
     type MetadataMode,
     type SaveFavorite,
     type SharpenAmount,
@@ -35,9 +38,11 @@
     type SizeMode,
     type SizeUnit,
     type StackFront,
+    type WatermarkKind,
     type WatermarkPosition,
   } from '../state/export-settings.ts';
   import { captureDate } from '../export/metadata.ts';
+  import { deleteUnusedLogo, importLogo, logoStorage, type StoredLogo } from '../state/logos.ts';
   import Slider from './Slider.svelte';
 
   const FORMAT_HINTS: Partial<Record<ExportFormat, string>> = {
@@ -70,6 +75,70 @@
 
   function set(patch: Partial<ExportPreset>) {
     editor.setExportPreset(id, patch);
+  }
+
+  function setWatermark(patch: Partial<ExportWatermark>, presetId: ExportPresetId = id) {
+    editor.setExportPreset(presetId, { watermark: { ...editor.exportSettings.presets[presetId].watermark, ...patch } });
+  }
+
+  // The watermark logo: picked as a PNG, kept in this browser (logos.ts).
+  let fileInput = $state<HTMLInputElement | null>(null);
+  let importing = $state(false);
+  let logoError = $state<string | null>(null);
+  let logo = $state<StoredLogo | null>(null);
+  let logoUrl = $state<string | null>(null);
+
+  // Name, size and thumbnail of the shown preset's logo.
+  $effect(() => {
+    const logoId = p.watermark.imageId;
+    let cancelled = false;
+    let url: string | null = null;
+    logo = null;
+    logoUrl = null;
+    if (logoId) {
+      logoStorage
+        .get(logoId)
+        .then((l) => {
+          if (cancelled || !l) return;
+          logo = l;
+          url = URL.createObjectURL(l.blob);
+          logoUrl = url;
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  });
+
+  const usedLogos = () => EXPORT_PRESET_IDS.map((pid) => editor.exportSettings.presets[pid].watermark.imageId);
+
+  async function pickLogo(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    const presetId = id;
+    const previous = editor.exportSettings.presets[presetId].watermark.imageId;
+    importing = true;
+    logoError = null;
+    try {
+      const stored = await importLogo(file);
+      setWatermark({ imageId: stored.id }, presetId);
+      await deleteUnusedLogo(previous, usedLogos()).catch(() => {});
+    } catch (err) {
+      logoError = err instanceof Error ? err.message : String(err);
+    } finally {
+      importing = false;
+    }
+  }
+
+  function removeLogo() {
+    const previous = p.watermark.imageId;
+    setWatermark({ imageId: null });
+    logoError = null;
+    void deleteUnusedLogo(previous, usedLogos()).catch(() => {});
   }
 
   function close() {
@@ -227,22 +296,50 @@
       </label>
       {#if p.watermark.enabled}
         <label class="row">
-          <span class="lbl">Text</span>
-          <input type="text" value={p.watermark.text} onchange={(e) => set({ watermark: { ...p.watermark, text: e.currentTarget.value } })} />
+          <span class="lbl">Type</span>
+          <select value={p.watermark.kind} aria-label="Watermark type" onchange={(e) => setWatermark({ kind: e.currentTarget.value as WatermarkKind })}>
+            {#each Object.entries(WATERMARK_KIND_LABELS) as [value, label] (value)}<option {value}>{label}</option>{/each}
+          </select>
         </label>
+        {#if p.watermark.kind === 'image'}
+          <div class="row logo">
+            <span class="lbl">Logo</span>
+            {#if logoUrl}<img src={logoUrl} alt="" class="thumb" />{/if}
+            <span class="logo-name">{logo ? `${logo.name} · ${logo.width} × ${logo.height}` : p.watermark.imageId ? 'Not in this browser' : 'None chosen'}</span>
+          </div>
+          <div class="row">
+            <span class="lbl"></span>
+            <button onclick={() => fileInput?.click()} disabled={importing}>{importing ? 'Reading…' : 'Choose PNG…'}</button>
+            {#if p.watermark.imageId}<button onclick={removeLogo}>Remove</button>{/if}
+            <input bind:this={fileInput} class="hidden" type="file" accept="image/png" aria-label="Logo file" onchange={pickLogo} />
+          </div>
+          {#if logoError}<p class="hint error">{logoError}</p>{/if}
+          <p class="hint">A PNG, transparency kept; up to 16 MB. Kept in this browser.</p>
+        {:else}
+          <label class="row">
+            <span class="lbl">Text</span>
+            <input type="text" value={p.watermark.text} onchange={(e) => setWatermark({ text: e.currentTarget.value })} />
+          </label>
+        {/if}
         <label class="row">
           <span class="lbl">Position</span>
-          <select value={p.watermark.position} onchange={(e) => set({ watermark: { ...p.watermark, position: e.currentTarget.value as WatermarkPosition } })}>
+          <select value={p.watermark.position} onchange={(e) => setWatermark({ position: e.currentTarget.value as WatermarkPosition })}>
             {#each Object.entries(POSITION_LABELS) as [value, label] (value)}<option {value}>{label}</option>{/each}
           </select>
-          <select class="unit-select" value={p.watermark.color} aria-label="Colour" onchange={(e) => set({ watermark: { ...p.watermark, color: e.currentTarget.value as 'white' | 'black' } })}>
-            <option value="white">White</option>
-            <option value="black">Black</option>
-          </select>
+          {#if p.watermark.kind === 'text'}
+            <select class="unit-select" value={p.watermark.color} aria-label="Colour" onchange={(e) => setWatermark({ color: e.currentTarget.value as 'white' | 'black' })}>
+              <option value="white">White</option>
+              <option value="black">Black</option>
+            </select>
+          {/if}
         </label>
         <div class="slider">
-          <Slider spec={WATERMARK_SIZE} value={p.watermark.size} onchange={(v) => set({ watermark: { ...p.watermark, size: v } })} oncommit={() => {}} onreset={() => set({ watermark: { ...p.watermark, size: WATERMARK_SIZE.default } })} />
-          <Slider spec={WATERMARK_OPACITY} value={p.watermark.opacity} onchange={(v) => set({ watermark: { ...p.watermark, opacity: v } })} oncommit={() => {}} onreset={() => set({ watermark: { ...p.watermark, opacity: WATERMARK_OPACITY.default } })} />
+          {#if p.watermark.kind === 'image'}
+            <Slider spec={LOGO_SIZE} value={p.watermark.imageSize} onchange={(v) => setWatermark({ imageSize: v })} oncommit={() => {}} onreset={() => setWatermark({ imageSize: LOGO_SIZE.default })} />
+          {:else}
+            <Slider spec={WATERMARK_SIZE} value={p.watermark.size} onchange={(v) => setWatermark({ size: v })} oncommit={() => {}} onreset={() => setWatermark({ size: WATERMARK_SIZE.default })} />
+          {/if}
+          <Slider spec={WATERMARK_OPACITY} value={p.watermark.opacity} onchange={(v) => setWatermark({ opacity: v })} oncommit={() => {}} onreset={() => setWatermark({ opacity: WATERMARK_OPACITY.default })} />
         </div>
       {/if}
 
@@ -439,6 +536,29 @@
   }
   .save {
     margin-top: 6px;
+  }
+  .logo .thumb {
+    flex: none;
+    width: 48px;
+    height: 32px;
+    object-fit: contain;
+    /* A checkerboard shows the logo's transparency. */
+    background: repeating-conic-gradient(#555 0% 25%, #333 0% 50%) 50% / 10px 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+  .logo-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+  }
+  .hidden {
+    display: none;
+  }
+  .hint.error {
+    color: #ff8a80;
   }
   h3 {
     margin: 0 0 2px;

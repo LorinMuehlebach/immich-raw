@@ -5,6 +5,7 @@ import {
   addPngMetadata,
   buildExifTiff,
   buildXmp,
+  drawLogoWatermark,
   drawWatermark,
   encodeJpeg,
   insertExif,
@@ -26,7 +27,11 @@ export interface ExportFile {
   width: number;
   height: number;
   mime: string;
+  /** What the file lacks that the preset asked for, as sentences for a notice (e.g. a missing logo). */
+  notes: string[];
 }
+
+export const MISSING_LOGO = "The watermark logo isn't in this browser, so the photo was exported without a watermark.";
 
 export const FORMAT_MIME: Record<ExportFormat, string> = {
   jpeg: 'image/jpeg',
@@ -44,6 +49,8 @@ export interface OutputOptions {
   owner: string;
   /** The copy Save uploads to Immich: always JPEG, no watermark, the RAW's own metadata. */
   forImmich?: boolean;
+  /** The preset's watermark logo, decoded (loadLogoBitmap); null when it isn't in this browser. */
+  logo?: ImageBitmap | null;
   onStep?: (step: OutputStep) => void;
 }
 
@@ -78,8 +85,9 @@ function tiffMetadata(exif: ExifFields, xmp: string, ppi: number) {
 }
 
 /**
- * Turns the full-size rendered photo into the file the preset describes. The rendered pixels
- * may be handed to an encoder worker: don't use `rendered` afterwards.
+ * Turns the full-size rendered photo into the file the preset describes. The rendered pixels are
+ * sharpened and watermarked in place and may be handed to an encoder worker: don't use
+ * `rendered` afterwards.
  */
 export async function finishExport(rendered: ImageData, asset: MetadataAsset, preset: ExportPreset, o: OutputOptions): Promise<ExportFile> {
   const size = outputSize(rendered.width, rendered.height, preset.size, preset.ppi);
@@ -93,19 +101,25 @@ export async function finishExport(rendered: ImageData, asset: MetadataAsset, pr
   }
   if (preset.sharpen.for !== 'none') {
     o.onStep?.('sharpen');
-    if (image === rendered) image = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
     outputSharpen(image, preset.sharpen.for, preset.sharpen.amount, preset.ppi);
   }
-  if (!o.forImmich && preset.watermark.enabled) {
-    const text = fillText(preset.watermark.text, { owner: o.owner, date: captureDate(asset) });
-    if (text) image = drawWatermark(image, { ...preset.watermark, text });
+  const notes: string[] = [];
+  const wm = preset.watermark;
+  if (!o.forImmich && wm.enabled) {
+    if (wm.kind === 'image') {
+      if (o.logo) drawLogoWatermark(image, o.logo, { position: wm.position, size: wm.imageSize, opacity: wm.opacity });
+      else notes.push(MISSING_LOGO);
+    } else {
+      const text = fillText(wm.text, { owner: o.owner, date: captureDate(asset) });
+      if (text) drawWatermark(image, { ...wm, text });
+    }
   }
   o.onStep?.('encode');
   const { width, height } = image;
 
   if (o.forImmich) {
     const jpeg = insertExif(await encodeJpeg(image, preset.quality.jpeg / 100), immichCopyExif(asset, APP_ID, width, height));
-    return { bytes: insertXmp(jpeg, immichCopyXmp(asset)), width, height, mime: FORMAT_MIME.jpeg };
+    return { bytes: insertXmp(jpeg, immichCopyXmp(asset)), width, height, mime: FORMAT_MIME.jpeg, notes };
   }
 
   const meta = exportMetadata(asset, preset.metadata, { copyright: o.copyright, owner: o.owner, software: APP_ID, ppi: preset.ppi, width, height });
@@ -138,5 +152,5 @@ export async function finishExport(rendered: ImageData, asset: MetadataAsset, pr
       });
       break;
   }
-  return { bytes, width, height, mime: FORMAT_MIME[preset.format] };
+  return { bytes, width, height, mime: FORMAT_MIME[preset.format], notes };
 }

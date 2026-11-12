@@ -30,8 +30,8 @@ Each feature has a guide with screenshots.
   snapshots, presets, copy and paste, a filmstrip, keyboard shortcuts, and
   [Lightroom import](docs/workflow.md#lightroom-import) of XMP sidecars and presets.
 - **[Export](docs/export.md):** JPEG, PNG, TIFF, WebP, AVIF or JPEG XL at a size of your choice,
-  with sharpening, watermark, metadata and file name settings; one photo, a whole album, or the
-  photos selected in Immich.
+  with sharpening, a text or logo watermark, metadata and file name settings; one photo, a whole
+  album, or the photos selected in Immich.
 - **[AI Upscale](docs/upscale.md):** 2× or 4× larger, in the browser, with a preview of a detail.
 - **[Stacking and best pick](docs/stacking.md)** (optional culler): bursts and re-takes stacked
   with the best shot in front, the others tagged with why they lost; from the editor or from

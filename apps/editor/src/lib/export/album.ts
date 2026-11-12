@@ -18,6 +18,7 @@ import {
 import { downloadUncached } from '../immich/download.ts';
 import { loadRecipe, readMetadata } from '../immich/save.ts';
 import { exportFilename, type ExportPreset, type ExportPresetId } from '../state/export-settings.ts';
+import { loadLogoBitmap } from '../state/logos.ts';
 import { mapLimit, planItems, type AlbumItem, type PlanAsset } from './album-plan.ts';
 import { captureDate } from './metadata.ts';
 import { finishExport, type OutputStep } from './output.ts';
@@ -145,6 +146,8 @@ export interface AlbumResult {
   copied: string[];
   failed: { name: string; error: string }[];
   cancelled: boolean;
+  /** What every file lacks that the preset asked for (e.g. a missing logo), each said once. */
+  notes: string[];
 }
 
 export interface AlbumRunOptions {
@@ -181,7 +184,10 @@ async function decodeImage(blob: Blob): Promise<ImageData | null> {
  * the plan. Errors skip the photo.
  */
 export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promise<AlbumResult> {
-  const result: AlbumResult = { written: [], copied: [], failed: [], cancelled: false };
+  const result: AlbumResult = { written: [], copied: [], failed: [], cancelled: false, notes: [] };
+  const wm = o.preset.watermark;
+  // Decoded once for the whole run; every photo draws the same logo.
+  const logo = wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
   const raws = new RawRenderer();
   const total = plan.items.length;
   const seqDigits = String(total).length;
@@ -212,8 +218,9 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
         return;
       }
     }
-    const file = await finishExport(image, asset, o.preset, { copyright: o.copyright, owner, onStep: (s) => report(s) });
+    const file = await finishExport(image, asset, o.preset, { copyright: o.copyright, owner, logo, onStep: (s) => report(s) });
     image = null;
+    for (const note of file.notes) if (!result.notes.includes(note)) result.notes.push(note);
     report('write');
     result.written.push(await o.destination.write(exportFilename(o.preset, names), file.bytes));
   };
@@ -243,6 +250,7 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
     await Promise.all(Array.from({ length: Math.max(1, Math.min(o.parallel, total)) }, worker));
   } finally {
     raws.dispose();
+    logo?.close();
   }
   return result;
 }

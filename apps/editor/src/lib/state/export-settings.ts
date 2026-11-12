@@ -23,8 +23,12 @@ export interface ExportSize {
   unit: SizeUnit;
 }
 
+export type WatermarkKind = 'text' | 'image';
+
 export interface ExportWatermark {
   enabled: boolean;
+  /** A line of text, or a logo (a PNG kept in this browser, see logos.ts). */
+  kind: WatermarkKind;
   /** Text with {year} and {owner}, like the copyright. */
   text: string;
   position: WatermarkPosition;
@@ -33,6 +37,10 @@ export interface ExportWatermark {
   /** 0-100. */
   opacity: number;
   color: 'white' | 'black';
+  /** The logo's id in this browser's logo store, or null. */
+  imageId: string | null;
+  /** The logo's long side in % of the short edge. */
+  imageSize: number;
 }
 
 export interface ExportPreset {
@@ -133,7 +141,19 @@ export const TEMPLATE_TOKENS = ['{name}', '{preset}', '{date}', '{seq}', '{album
 
 export const DEFAULT_COPYRIGHT = '© {year} {owner}';
 
-const watermarkDefaults = (): ExportWatermark => ({ enabled: false, text: DEFAULT_COPYRIGHT, position: 'bottom-right', size: 3, opacity: 70, color: 'white' });
+const watermarkDefaults = (): ExportWatermark => ({
+  enabled: false,
+  kind: 'text',
+  text: DEFAULT_COPYRIGHT,
+  position: 'bottom-right',
+  size: 3,
+  opacity: 70,
+  color: 'white',
+  imageId: null,
+  imageSize: 15,
+});
+
+export const WATERMARK_KIND_LABELS: Record<WatermarkKind, string> = { text: 'Text', image: 'Logo (PNG)' };
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   presets: {
@@ -206,6 +226,8 @@ export const QUALITY_SPECS: Record<ExportPresetId, Record<LossyFormat, ParamSpec
 
 export const WATERMARK_SIZE: ParamSpec = { path: 'watermark.size', label: 'Size', min: 1, max: 20, default: 3, step: 0.5, decimals: 1, signed: false };
 export const WATERMARK_OPACITY: ParamSpec = { path: 'watermark.opacity', label: 'Opacity', min: 5, max: 100, default: 70, step: 1, decimals: 0, signed: false };
+export const LOGO_SIZE: ParamSpec = { path: 'watermark.imageSize', label: 'Size', min: 2, max: 50, default: 15, step: 0.5, decimals: 1, signed: false };
+const LOGO_ID = /^[\w-]{1,64}$/;
 export const PPI_RANGE = { min: 50, max: 1200 } as const;
 
 /** Allowed size values per unit (megapixels for 'megapixels'). */
@@ -284,11 +306,14 @@ function normalizePreset(id: ExportPresetId, v: unknown): ExportPreset {
     },
     watermark: {
       enabled: typeof wm.enabled === 'boolean' ? wm.enabled : def.watermark.enabled,
+      kind: pick(wm.kind, ['text', 'image'] as const, def.watermark.kind),
       text: text(wm.text, def.watermark.text),
       position: pick(wm.position, Object.keys(POSITION_LABELS) as WatermarkPosition[], def.watermark.position),
       size: num(wm.size, WATERMARK_SIZE.min, WATERMARK_SIZE.max, def.watermark.size, 1),
       opacity: num(wm.opacity, WATERMARK_OPACITY.min, WATERMARK_OPACITY.max, def.watermark.opacity),
       color: pick(wm.color, ['white', 'black'] as const, def.watermark.color),
+      imageId: typeof wm.imageId === 'string' && LOGO_ID.test(wm.imageId) ? wm.imageId : null,
+      imageSize: num(wm.imageSize, LOGO_SIZE.min, LOGO_SIZE.max, def.watermark.imageSize, 1),
     },
     metadata: pick(o.metadata, ['all', 'noLocation', 'copyright'] as const, def.metadata),
     naming: typeof o.naming === 'string' && o.naming.trim() ? o.naming.slice(0, MAX_TEMPLATE) : def.naming,
@@ -413,7 +438,7 @@ export function presetSummary(p: ExportPreset): string {
   const quality = qualityShort(p);
   if (quality) parts.push(quality);
   if (p.sharpen.for !== 'none') parts.push(`sharpened for ${SHARPEN_LABELS[p.sharpen.for].toLowerCase()}`);
-  if (p.watermark.enabled) parts.push('watermark');
+  if (p.watermark.enabled) parts.push(p.watermark.kind === 'image' ? 'logo watermark' : 'watermark');
   return parts.join(' · ');
 }
 

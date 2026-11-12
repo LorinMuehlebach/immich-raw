@@ -2,7 +2,8 @@
 // (e2e/docker-compose.immich.yml, seeded). The presets are set to PNG, TIFF and a print-sized
 // JPEG; each is exported once, then a two-photo album is exported as a ZIP (the folder picker
 // can't be driven by a script, so it is hidden and the editor falls back to a ZIP). Then the
-// presets switch to WebP, AVIF and JPEG XL, and each of those is exported once.
+// presets switch to WebP, AVIF and JPEG XL, and each of those is exported once, and a logo
+// watermark is picked in the settings and exported.
 // Usage: node e2e/export.mjs <out-dir>
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -347,6 +348,59 @@ try {
     bytes: jxl.buf.length,
     seconds: jxl.seconds,
   });
+
+  // Logo watermark: a red PNG picked in the settings, drawn into the bottom right of Low.
+  const logoPng = Buffer.from(
+    await page.evaluate(async () => {
+      const c = new OffscreenCanvas(200, 100);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ff0000';
+      ctx.fillRect(0, 0, 200, 100);
+      const bytes = new Uint8Array(await (await c.convertToBlob({ type: 'image/png' })).arrayBuffer());
+      return btoa(String.fromCharCode(...bytes));
+    }),
+    'base64',
+  );
+  const logoWatermark = { ...watermark, enabled: true, kind: 'image', imageSize: 20, opacity: 100, position: 'bottom-right' };
+  const logoSettings = { ...SETTINGS, presets: { ...SETTINGS.presets, low: { ...SETTINGS.presets.low, watermark: logoWatermark } } };
+  await page.evaluate((s) => localStorage.setItem('raw-editor.export', JSON.stringify(s)), logoSettings);
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  await page.getByRole('button', { name: 'Export settings' }).click();
+  await page.getByRole('tab', { name: /Low/ }).click();
+  await page.locator('input[aria-label="Logo file"]').setInputFiles({ name: 'red.png', mimeType: 'image/png', buffer: logoPng });
+  const picked = await page.locator('.dialog .logo-name', { hasText: '200 × 100' }).waitFor({ timeout: 15000 }).then(() => true, () => false);
+  const thumbShown = await page.locator('.dialog .logo img').count();
+  await page.screenshot({ path: join(outDir, 'settings-logo.png') });
+  await page.keyboard.press('Escape');
+  check('logo picked in the settings: name, size and thumbnail shown', picked && thumbShown === 1, { picked, thumbShown });
+
+  const logoExport = await download(page.getByRole('button', { name: 'Low', exact: true }));
+  // Where logoLayout puts a 2:1 logo at 20 % of the short edge, bottom right; and the middle.
+  const samples = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(bmp, 0, 0);
+    const margin = Math.max(4, Math.round(Math.min(bmp.width, bmp.height) * 0.03));
+    const long = 0.2 * Math.min(bmp.width, bmp.height);
+    const at = (x, y) => [...ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data.slice(0, 3)];
+    return { width: bmp.width, logo: at(bmp.width - margin - long / 2, bmp.height - margin - long / 4), middle: at(bmp.width / 2, bmp.height / 2) };
+  }, logoExport.buf.toString('base64'));
+  const red = ([r, g, b]) => r > 230 && g < 30 && b < 30;
+  check('Low with the logo: red where the logo goes, the photo elsewhere', logoExport.name === `${base}-low.png` && samples.width === 1000 && red(samples.logo) && !red(samples.middle), samples);
+
+  // A preset whose logo isn't in this browser exports without it and says so.
+  await page.evaluate(
+    (s) => localStorage.setItem('raw-editor.export', JSON.stringify({ ...s, presets: { ...s.presets, low: { ...s.presets.low, watermark: { ...s.presets.low.watermark, imageId: 'logo-gone' } } } })),
+    logoSettings,
+  );
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  const noLogo = await download(page.getByRole('button', { name: 'Low', exact: true }));
+  const noLogoNotice = (await page.locator('.toast').first().textContent().catch(() => '')) ?? '';
+  check('missing logo: exported without it, with a notice', noLogo.name === `${base}-low.png` && /watermark logo isn't in this browser/.test(noLogoNotice), { notice: noLogoNotice.trim() });
 
   // Immich: select the album's two photos, export them with the button in the selection bar
   const immich = await context.newPage();

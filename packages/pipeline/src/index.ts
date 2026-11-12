@@ -28,6 +28,17 @@ export { addWebpMetadata, WEBP_MAX_SIDE, type WebpMetadata } from './export/webp
 export { jxlContainer, type JxlMetadata } from './export/jxl.ts';
 export { avifCicp, setAvifCicp, type Cicp } from './export/avif.ts';
 export { outputSharpen, sharpenParams, type RgbaImage, type SharpenLevel, type SharpenMedia } from './export/sharpen.ts';
-export { drawWatermark, watermarkLayout, type WatermarkOptions, type WatermarkPosition } from './export/watermark.ts';
+export {
+  compositeOverlay,
+  drawLogoWatermark,
+  drawWatermark,
+  logoLayout,
+  watermarkLayout,
+  watermarkMargin,
+  type LogoWatermarkOptions,
+  type OverlayTarget,
+  type WatermarkOptions,
+  type WatermarkPosition,
+} from './export/watermark.ts';
 export { buildTiff as buildExifTiff, exifFromImmich, insertExif, zoneOffsetMinutes, type ExifFields, type ImmichExifLike } from './export/jpeg-segments.ts';
 export * from './brush.ts';

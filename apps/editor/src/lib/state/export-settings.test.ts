@@ -33,7 +33,7 @@ describe('normalizeExportSettings', () => {
       quality: { jpeg: 70, webp: 66, avif: 40, jxl: 91 },
       lossless: true,
       sharpen: { for: 'matte', amount: 'high' },
-      watermark: { enabled: true, text: 'Hi', position: 'top-left', size: 5.5, opacity: 40, color: 'black' },
+      watermark: { enabled: true, kind: 'image', text: 'Hi', position: 'top-left', size: 5.5, opacity: 40, color: 'black', imageId: 'logo-abc_1', imageSize: 22.5 },
       metadata: 'copyright',
       naming: '{album}-{seq}',
     };
@@ -90,6 +90,14 @@ describe('normalizeExportSettings', () => {
     expect(low.naming).toBe(def.naming);
     expect(s.presets.medium.size).toEqual({ mode: 'megapixels', value: 12, unit: 'px' });
     expect(s.immichPreset).toBe('medium');
+  });
+
+  it('reads text watermarks stored before logos, and checks the logo fields', () => {
+    const old = normalizeExportSettings({ presets: { low: { watermark: { enabled: true, text: 'Me', position: 'top', size: 4, opacity: 50, color: 'white' } } } });
+    expect(old.presets.low.watermark).toMatchObject({ enabled: true, kind: 'text', text: 'Me', imageId: null, imageSize: 15 });
+    const bad = normalizeExportSettings({ presets: { low: { watermark: { kind: 'video', imageId: '../../etc', imageSize: 99 } } } });
+    expect(bad.presets.low.watermark).toMatchObject({ kind: 'text', imageId: null, imageSize: 50 });
+    expect(normalizeExportSettings({ presets: { low: { watermark: { imageSize: 0.1 } } } }).presets.low.watermark.imageSize).toBe(2);
   });
 
   it('keeps a quality for each lossy format, in its own range', () => {
@@ -191,6 +199,7 @@ describe('summaries', () => {
     expect(presetSummary({ ...d.high, format: 'tiff', watermark: { ...d.high.watermark, enabled: true } })).toBe('TIFF · Full size · watermark');
     expect(presetSummary({ ...d.medium, format: 'avif' })).toBe('AVIF · Long edge 3840 px · quality 63');
     expect(presetSummary({ ...d.medium, format: 'jxl', lossless: true })).toBe('JPEG XL · Long edge 3840 px · lossless');
+    expect(presetSummary({ ...d.high, watermark: { ...d.high.watermark, enabled: true, kind: 'image' } })).toBe('JPEG · Full size · quality 95 · logo watermark');
   });
 
   it('gives each preset button its format line', () => {
