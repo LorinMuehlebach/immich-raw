@@ -11,7 +11,7 @@ import {
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
-import { RawSession, readFujiFilmSim, setLibRawUrl, type FujiFilmSim, type LinearImage } from '@immich-raw/decoder';
+import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
@@ -495,16 +495,27 @@ export class Editor {
       getServerVersionInfo()
         .then((v) => (this.warning = serverVersionWarning(v)))
         .catch(() => {});
+      // The decoder's worker loads its WebAssembly while the photo info and the original arrive.
+      prewarmDecoder();
 
       this.loadingText = 'Loading photo info…';
+      let done = startMeasure('asset info');
       const asset = await getAssetInfo({ id: assetId });
+      done();
       if (!isRawFilename(asset.originalFileName)) throw new Error(`${asset.originalFileName} is not a RAW file.`);
       this.asset = asset;
       this.readOnly = !canEdit(asset, this.me);
       document.title = `${asset.originalFileName} · immich-raw`;
       this.showServerPreview(asset.id);
 
+      // The original downloads while the saved edit and the snapshots load.
+      this.loadingText = 'Downloading original…';
+      const doneDownload = startMeasure('download');
+      const bytesP = downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => (this.loadingProgress = f));
+      bytesP.then(doneDownload, () => {});
+      done = startMeasure('recipe and snapshots');
       const [stored, snapshots] = await Promise.all([loadRecipe(asset.id).catch(() => null), this.loadSnapshots(asset.id)]);
+      done();
       this.snapshots = snapshots;
       this.storedEdit = !!stored;
       // Film looks kept in this browser (never downloads here).
@@ -515,13 +526,28 @@ export class Editor {
         if (stored.render?.assetId) this.pastRenders.add(stored.render.assetId);
       }
 
-      this.loadingText = 'Downloading original…';
-      const bytes = await downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => (this.loadingProgress = f));
+      const bytes = await bytesP;
       this.loadingProgress = null;
       this.loadingText = 'Decoding RAW…';
       // The film simulation set in the camera (Fujifilm maker note); null for other files.
       this.fujiSim = readFujiFilmSim(bytes);
-      const session = await RawSession.open(bytes);
+      const doneDecode = startMeasure('half decode');
+      const sessionP = RawSession.open(bytes);
+      sessionP.then(doneDecode, () => {});
+      // Compile the shaders while the worker decodes. The pause first lets the decode's
+      // promise chain hand the file to the worker; compiling blocks this thread.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      done = startMeasure('renderer');
+      const renderer = new Renderer(canvas);
+      renderer.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
+      done();
+      let session: RawSession;
+      try {
+        session = await sessionP;
+      } catch (e) {
+        renderer.dispose();
+        throw e;
+      }
       this.session = session;
       this.camera = cameraInfo(session.meta);
       const looks = await looksP;
@@ -531,8 +557,7 @@ export class Editor {
         this.savedJson = editableJson(this.recipe);
       }
 
-      this.renderer = new Renderer(canvas);
-      this.renderer.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
+      this.renderer = renderer;
       this.renderer.setSource(session.half, this.camera);
       this.renderer.setProfileLooks(looks ?? {});
       this.renderer.setPhotoDefaults(this.defaults.recipe);
@@ -541,7 +566,9 @@ export class Editor {
       this.loadLens(bytes);
       this.syncHistory();
       this.status = 'ready';
+      done = startMeasure('first render');
       this.renderNow();
+      done();
       // Full resolution is needed for saving and 1:1 zoom; start it in the background.
       this.startFullDecode();
       if (!stored) this.checkSidecar(asset.id);

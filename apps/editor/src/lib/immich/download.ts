@@ -157,12 +157,21 @@ async function readCache(name: string): Promise<Uint8Array | null> {
     const file = await (await dir.getFileHandle(name)).getFile();
     if (file.size === 0) return null;
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const index = await readIndex(dir);
-    index[name] = { size: file.size, lastUsed: Date.now() };
-    await writeFile(dir, INDEX_FILE, JSON.stringify(index));
+    void touchCache(dir, name, file.size); // the editor needn't wait for the bookkeeping
     return bytes;
   } catch {
     return null;
+  }
+}
+
+/** Marks a cached file as just used, so eviction keeps it longest. Best effort. */
+async function touchCache(dir: FileSystemDirectoryHandle, name: string, size: number): Promise<void> {
+  try {
+    const index = await readIndex(dir);
+    index[name] = { size, lastUsed: Date.now() };
+    await writeFile(dir, INDEX_FILE, JSON.stringify(index));
+  } catch {
+    // the file still opens; it just keeps its old place in the eviction order
   }
 }
 
