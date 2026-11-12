@@ -225,7 +225,7 @@ async function primaryIsOtherCapture(raw: AssetResponseDto, stackId: string): Pr
 }
 
 /** The culler's tags (best, runner-up, rejected and why) go with the edit, like the rating does. */
-async function copyCullTags(raw: AssetResponseDto, renderId: string): Promise<void> {
+export async function copyCullTags(raw: AssetResponseDto, renderId: string): Promise<void> {
   const status = await cullerStatus();
   if (!status) return;
   const prefix = `${status.tagRoot}/`;

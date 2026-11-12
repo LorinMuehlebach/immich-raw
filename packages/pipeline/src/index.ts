@@ -13,6 +13,7 @@ export {
   type ExportProgress,
   type Histogram,
   type MaskView,
+  type Rect,
   type RenderOptions,
   type SourceImage,
   type ViewMode,

@@ -44,6 +44,14 @@ describe('findEditTarget', () => {
     expect(await findEditTarget('render1', f)).toBe('raw1');
   });
 
+  it('follows an AI-upscaled copy back to its RAW', async () => {
+    const f = fakeFetch({
+      '/api/assets/up1': { id: 'up1', originalFileName: 'IMG_1.upscaled-2x.edit.jpg', stack: { id: 's1', primaryAssetId: 'render1', assetCount: 3 } },
+      '/api/assets/up1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1', upscale: { scale: 2, style: 'sharp' } } },
+    });
+    expect(await findEditTarget('up1', f)).toBe('raw1');
+  });
+
   it('finds the RAW in a camera RAW+JPEG stack', async () => {
     const f = fakeFetch({
       '/api/assets/jpg1': { id: 'jpg1', originalFileName: 'IMG_1.JPG', stack: { id: 's1', primaryAssetId: 'jpg1', assetCount: 2 } },

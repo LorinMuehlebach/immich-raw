@@ -11,6 +11,7 @@ import {
   specFor,
   type Affine,
   type AiSpec,
+  type ModelId,
 } from '@immich-raw/ai';
 import type { AiMaskMap, Renderer } from '@immich-raw/pipeline';
 import { aiComponents, type AiComponent, type Recipe } from '@immich-raw/recipe';
@@ -47,9 +48,14 @@ class AiConsent {
   private declined = false;
 
   /** Resolves when the models `spec` needs may be downloaded (or are there); throws if not. */
-  async permit(spec: Pick<AiSpec, 'target' | 'box'>): Promise<void> {
+  permit(spec: Pick<AiSpec, 'target' | 'box'>): Promise<void> {
+    return this.permitModels(modelsFor(spec));
+  }
+
+  /** Resolves when these models may be downloaded (or are there); throws if not. */
+  async permitModels(models: ModelId[]): Promise<void> {
     if (this.allowed) return;
-    const bytes = await aiClient.missingBytes(modelsFor(spec));
+    const bytes = await aiClient.missingBytes(models);
     if (!bytes) return;
     if (this.declined) throw new Error(DECLINED);
     const ok = await new Promise<boolean>((resolve) => {

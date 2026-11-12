@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Asked once, before the first AI mask downloads its models.
+  // Asked once, before the first AI mask or AI Upscale downloads its models.
   import { ALL_MODEL_BYTES, aiConsent } from '../ai.svelte.ts';
 
   const MB = (bytes: number) => `${Math.max(1, Math.round(bytes / 1e6))} MB`;
@@ -23,9 +23,9 @@
       <h2 id="ai-title">Download the AI models?</h2>
       <div id="ai-text">
         <p>
-          AI masks run in this browser. Their models are downloaded once from huggingface.co and
+          AI masks and AI Upscale run in this browser. Their models are downloaded once from huggingface.co and
           storage.googleapis.com and then kept in the browser: {MB(aiConsent.asking.bytes)} now, up to {MB(ALL_MODEL_BYTES)} for all
-          kinds of AI masks.
+          AI tools.
         </p>
         <p>Your photo is not uploaded anywhere.</p>
       </div>
