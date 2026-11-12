@@ -76,6 +76,14 @@ class EyesConfig:
     # closed eyes measured 0.08-0.13, open ones 0.19-0.35.
     ear_closed: float = 0.155
     blink_closed: float = 0.5
+    # How open the eyes are, 0 (shut) to 1 (fully open), from the same eye opening: 0 at ear_shut,
+    # 1 from ear_open. Measured: closed 0.08-0.13, open 0.19-0.32, smiling (narrower) 0.22-0.27.
+    ear_shut: float = 0.10
+    ear_open: float = 0.24
+    turned_deg: float = 30.0  # turned further: only the eye nearer the camera counts (the far one looks wider)
+    # Also rejected: shots whose least open eyes are this much less open than in the best shot
+    # (half-blinks). A squinting smile stays within it.
+    max_open_gap: float = 0.30
 
 
 @dataclass(frozen=True)

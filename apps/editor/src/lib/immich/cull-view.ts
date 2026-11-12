@@ -86,7 +86,7 @@ export function badgeFor(info: CullInfo | null): Badge | null {
     case 'blur':
       return { icon: '≋', label: 'Rejected: not sharp', tone: 'rejected' };
     case 'eyes':
-      return { icon: '◉', label: 'Rejected: eyes closed', tone: 'rejected' };
+      return { icon: '◉', label: 'Rejected: eyes (half) closed', tone: 'rejected' };
     default:
       return { icon: '✕', label: 'Rejected', tone: 'rejected' };
   }
@@ -105,9 +105,18 @@ export function describeMetrics(info: CullInfo): string[] {
   if (info.reason === 'lighting' && m.subjectEv != null && (m.judgedOn === 'faces' || m.judgedOn === 'people')) {
     lines.push(`${m.judgedOn} ${signed(m.subjectEv, 1)} EV vs ideal`);
   }
-  if (m.faces) lines.push(m.closed ? `${m.closed} of ${m.faces} faces with eyes closed` : `${m.faces} ${m.faces === 1 ? 'face' : 'faces'}, eyes open`);
+  if (m.faces) lines.push(eyesText(m));
   if (m.smileFaces) lines.push(smilesText(m.smiling ?? 0, m.smileFaces));
   return lines;
+}
+
+/** "2 of 3 faces with eyes closed", or with the openness: "eyes 92 % open", "3 faces, eyes 85 % open (least 40 %)". */
+function eyesText(m: CullMetrics): string {
+  const faces = m.faces ?? 0;
+  const closed = m.closed ? `${m.closed} of ${faces} faces with eyes closed` : '';
+  if (m.eyesOpen == null) return closed || `${faces} ${faces === 1 ? 'face' : 'faces'}, eyes open`;
+  const open = faces === 1 ? `eyes ${m.eyesOpen} % open` : `${faces} faces, eyes ${m.eyesOpen} % open (least ${m.eyesLeast ?? m.eyesOpen} %)`;
+  return closed ? `${open}, ${m.closed} closed` : open;
 }
 
 function smilesText(smiling: number, faces: number): string {
@@ -160,11 +169,7 @@ export function metricRows(info: CullInfo): MetricRow[] {
   if (m.lighting != null) rows.push({ label: 'Exposure error', value: `${m.lighting.toFixed(2)} (0 = ideal)`, bad: info.reason === 'lighting' });
   if (m.clipHiPct != null) rows.push({ label: 'Blown highlights', value: `${m.clipHiPct} %` });
   if (m.clipLoPct != null) rows.push({ label: 'Crushed shadows', value: `${m.clipLoPct} %` });
-  if (m.faces != null) {
-    const faces = `${m.faces} ${m.faces === 1 ? 'face' : 'faces'}`;
-    const value = !m.faces ? 'no faces found' : m.closed ? `${m.closed} of ${faces} with eyes closed` : `${faces}, eyes open`;
-    rows.push({ label: 'Eyes', value, bad: info.reason === 'eyes' });
-  }
+  if (m.faces != null) rows.push({ label: 'Eyes', value: m.faces ? eyesText(m) : 'no faces found', bad: info.reason === 'eyes' });
   if (m.smileFaces) rows.push({ label: 'Smiles', value: smilesText(m.smiling ?? 0, m.smileFaces) });
   if (m.people) rows.push({ label: 'People', value: `${m.people} found` });
   return rows;

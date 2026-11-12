@@ -59,7 +59,7 @@ describe('badges and tooltips', () => {
     expect(badgeFor(cull.a2!)?.icon).toBe('★');
     expect(badgeFor(cull.a3!)?.tone).toBe('runner-up');
     expect(badgeFor(cull.a1!)?.label).toBe('Rejected: not sharp');
-    expect(badgeFor(info('A', 2, 'rejected', 'eyes'))?.label).toBe('Rejected: eyes closed');
+    expect(badgeFor(info('A', 2, 'rejected', 'eyes'))?.label).toBe('Rejected: eyes (half) closed');
     expect(badgeFor(null)).toBeNull();
   });
 
@@ -136,5 +136,25 @@ describe('people and smiles', () => {
     const rows = metricRows(info('A', 2, 'runner-up', null, { judgedOn: 'photo', faces: 1, smiling: 0, smileFaces: 1 }));
     expect(rows.some((r) => r.label.endsWith("' exposure"))).toBe(false);
     expect(rows.find((r) => r.label === 'Smiles')?.value).toBe('not smiling');
+  });
+});
+
+describe('how open the eyes are', () => {
+  const eyesOf = (metrics: Record<string, number>, reason: 'eyes' | null = null) =>
+    metricRows(info('A', 2, reason ? 'rejected' : 'runner-up', reason, metrics)).find((r) => r.label === 'Eyes');
+
+  it('shows the openness of one face or several', () => {
+    expect(eyesOf({ faces: 1, closed: 0, eyesOpen: 92, eyesLeast: 92 })?.value).toBe('eyes 92 % open');
+    expect(eyesOf({ faces: 3, closed: 0, eyesOpen: 85, eyesLeast: 40 }, 'eyes')).toEqual({
+      label: 'Eyes',
+      value: '3 faces, eyes 85 % open (least 40 %)',
+      bad: true,
+    });
+    expect(eyesOf({ faces: 3, closed: 1, eyesOpen: 60, eyesLeast: 5 })?.value).toBe('3 faces, eyes 60 % open (least 5 %), 1 closed');
+  });
+
+  it('older results without the openness keep their wording', () => {
+    expect(eyesOf({ faces: 2, closed: 0 })?.value).toBe('2 faces, eyes open');
+    expect(describeMetrics(info('A', 2, 'rejected', 'eyes', { faces: 1, closed: 0, eyesOpen: 45, eyesLeast: 45 }))).toContain('eyes 45 % open');
   });
 });

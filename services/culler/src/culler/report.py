@@ -19,11 +19,14 @@ def describe_metrics(frame: dict[str, Any]) -> str:
     if m.get("sharpPct") is not None and (reason == "blur" or m["sharpPct"] < 90):
         parts.append(f"sharpness {m['sharpPct']} % of best")
     if m.get("faces"):
+        open_ = f" ({m['eyesOpen']} % open, least {m['eyesLeast']} %)" if m.get("eyesOpen") is not None else ""
         parts.append(
-            f"{m['closed']} of {m['faces']} faces with closed eyes"
+            f"{m['closed']} of {m['faces']} faces with closed eyes{open_}"
             if m.get("closed")
-            else f"{m['faces']} faces, eyes open"
+            else f"{m['faces']} faces, eyes open{open_}"
         )
+    if m.get("smileFaces"):
+        parts.append(f"{m.get('smiling', 0)} of {m['smileFaces']} smiling")
     return ", ".join(parts)
 
 

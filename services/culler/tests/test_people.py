@@ -183,3 +183,31 @@ def test_run_options_switch_people_and_smiles():
     assert cfg.analysis_dict() == CFG.analysis_dict()  # switching them never measures the photos again
     with pytest.raises(ValueError, match="smiles.min_score"):
         run_overrides(CFG, {"smiles": {"min_score": "high"}})
+
+
+# --- how open the eyes are ------------------------------------------------------------------------
+
+
+def eyes(*ears: float, smile: float | None = None) -> list[FaceInfo]:
+    """Faces facing the camera with these eye openings (both eyes alike)."""
+    return [FaceInfo((0, 0, 50, 50), 0.9, blink=(0.1, 0.1), ear=(e, e), yaw=0.0, pitch=0.0, smile=smile) for e in ears]
+
+
+def test_half_closed_eyes_are_rejected():
+    fr, ft = setup({"a": (GOOD, 1.0, eyes(0.26, 0.17)), "b": (GOOD, 0.95, eyes(0.25, 0.26))})
+    r = rank_group(fr, ft, CFG)
+    assert r.best == "b"
+    assert r.results["a"].reason == "eyes"  # 50 % open: not closed, but a half-blink
+    assert r.results["a"].metrics["eyesLeast"] == 50 and r.results["b"].metrics["eyesOpen"] == 100
+
+
+def test_a_squinting_smile_is_kept():
+    fr, ft = setup({"a": (GOOD, 1.0, eyes(0.32, smile=0.0)), "b": (GOOD, 0.98, eyes(0.23, smile=0.86))})
+    r = rank_group(fr, ft, CFG)
+    assert r.best == "b" and r.results["a"].role == "runner-up"  # the smile wins, nobody rejected
+
+
+def test_wider_open_eyes_win_among_good_shots():
+    off = run_overrides(CFG, {"smiles": {"enabled": False}})
+    fr, ft = setup({"a": (GOOD, 1.0, eyes(0.21)), "b": (GOOD, 1.0, eyes(0.26))})
+    assert rank_group(fr, ft, off).best == "b"

@@ -19,7 +19,11 @@ def tie_break_score(c: Candidate, top_sharpness: float) -> float:
     sharp = c.sharpness / top_sharpness if top_sharpness > 0 else 0.0
     light = 1.0 - min(1.0, c.badness / 1.5)
     f = c.features
-    eyes = (f.faces_known - f.faces_closed) / f.faces_known if f.faces_known else 0.5
+    openness = f.eyes_openness()
+    if openness:
+        eyes = sum(openness) / len(openness)
+    else:
+        eyes = (f.faces_known - f.faces_closed) / f.faces_known if f.faces_known else 0.5
     return 0.45 * sharp + 0.35 * light + 0.20 * eyes
 
 
@@ -99,6 +103,10 @@ def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
         "closed": f.faces_closed,
         "judgedOn": c.judged_on,
     }
+    openness = f.eyes_openness()
+    if openness:
+        out["eyesOpen"] = round(100 * sum(openness) / len(openness))
+        out["eyesLeast"] = round(100 * min(openness))
     if cfg.people.enabled:
         out["people"] = len(f.bodies)
     subject = subject_exposure(f, c.judged_on)

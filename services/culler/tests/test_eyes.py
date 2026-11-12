@@ -4,7 +4,7 @@ Orange Blossom Special 2025, CC BY-SA 4.0), checked by eye. Only the numbers are
 import pytest
 
 from culler.config import EyesConfig
-from culler.features.eyes import EyeMeasure, classify_eyes, eye_aspect_ratio
+from culler.features.eyes import EyeMeasure, classify_eyes, eye_aspect_ratio, eye_openness
 from culler.features.faces import relevant_faces, yaw_proxy
 from culler.models import FaceInfo
 
@@ -64,3 +64,30 @@ def test_only_faces_that_matter():
     kept = relevant_faces([main, friend, tiny, bystander, turned, unsure], CFG)
     assert kept == [main, friend]
     assert abs(yaw_proxy(turned)) > CFG.max_yaw_proxy
+
+
+# --- how open, 0 to 1 -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("photo,blink,ear,yaw,pitch", CLOSED)
+def test_closed_eyes_are_barely_open(photo, blink, ear, yaw, pitch):
+    assert eye_openness(EyeMeasure(blink, ear, yaw, pitch), CFG) <= 0.25
+
+
+@pytest.mark.parametrize("photo,blink,ear,yaw,pitch", OPEN)
+def test_open_eyes_are_mostly_open(photo, blink, ear, yaw, pitch):
+    assert eye_openness(EyeMeasure(blink, ear, yaw, pitch), CFG) >= 0.65
+
+
+def test_smiling_eyes_stay_open():
+    # Real portraits: a broad smile (0.86) narrows the eyes to 0.23, a neutral face measures 0.32.
+    smiling = eye_openness(EyeMeasure((0.14, 0.14), (0.236, 0.233), 3, 9), CFG)
+    neutral = eye_openness(EyeMeasure((0.08, 0.05), (0.332, 0.306), 18, 0), CFG)
+    assert neutral == 1.0 and smiling >= 0.9
+    assert neutral - smiling < CFG.max_open_gap
+
+
+def test_a_turned_face_counts_its_nearer_eye():
+    # Turned 52 degrees: the far eye, seen from the side, measures 0.615.
+    assert eye_openness(EyeMeasure((0.1, 0.1), (0.615, 0.12), 52, 0), CFG) == pytest.approx(0.14, abs=0.01)
+    assert eye_openness(EyeMeasure((0.1, 0.1), (0.615, 0.12), 10, 0), CFG) == 1.0  # facing the camera: averaged

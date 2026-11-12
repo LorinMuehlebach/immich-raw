@@ -185,6 +185,7 @@ class FaceInfo:
     yaw: float | None = None
     pitch: float | None = None
     smile: float | None = None  # 0 = neutral, 1 = a broad smile (both mouth corners averaged)
+    openness: float | None = None  # eyes: 0 = shut, 1 = fully open (set with `state`, not stored)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -254,6 +255,10 @@ class Features:
     @property
     def faces_closed(self) -> int:
         return sum(1 for f in self.faces if f.state == "closed")
+
+    def eyes_openness(self) -> list[float]:
+        """How open the eyes of each judged face are (0-1)."""
+        return [f.openness for f in self.faces if f.state != "unknown" and f.openness is not None]
 
     def faces_smiling(self, min_score: float) -> int:
         return sum(1 for f in self.faces if f.smile is not None and f.smile >= min_score)

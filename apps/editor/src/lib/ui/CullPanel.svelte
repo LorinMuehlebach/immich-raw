@@ -71,7 +71,7 @@
     { key: 'peopleFirst', label: "People's exposure counts most", title: 'Judge the exposure on the faces, or else on the people, before the rest of the photo' },
     { key: 'people', label: 'Find people without a visible face', title: 'Also people seen from the side, from behind or far away' },
     { key: 'smiles', label: 'Prefer the most smiles', title: 'Among the good shots, the one with the most smiling faces is the best' },
-    { key: 'eyes', label: 'Set aside closed eyes', title: 'Shots with more closed eyes than the best one are rejected' },
+    { key: 'eyes', label: 'Set aside closed eyes', title: 'Shots with more closed eyes than the best one, or clearly less open eyes (a half-blink), are rejected' },
   ];
   const unavailable = (key: keyof CullOptions) =>
     (key === 'people' && status?.people === false) || ((key === 'eyes' || key === 'smiles') && status?.eyes === false);

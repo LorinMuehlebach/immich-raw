@@ -1,4 +1,4 @@
-"""Open or closed eyes, and smiles, per face.
+"""Open or closed eyes, how open (0-1), and smiles, per face.
 
 MediaPipe's FaceLandmarker runs on a square crop around each face that YuNet found (it misses
 small faces in a whole photo) and gives blink and smile scores, landmarks and the head pose. The
@@ -51,6 +51,16 @@ def classify_eyes(m: EyeMeasure, cfg: EyesConfig) -> Literal["open", "closed", "
     if opening < cfg.ear_closed or min(m.blink) >= cfg.blink_closed:
         return "closed"
     return "open"
+
+
+def eye_openness(m: EyeMeasure, cfg: EyesConfig) -> float:
+    """0 = shut, 1 = fully open. On a face turned away only the nearer eye counts: the far one is
+    seen from the side, narrower, and so looks more open than it is."""
+    left, right = m.ear
+    turned = m.yaw is not None and abs(m.yaw) > cfg.turned_deg
+    ear = min(left, right) if turned else (left + right) / 2
+    span = cfg.ear_open - cfg.ear_shut
+    return min(1.0, max(0.0, (ear - cfg.ear_shut) / span)) if span > 0 else float(ear >= cfg.ear_open)
 
 
 def smile_score(blendshapes: dict[str, float]) -> float | None:

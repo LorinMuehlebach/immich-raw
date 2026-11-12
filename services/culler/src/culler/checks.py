@@ -13,7 +13,7 @@ from typing import Protocol
 
 from culler.config import Config
 from culler.features.exposure import exposure_basis, judge
-from culler.features.eyes import EyeMeasure, classify_eyes
+from culler.features.eyes import EyeMeasure, classify_eyes, eye_openness
 from culler.models import ExposureStats, Features, Frame, Reason
 
 
@@ -57,7 +57,9 @@ class Candidate:
         # Eye state comes from the cached measurements, so a run's own thresholds apply.
         for face in features.faces:
             if face.blink and face.ear:
-                face.state = classify_eyes(EyeMeasure(face.blink, face.ear, face.yaw, face.pitch), cfg.eyes)
+                m = EyeMeasure(face.blink, face.ear, face.yaw, face.pitch)
+                face.state = classify_eyes(m, cfg.eyes)
+                face.openness = eye_openness(m, cfg.eyes)
         basis = basis or Basis.of([features], cfg)
         exposure, badness = judge(features, cfg, basis.exposure)
         sharp = features.sharpness
@@ -106,8 +108,15 @@ class BlurCheck:
         return {x.frame_id for x in cands if x.sharpness < cfg.blur.min_ratio * top}
 
 
+def least_open(c: Candidate) -> float | None:
+    """The least open eyes in the shot (0-1), of the faces that could be judged."""
+    values = c.features.eyes_openness()
+    return min(values) if values else None
+
+
 class EyesCheck:
-    """Rejects frames with more closed-eye faces than the best survivor. Frames where no face
+    """Rejects frames with more closed-eye faces than the best survivor, and frames whose least
+    open eyes are clearly less open than in the best survivor (half-blinks). Frames where no face
     could be judged are left alone (they rank lower in the tie-break instead)."""
 
     name: Reason = "eyes"
@@ -120,7 +129,12 @@ class EyesCheck:
         if not known:
             return set()
         least = min(x.features.faces_closed for x in known)
-        return {x.frame_id for x in known if x.features.faces_closed > least}
+        out = {x.frame_id for x in known if x.features.faces_closed > least}
+        measured = [(x, v) for x in known if (v := least_open(x)) is not None]
+        if measured:
+            best = max(v for _, v in measured)
+            out |= {x.frame_id for x, v in measured if best - v > cfg.eyes.max_open_gap}
+        return out
 
 
 CHECKS: dict[str, Check] = {c.name: c for c in (LightingCheck(), BlurCheck(), EyesCheck())}

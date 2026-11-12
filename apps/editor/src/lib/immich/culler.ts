@@ -17,6 +17,9 @@ export interface CullMetrics {
   sharpPct?: number | null;
   faces?: number;
   closed?: number;
+  /** How open the eyes are, in %: the faces' average, and the least open face. */
+  eyesOpen?: number;
+  eyesLeast?: number;
   /** What the exposure was judged on first: the faces, the people, or only the whole photo. */
   judgedOn?: 'faces' | 'people' | 'photo';
   /** Brightness of those faces or people vs their ideal, in stops, and their own clipping. */

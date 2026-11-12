@@ -39,7 +39,7 @@ Code: [services/culler/](../services/culler/).
    |---|---|---|
    | Lighting | its exposure score is more than 0.75 worse than the best shot's, or it is more than 1 stop brighter or darker than the best and worse at all | `Culling/Rejected/Lighting` |
    | Sharpness | its subject has less than 70 % of the sharpest shot's fine detail | `Culling/Rejected/Blur` |
-   | Eyes | more faces have closed eyes than in the best shot | `Culling/Rejected/Eyes closed` |
+   | Eyes | more faces have closed eyes than in the best shot, or its least open eyes are clearly less open (a half-blink) | `Culling/Rejected/Eyes closed` |
 
    - **Exposure score:**
      - How far the typical brightness is from the target. The target is the same one the editor's
@@ -72,12 +72,19 @@ Code: [services/culler/](../services/culler/).
      - MediaPipe's face landmarks give how far each eye is open. An eye counts as closed when it is
        less than 0.155 open (height/width, both eyes averaged), or both blink scores are at least 0.5.
        These values were checked on real stage photos.
+     - **How open, 0–100 %:** the same opening, 0 % at 0.10 and 100 % from 0.24. Closed eyes
+       measured 0.08–0.13, open ones 0.19–0.32. On a face turned more than 30°, only the eye nearer
+       the camera counts: the far one, seen from the side, looks more open than it is.
+     - **Half-blinks:** a shot is also rejected when its least open eyes are more than 30 points
+       less open than in the best shot. A broad smile narrows the eyes a little (on real portraits
+       to about 90 %), so a squinting smile stays.
    - **Smiles:** among the survivors, the shot with the most smiling faces is the best. The others
      stay runner-ups, not rejected: a serious face is no flaw.
      - The smile is MediaPipe's score for both mouth corners, averaged. A face counts as smiling
        from 0.4; on real portraits neutral faces measured 0.00–0.17, smiles 0.48–0.87.
    - **Best:** the survivor with the most smiles, then the best mix of sharpness (45 %), exposure
-     (35 %) and open eyes (20 %); if that is a tie, the earliest shot.
+     (35 %) and how open the eyes are (20 %, the faces' average); if that is a tie, the earliest
+     shot.
    - **Your choice comes first:** a shot you put in front yourself is always the best. So is the only
      favourite in a group.
    - The other survivors are runner-ups (`Culling/Runner-up`). The best gets `Culling/Best`.
@@ -135,7 +142,7 @@ A run that finds nothing new changes nothing.
   - **People's exposure counts most:** the faces, or else the people, before the rest of the photo.
   - **Find people without a visible face.**
   - **Prefer the most smiles.**
-  - **Set aside closed eyes.**
+  - **Set aside closed eyes** (also half-blinks).
 - **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6" or
   "rejected: not sharp". Click it to open the stack window.
 
@@ -146,8 +153,8 @@ A run that finds nothing new changes nothing.
 - **Switching shots:** ← / →, Home / End, the thumbnails at the bottom, or a swipe on touch screens.
 - **Details:** the verdict and its place in the stack, sharpness and exposure compared with the best
   shot, the faces' or people's own exposure, blown highlights, crushed shadows, the exposure error,
-  eyes, smiles, the people found, the camera settings and the files of the shot. The measurement a
-  shot was rejected for is shown in red.
+  how open the eyes are (in %), smiles, the people found, the camera settings and the files of the
+  shot. The measurement a shot was rejected for is shown in red.
 - **Pictures:** each shot shows its edit if it has one, else the camera JPEG, else the RAW. Immich's
   RAW previews are auto-brightened, so for exposure trust the numbers more than the RAW's picture.
 - **★ Make preferred** (or P) puts the shot in front, the same as ★ in the filmstrip.
@@ -242,6 +249,7 @@ respect_favorites = true
 
 [eyes]
 enabled = true
+max_open_gap = 0.3       # reject eyes this much less open than in the best shot (0.3 = 30 points)
 
 [lighting]
 people_first = true      # faces, or else people, count most for exposure
