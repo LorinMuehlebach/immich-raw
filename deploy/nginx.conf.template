@@ -1,0 +1,112 @@
+# nginx inside the immich-raw container.
+#
+# - /immich-raw/          the editor (static files)
+# - /immich-raw/culler/   the optional culler service (CULLER_URL)
+# - everything else       Immich (IMMICH_URL), with the "Edit RAW" button script added to its pages
+#
+# Drop-in setup: the container takes Immich's port and passes everything through, so nothing
+# else needs changing. With your own reverse proxy sending only /immich-raw/ here
+# (immich-nginx.snippet.conf, Caddyfile.snippet), the pass-through is simply never used.
+#
+# ${IMMICH_URL} and ${CULLER_URL} are filled in from the environment when the container starts
+# (the nginx image's template step; see deploy/Dockerfile).
+
+# sub_filter can't rewrite compressed responses, so Immich's HTML pages are requested without
+# Accept-Encoding. Assets (/_app/) and API calls (/api/) keep compression.
+map $uri $immich_accept_encoding {
+  ~^/(_app|api)/ $http_accept_encoding;
+  default "";
+}
+
+# WebSockets (Immich's live updates).
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  "" close;
+}
+
+# Keep the scheme an outer HTTPS proxy reports; otherwise it is this request's own.
+map $http_x_forwarded_proto $forwarded_proto {
+  default $http_x_forwarded_proto;
+  "" $scheme;
+}
+
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+  absolute_redirect off;
+  client_max_body_size 50000M;
+
+  # Docker's DNS. With variables in proxy_pass, nginx starts even when Immich or the culler
+  # isn't there (yet) and finds containers again after they restart.
+  resolver 127.0.0.11 valid=10s ipv6=off;
+  set $immich ${IMMICH_URL};
+  set $culler ${CULLER_URL};
+
+  # The lens database (lensfun/lensfun.json, 1.3 MB), the scripts and Immich's HTML compress well.
+  gzip on;
+  gzip_types application/json application/javascript text/javascript text/css application/wasm;
+  gzip_min_length 1024;
+  gzip_comp_level 6;
+
+  # Cross-origin isolation for the editor. Not required (the decoder runs single-threaded, also on
+  # plain HTTP, where browsers ignore these headers), but kept for a future multi-threaded build.
+  # add_header in a location replaces the server-level ones, so every location repeats them.
+  set $coop "same-origin";
+  set $coep "require-corp";
+  set $corp "same-origin";
+
+  location = /immich-raw {
+    return 301 /immich-raw/;
+  }
+
+  # Optional. Without a culler this answers 502, and the editor hides its controls.
+  location /immich-raw/culler/ {
+    proxy_pass $culler;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    proxy_read_timeout 120s;
+  }
+
+  # Hashed build output: cache for a year.
+  location /immich-raw/assets/ {
+    add_header Cross-Origin-Opener-Policy $coop always;
+    add_header Cross-Origin-Embedder-Policy $coep always;
+    add_header Cross-Origin-Resource-Policy $corp always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    try_files $uri =404;
+  }
+
+  # index.html, inject.js, the userscript and other unhashed files: always revalidate.
+  location /immich-raw/ {
+    add_header Cross-Origin-Opener-Policy $coop always;
+    add_header Cross-Origin-Embedder-Policy $coep always;
+    add_header Cross-Origin-Resource-Policy $corp always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Cache-Control "no-cache" always;
+    try_files $uri $uri/ /immich-raw/index.html;
+  }
+
+  # Immich, with the settings Immich's own reverse-proxy guide uses.
+  location / {
+    proxy_pass $immich;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    send_timeout 600s;
+    # Uploads go straight through instead of being stored in the container first.
+    proxy_request_buffering off;
+
+    proxy_set_header Accept-Encoding $immich_accept_encoding;
+    sub_filter '</head>' '<script defer src="/immich-raw/inject.js"></script></head>';
+    sub_filter_once on;
+  }
+}

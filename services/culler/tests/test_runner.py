@@ -1,0 +1,501 @@
+"""End to end against the in-memory Immich: real exposure/sharpness measurements on synthetic
+bursts, a tiny stand-in for CLIP, the real planner, executor and store."""
+
+from __future__ import annotations
+
+import cv2
+import numpy as np
+import pytest
+from conftest import asset, make_scene, variant
+from fake_immich import FakeImmich
+
+from culler.config import Config
+from culler.executor import settle_tags
+from culler.features import Analyzer
+from culler.features.embedding import stretch_levels
+from culler.models import CULL_KEY
+from culler.runner import Edits, Runner, Scope, new_run_id
+from culler.store import Store
+
+ROOT = "Culling"
+
+
+class TinyEmbedder:
+    """Coarse grey thumbnail: frames of one scene land close together, other scenes don't."""
+
+    def embed(self, rgb: np.ndarray) -> np.ndarray:
+        g = cv2.cvtColor(stretch_levels(rgb), cv2.COLOR_RGB2GRAY)
+        v = cv2.resize(g, (16, 12), interpolation=cv2.INTER_AREA).astype(np.float32).ravel()
+        v -= v.mean()
+        return v / np.linalg.norm(v)
+
+
+def jpeg(rgb: np.ndarray) -> bytes:
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
+    assert ok
+    return buf.tobytes()
+
+
+@pytest.fixture(scope="module")
+def scenes():
+    return {k: make_scene(seed, h=480, w=720) for k, seed in (("A", 1), ("B", 2), ("C", 3))}
+
+
+# Scene A: base, -1.5 EV, blurred, shifted (sharp), +1.7 EV with clipping. Scene B 5 min later.
+SPECS = {
+    "a0": ("A", 0, {}),
+    "a1": ("A", 1, {"ev": -1.5}),
+    "a2": ("A", 2, {"blur": 3}),
+    "a3": ("A", 3, {"shift": (6, 0)}),
+    "a4": ("A", 4, {"ev": 1.7}),
+    "b0": ("B", 300, {}),
+    "b1": ("B", 301, {"blur": 2.5}),
+    "b2": ("B", 302, {"shift": (0, 5)}),
+    "c0": ("C", 1800, {}),
+}
+
+
+@pytest.fixture
+def env(scenes, tmp_path):
+    immich = FakeImmich()
+    for aid, (scene, sec, kw) in SPECS.items():
+        immich.add(asset(aid, f"{aid}.jpg", sec, make="Fuji", model="X-T5"), jpeg(variant(scenes[scene], **kw)))
+    cfg = Config(data_dir=tmp_path)
+    store = Store(tmp_path / "culler.sqlite")
+    runner = Runner(cfg, immich, store, lambda c: Analyzer(c, embedder=TinyEmbedder(), load_models=False))
+    yield immich, runner, store
+    store.close()
+
+
+DAY = Scope("day", date="2024-05-01")
+
+
+def run(runner, dry_run=False, scope=DAY, **kw):
+    rid = new_run_id()
+    runner.store.create_run(rid, "test", scope.to_json(), None, dry_run)
+    report = runner.run(rid, scope, dry_run=dry_run, **kw)
+    runner.store.update_run(rid, status="done", report=report)
+    return rid, report
+
+
+def roles(report):
+    return {f["frameId"]: (f["role"], f["reason"]) for g in report["groups"] for f in g["frames"]}
+
+
+def culler_tags(immich, aid):
+    return {t for t in immich.tags_of(aid) if t.startswith(ROOT + "/")}
+
+
+def test_dry_run_groups_ranks_and_changes_nothing(env):
+    immich, runner, _ = env
+    _, report = run(runner, dry_run=True)
+    groups = [sorted(f["frameId"] for f in g["frames"]) for g in report["groups"]]
+    assert sorted(groups) == [["a0", "a1", "a2", "a3", "a4"], ["b0", "b1", "b2"]]
+    r = roles(report)
+    assert r["a1"] == ("rejected", "lighting")
+    assert r["a4"] == ("rejected", "lighting")
+    assert r["a2"] == ("rejected", "blur")
+    assert r["b1"] == ("rejected", "blur")
+    assert {r["a0"][0], r["a3"][0]} == {"best", "runner-up"}
+    assert "c0" not in r
+    assert report["counts"]["rejected"] == {"lighting": 2, "blur": 2, "eyes": 0}
+    assert not immich.stacks and not immich.calls
+
+
+def test_apply_stacks_tags_flags_and_stores_details(env):
+    immich, runner, _ = env
+    _, report = run(runner)
+    best_a = next(
+        f["frameId"] for g in report["groups"] for f in g["frames"] if f["role"] == "best" and f["frameId"][0] == "a"
+    )
+    sid = immich.stack_id_of("a0")
+    assert immich.stacks[sid]["primaryAssetId"] == best_a
+    assert set(immich.stacks[sid]["assetIds"]) == {"a0", "a1", "a2", "a3", "a4"}
+    assert culler_tags(immich, "a1") == {"Culling/Rejected/Lighting"}
+    assert culler_tags(immich, "a2") == {"Culling/Rejected/Blur"}
+    assert culler_tags(immich, best_a) == {"Culling/Best"}
+    assert immich.rating("a1") == -1 and immich.rating("a2") == -1
+    assert immich.rating("a0") is None and immich.rating("a3") is None
+    assert immich.stack_id_of("c0") is None and not culler_tags(immich, "c0")
+    meta = immich.meta["a2"][CULL_KEY]
+    assert meta["role"] == "rejected" and meta["reason"] == "blur" and meta["groupSize"] == 5
+    assert meta["metrics"]["sharpPct"] < 70
+
+
+def test_second_run_changes_nothing(env):
+    immich, runner, _ = env
+    run(runner)
+    immich.calls.clear()
+    _, report = run(runner)
+    assert report["changes"] == []
+    assert immich.calls == []
+
+
+def test_users_choice_of_front_photo_is_kept(env):
+    immich, runner, _ = env
+    _, first = run(runner)
+    r = roles(first)
+    old_best = next(f for f in ("a0", "a3") if r[f][0] == "best")
+    other = "a3" if old_best == "a0" else "a0"
+    sid = immich.stack_id_of("a0")
+    immich.update_stack(sid, other)  # the user picks the other one in Immich
+
+    _, report = run(runner)
+    assert immich.stacks[immich.stack_id_of("a0")]["primaryAssetId"] == other
+    assert roles(report)[other] == ("best", None)
+    assert culler_tags(immich, other) == {"Culling/Best"}
+    assert culler_tags(immich, old_best) == {"Culling/Runner-up"}
+    assert next(f for g in report["groups"] for f in g["frames"] if f["frameId"] == other)["pinned"]
+
+
+def test_reject_flag_emptied_by_immich_is_not_retried(env):
+    immich, runner, _ = env
+    run(runner)
+    # Immich 3.4 empties -1 when it re-reads the metadata a moment later.
+    immich.update_assets(["a1", "a2", "a4", "b1"], rating=None)
+    _, report = run(runner)
+    assert report["changes"] == []  # no retry, no churn
+    assert immich.rating("a1") is None
+    assert culler_tags(immich, "a1") == {"Culling/Rejected/Lighting"}
+
+
+def test_stars_given_by_the_user_win_over_the_reject_flag(env):
+    immich, runner, store = env
+    run(runner)
+    immich.update_assets(["a1"], rating=3)
+    run(runner)
+    assert immich.rating("a1") == 3
+    assert store.asset_states(["a1"])["a1"].rating_blocked
+    immich.update_assets(["a1"], rating=None)  # stars taken away again: still the user's call
+    run(runner)
+    assert immich.rating("a1") is None
+
+
+def test_deleted_stack_is_not_stacked_again(env):
+    immich, runner, _ = env
+    run(runner)
+    immich.delete_stack(immich.stack_id_of("b0"))
+    _, report = run(runner)
+    assert immich.stack_id_of("b0") is None
+    assert all("b0" not in [f["frameId"] for f in g["frames"]] for g in report["groups"])
+    _, forced = run(runner, force=True)
+    assert immich.stack_id_of("b0") is not None
+    assert any("b0" in [f["frameId"] for f in g["frames"]] for g in forced["groups"])
+
+
+def test_a_forced_preview_forgets_nothing(env):
+    """A preview may include stacks the user took apart, but only applying it forgets that."""
+    immich, runner, _ = env
+    run(runner)
+    immich.delete_stack(immich.stack_id_of("b0"))
+    _, plain = run(runner, dry_run=True)
+    assert plain["counts"]["takenApart"] == 3
+    assert all("b0" not in [f["frameId"] for f in g["frames"]] for g in plain["groups"])
+    _, forced = run(runner, dry_run=True, force=True)
+    assert forced["counts"]["takenApart"] == 0
+    assert any("b0" in [f["frameId"] for f in g["frames"]] for g in forced["groups"])
+    _, later = run(runner)
+    assert later["counts"]["takenApart"] == 3
+    assert immich.stack_id_of("b0") is None
+
+
+def test_undo_puts_everything_back(env):
+    immich, runner, store = env
+    rid, _ = run(runner)
+    report = runner.undo(rid)
+    assert report["errors"] == []
+    assert not immich.stacks
+    assert all(not culler_tags(immich, a) for a in SPECS)
+    assert all(immich.rating(a) is None for a in SPECS)
+    assert all(CULL_KEY not in immich.meta[a] for a in SPECS)
+    assert store.asset_states(SPECS) == {}
+
+
+def test_undo_order_is_enforced(env):
+    immich, runner, _ = env
+    first, report = run(runner)
+    runner_up = next(f for f, (role, _) in roles(report).items() if f[0] == "b" and role == "runner-up")
+    immich.update_stack(immich.stack_id_of("b0"), runner_up)
+    second, report = run(runner)
+    assert report["changes"]
+    with pytest.raises(Exception, match="later runs"):
+        runner.undo(first)
+    runner.undo(second)
+    runner.undo(first)
+    assert not immich.stacks
+
+
+def test_raw_and_jpeg_pairs_stack_as_frames(scenes, tmp_path):
+    immich = FakeImmich()
+    for i, kw in enumerate(({}, {"blur": 3}, {"shift": (4, 0)})):
+        data = jpeg(variant(scenes["A"], **kw))
+        immich.add(asset(f"r{i}", f"DSC{i}.ARW", i), data)
+        immich.add(asset(f"j{i}", f"DSC{i}.JPG", i), data)
+    immich.stack_ids("j0", "r0")  # camera pair stacked by the user, JPEG in front
+    store = Store(tmp_path / "s.sqlite")
+    runner = Runner(
+        Config(data_dir=tmp_path), immich, store, lambda c: Analyzer(c, embedder=TinyEmbedder(), load_models=False)
+    )
+    _, report = run(runner)
+    (group,) = report["groups"]
+    assert len(group["frames"]) == 3
+    creates = [c for c in immich.calls if c[0] == "create_stack"]
+    (ids,) = [c[1] for c in creates[1:]]
+    assert "r0" not in ids  # the capture stack is absorbed through its primary
+    sid = immich.stack_id_of("r0")
+    assert set(immich.stacks[sid]["assetIds"]) == {"r0", "j0", "r1", "j1", "r2", "j2"}
+    best = next(f for f in group["frames"] if f["role"] == "best")
+    assert immich.stacks[sid]["primaryAssetId"] == best["faceId"]
+    assert best["faceId"].startswith("j")  # the camera JPEG goes in front
+    assert culler_tags(immich, "r1") == culler_tags(immich, "j1") == {"Culling/Rejected/Blur"}
+
+    # Undo restores the user's RAW + JPEG stack.
+    runner.undo(next(r["id"] for r in store.runs()))
+    sid = immich.stack_id_of("r0")
+    assert sid and immich.stacks[sid]["primaryAssetId"] == "j0" and set(immich.stacks[sid]["assetIds"]) == {"j0", "r0"}
+    assert immich.stack_id_of("r1") is None
+    store.close()
+
+
+def test_group_that_shrinks_to_one_photo_is_released(env):
+    immich, runner, _ = env
+    run(runner)
+    immich.data["b1"]["isTrashed"] = True
+    immich.data["b2"]["isTrashed"] = True
+    _, report = run(runner)
+    assert report["counts"]["released"] == 1
+    assert immich.stack_id_of("b0") is None
+    assert not culler_tags(immich, "b0")
+    assert CULL_KEY not in immich.meta["b0"]
+
+
+def test_undo_of_a_run_that_only_retagged_keeps_the_stack(env):
+    immich, runner, store = env
+    _, first = run(runner)
+    runner_up = next(f for f, (role, _) in roles(first).items() if f[0] == "a" and role == "runner-up")
+    immich.update_stack(immich.stack_id_of("a0"), runner_up)
+    second, _ = run(runner)  # only swaps the Best and Runner-up tags
+    runner.undo(second)
+    sid = immich.stack_id_of("a0")
+    assert sid is not None and immich.stacks[sid]["primaryAssetId"] == runner_up
+    assert culler_tags(immich, runner_up) == {"Culling/Runner-up"}
+
+
+def lose_next_tag(immich, monkeypatch) -> list[str]:
+    """The next tag added is lost, as Immich 3.4 sometimes does when a photo's tags change twice in a
+    row (it reads its own sidecar file back and drops the newer change)."""
+    real = immich.tag_assets
+    lost: list[str] = []
+
+    def lossy(tag_ids, asset_ids):
+        if lost:
+            real(tag_ids, asset_ids)
+        else:
+            lost.extend(asset_ids)
+
+    monkeypatch.setattr(immich, "tag_assets", lossy)
+    return lost
+
+
+def test_tags_lost_by_immich_are_set_again(env, monkeypatch):
+    immich, runner, _ = env
+    _, first = run(runner)
+    runner_up = next(f for f, (role, _) in roles(first).items() if f[0] == "a" and role == "runner-up")
+    old_best = next(f for f, (role, _) in roles(first).items() if f[0] == "a" and role == "best")
+    immich.update_stack(immich.stack_id_of("a0"), runner_up)
+
+    lost = lose_next_tag(immich, monkeypatch)
+    second, report = run(runner)  # swaps the Best and Runner-up tags
+    assert lost
+    assert culler_tags(immich, runner_up) == {"Culling/Best"}
+    assert culler_tags(immich, old_best) == {"Culling/Runner-up"}
+    assert report["notes"] == []
+
+    lost = lose_next_tag(immich, monkeypatch)
+    undo = runner.undo(second)
+    assert lost
+    assert culler_tags(immich, runner_up) == {"Culling/Runner-up"}
+    assert culler_tags(immich, old_best) == {"Culling/Best"}
+    assert undo["errors"] == [] and undo["notes"] == []
+
+
+def test_tags_that_never_stick_end_with_a_note(monkeypatch):
+    immich = FakeImmich()
+    immich.add(asset("x", "x.jpg"))
+    monkeypatch.setattr(immich, "tag_assets", lambda tag_ids, asset_ids: None)
+    waited: list[float] = []
+    notes = settle_tags(immich, {"x": {"Culling/Best"}}, ROOT, waits=(1, 2, 3), sleep=waited.append)
+    assert waited == [1, 2, 3]
+    assert len(notes) == 1 and "1 photos" in notes[0]
+    assert culler_tags(immich, "x") == set()
+
+
+def test_a_run_without_changes_leaves_nothing_to_undo(env):
+    immich, runner, store = env
+    first, _ = run(runner)
+    noop, report = run(runner)
+    assert report["changes"] == []
+    assert store.snapshot(noop) is None
+    runner.undo(first)  # not blocked by the run that changed nothing
+    assert not immich.stacks
+
+
+# --- the user's own edits (the auto-stack page) ------------------------------------------------------------
+def members(immich, aid):
+    sid = immich.stack_id_of(aid)
+    return set(immich.stacks[sid]["assetIds"]) if sid else set()
+
+
+def frame_ids(report):
+    return {f["frameId"] for g in report["groups"] for f in g["frames"]}
+
+
+B_STACK = ("b0", "b1", "b2")
+
+
+def test_edits_are_checked():
+    assert not Edits.from_json(None) and not Edits.from_json({"remove": [], "join": {}})
+    e = Edits.from_json({"remove": ["a"], "join": {"b": ["c", "c", "d"]}})
+    assert e.remove == {"a"} and e.join == {"b": ("c", "d")}
+    assert Edits.from_json(e.to_json()) == e
+    for bad in (
+        [],
+        {"remove": "a"},
+        {"join": {"b": []}},
+        {"join": {"b": "c"}},
+        {"remove": ["a"], "join": {"a": ["c"]}},
+        {"join": {"a": ["a"]}},
+    ):
+        with pytest.raises(ValueError):
+            Edits.from_json(bad)
+
+
+def test_a_shot_taken_out_leaves_its_stack_for_good(env):
+    immich, runner, store = env
+    run(runner)
+    assert members(immich, "b0") == set(B_STACK)
+    _, report = run(runner, edits=Edits(remove=frozenset({"b1"})))
+    assert members(immich, "b0") == {"b0", "b2"}
+    assert immich.stack_id_of("b1") is None and not culler_tags(immich, "b1")
+    single = next(s for s in report["singles"] if s["frameId"] == "b1")
+    assert single["leftAlone"] == "removed from the stack" and single["faceId"] == "b1"
+    _, later = run(runner)
+    assert members(immich, "b0") == {"b0", "b2"} and later["counts"]["takenApart"] == 1
+    assert store.frame_flags(["b1"])["b1"] == ("removed from the stack", None)
+
+
+def test_taking_out_the_best_shot_puts_another_in_front(env):
+    immich, runner, _ = env
+    _, report = run(runner)
+    best = next(
+        f["frameId"] for g in report["groups"] for f in g["frames"] if f["role"] == "best" and f["frameId"][0] == "a"
+    )
+    run(runner, edits=Edits(remove=frozenset({best})))
+    other = next(a for a in ("a0", "a3", "a2") if a != best)
+    sid = immich.stack_id_of(other)
+    assert sid and best not in immich.stacks[sid]["assetIds"] and immich.stacks[sid]["primaryAssetId"] != best
+
+
+def test_a_shot_taken_out_of_a_planned_stack_is_remembered(env):
+    """The stack never reached Immich, so applying changes nothing there; the edit must stick anyway."""
+    immich, runner, _ = env
+    pair = Scope("assets", ids=("b0", "b1"))
+    _, preview = run(runner, dry_run=True, scope=pair)
+    assert frame_ids(preview) == {"b0", "b1"}
+    _, applied = run(runner, scope=pair, edits=Edits(remove=frozenset({"b1"})))
+    assert not applied["groups"] and immich.stack_id_of("b0") is None
+    _, later = run(runner, scope=pair)
+    assert not later["groups"] and later["counts"]["takenApart"] == 1
+
+
+def test_a_shot_added_to_a_stack_stays_there(env):
+    """c0 is another scene, half an hour later: never grouped on its own, but measured once added."""
+    immich, runner, store = env
+    run(runner)
+    _, report = run(runner, edits=Edits(join={"c0": B_STACK}))
+    assert "c0" in members(immich, "b0")
+    joined = {f["frameId"]: f["joined"] for g in report["groups"] for f in g["frames"]}
+    assert joined["c0"] is True and joined["b0"] is False
+    assert store.frame_flags(["c0"])["c0"] == (None, list(B_STACK))
+    _, later = run(runner)
+    assert "c0" in members(immich, "b0") and later["counts"]["changes"] == 0
+
+
+def test_a_shot_moved_to_another_stack_takes_no_stack_id_with_it(env):
+    immich, runner, _ = env
+    _, first = run(runner)
+    ids = {g["frames"][0]["frameId"][0]: g["id"] for g in first["groups"]}
+    run(runner, edits=Edits(remove=frozenset({"b2"})))
+    _, moved = run(runner, edits=Edits(join={"b2": ("a0", "a1", "a2", "a3", "a4")}))
+    now = {g["id"]: sorted(f["frameId"] for f in g["frames"]) for g in moved["groups"]}
+    assert now == {ids["a"]: ["a0", "a1", "a2", "a3", "a4", "b2"], ids["b"]: ["b0", "b1"]}
+    assert "b2" in members(immich, "a0")
+
+
+def test_a_preview_with_edits_changes_nothing(env):
+    immich, runner, store = env
+    run(runner)
+    _, preview = run(runner, dry_run=True, edits=Edits(remove=frozenset({"b2"}), join={"c0": ("a0",)}))
+    assert "b2" not in frame_ids(preview) and "c0" in frame_ids(preview)
+    assert members(immich, "b0") == set(B_STACK) and immich.stack_id_of("c0") is None
+    assert store.frame_flags(["b2", "c0"]) == {"b2": (None, None), "c0": (None, None)}
+
+
+def test_undo_of_an_edit_brings_the_shot_back(env):
+    immich, runner, store = env
+    run(runner)
+    rid, _ = run(runner, edits=Edits(remove=frozenset({"b1"})))
+    assert runner.undo(rid)["errors"] == []
+    assert members(immich, "b0") == set(B_STACK)
+    assert store.frame_flags(["b1"])["b1"] == (None, None)
+    _, later = run(runner)
+    assert members(immich, "b0") == set(B_STACK) and later["counts"]["takenApart"] == 0
+
+
+def test_undo_of_an_addition_lets_the_shot_go_again(env):
+    """The stack keeps its id: undo must put back its shots, or the next run thinks c0 was taken out."""
+    immich, runner, store = env
+    run(runner)
+    rid, _ = run(runner, edits=Edits(join={"c0": B_STACK}))
+    assert runner.undo(rid)["errors"] == []
+    assert members(immich, "b0") == set(B_STACK) and immich.stack_id_of("c0") is None
+    _, later = run(runner)
+    assert store.frame_flags(["c0"])["c0"] == (None, None)
+    assert later["counts"]["takenApart"] == 0 and later["counts"]["changes"] == 0
+    assert members(immich, "b0") == set(B_STACK)
+
+
+def test_undo_of_a_forced_run_leaves_the_taken_apart_shots_alone_again(env):
+    immich, runner, _ = env
+    run(runner)
+    immich.delete_stack(immich.stack_id_of("b0"))
+    run(runner, dry_run=True)  # notices the deleted stack
+    rid, _ = run(runner, force=True)
+    assert members(immich, "b0") == set(B_STACK)
+    runner.undo(rid)
+    _, later = run(runner, dry_run=True)
+    assert later["counts"]["takenApart"] == 3 and "b0" not in frame_ids(later)
+
+
+def test_a_shot_added_and_then_taken_out_in_immich_stays_out(env):
+    immich, runner, store = env
+    run(runner)
+    run(runner, edits=Edits(join={"c0": B_STACK}))
+    sid = immich.stack_id_of("c0")
+    if immich.stacks[sid]["primaryAssetId"] == "c0":
+        immich.update_stack(sid, "b0")
+    immich.remove_from_stack(sid, "c0")
+    run(runner)
+    assert immich.stack_id_of("c0") is None
+    assert store.frame_flags(["c0"])["c0"] == ("removed from the stack", None)
+
+
+def test_recull_and_force_keep_the_users_edits(env):
+    immich, runner, store = env
+    run(runner)
+    run(runner, edits=Edits(remove=frozenset({"b1"}), join={"c0": ("a0", "a1", "a2", "a3", "a4")}))
+    gid = store.asset_states(["b0"])["b0"].group_id
+    run(runner, scope=Scope("assets", ids=tuple(runner.group_assets(gid))), force=True)  # what recull does
+    assert members(immich, "b0") == {"b0", "b2"}
+    run(runner, force=True)
+    assert "c0" in members(immich, "a0")

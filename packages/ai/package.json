@@ -1,0 +1,16 @@
+{
+  "name": "@immich-raw/ai",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./worker": "./src/worker.ts",
+    "./cache": "./src/cache.ts"
+  },
+  "dependencies": {
+    "@immich-raw/pipeline": "*",
+    "@immich-raw/recipe": "*",
+    "@mediapipe/tasks-vision": "1.2.2",
+    "onnxruntime-web": "1.31.1"
+  }
+}

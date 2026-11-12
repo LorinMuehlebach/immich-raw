@@ -1,0 +1,22 @@
+# Builds the demo's images from this checkout instead of pulling them, to try changes. Next to the
+# test Immich (port 8088), give it its own name and port:
+#   DEMO_PORT=8090 docker compose -f deploy/demo/compose.yml -f deploy/demo/compose.build.yml \
+#     -p immich-raw-demo-test --profile culler up -d --build
+# Not published: deploy/demo/compose.yml alone is what users run.
+services:
+  immich-raw:
+    image: immich-raw:demo-test
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+  seed:
+    image: immich-raw-demo-seed:demo-test
+    build:
+      context: ../..
+      dockerfile: deploy/demo/Dockerfile
+  seed-bursts:
+    image: immich-raw-demo-seed:demo-test
+  immich-culler:
+    image: immich-raw-culler:demo-test
+    build:
+      context: ../../services/culler

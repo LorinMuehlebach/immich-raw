@@ -1,0 +1,32 @@
+# Caddy version of immich-nginx.snippet.conf. Not tested yet.
+#
+# Adding the button script needs the replace-response plugin, which is not in the standard
+# Caddy build:
+#   xcaddy build --with github.com/caddyserver/replace-response
+# Without it, keep only the /immich-raw/* handle and install the userscript instead
+# (packages/inject/dist/immich-raw.user.js); see deploy/README.md.
+
+{
+  order replace after encode
+}
+
+immich.example.com {
+  # Optional: the culler (auto-stacking and best-pick).
+  handle /immich-raw/culler/* {
+    reverse_proxy immich-culler:8080
+  }
+
+  handle /immich-raw/* {
+    reverse_proxy immich-raw:80
+  }
+
+  handle {
+    # Immich's HTML pages are fetched uncompressed so the script tag can be inserted.
+    @pages not path /_app/* /api/*
+    request_header @pages -Accept-Encoding
+    replace @pages {
+      "</head>" "<script defer src=\"/immich-raw/inject.js\"></script></head>"
+    }
+    reverse_proxy immich-server:2283
+  }
+}

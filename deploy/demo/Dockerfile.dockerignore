@@ -1,0 +1,13 @@
+# Build context for deploy/demo/Dockerfile: only the files it copies.
+*
+!package.json
+!packages/dng/package.json
+!packages/dng/src
+packages/dng/src/**/*.test.ts
+!e2e/raw-burst.mjs
+!e2e/seed.mjs
+!services/culler/scripts/make_burst.py
+!spikes/decode-bench/fetch-samples.mjs
+!deploy/demo/previews.py
+!deploy/demo/make-bursts.mjs
+!deploy/demo/seed.mjs

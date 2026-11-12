@@ -1,0 +1,15 @@
+{
+  "name": "@immich-raw/libraw",
+  "private": true,
+  "type": "module",
+  "license": "ISC",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
+  },
+  "scripts": {
+    "build:libraw": "docker build -f build/Dockerfile --output type=local,dest=lib build"
+  }
+}

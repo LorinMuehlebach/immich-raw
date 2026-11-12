@@ -1,0 +1,54 @@
+# Getting started: from Immich to the editor and back
+
+immich-raw adds an **Edit RAW** button to Immich. The RAW opens in the editor in your browser, and
+your edit goes back into Immich as a JPEG next to the RAW.
+
+## 1. Open a RAW in Immich and click the iris button
+
+The button is in the photo viewer's toolbar (outlined in red here). It only appears on RAW files,
+and on edited copies, where it opens the RAW again.
+
+![The Edit RAW button in Immich's photo viewer](images/getting-started/immich-button.jpg)
+
+## 2. Edit in the browser
+
+The RAW is decoded on your computer, not on the server, and your graphics card renders every
+change live. The panels follow Lightroom's Develop module: Basic, Tone Curve, Color Mixer, Color
+Grading, Detail, Lens Corrections, Transform, Effects and Calibration
+([Editing](editing.md)). On the left are presets, snapshots, history, export, AI Upscale and Convert
+to DNG; below the photo is the filmstrip.
+
+![The editor with Auto tone and a few sliders applied](images/getting-started/editor.jpg)
+
+## 3. Save
+
+**Save to Immich** (Ctrl+S) uploads the edited JPEG and stacks it on top of the RAW.
+- It keeps the RAW's date, location, albums, rating, description and favourite.
+- Saving again replaces the JPEG; the old one goes to Immich's trash.
+- The RAW file itself is never changed. The edit settings are stored with it, so you can reopen
+  the photo later and carry on where you left off.
+
+![Saved: the editor offers the way back to Immich](images/getting-started/saved.jpg)
+
+The JPEG's size, quality and sharpening come from one of the [Export](export.md) presets: Medium
+(3840 px long edge) unless you pick another under **Immich copy** in the Export panel. Pick High for
+full resolution. A new choice applies from the next save. The copy in Immich is always a JPEG
+without watermark and keeps the RAW's own metadata.
+
+Leaving with unsaved changes asks whether to save them:
+
+![The question when leaving with unsaved changes](images/getting-started/unsaved.jpg)
+
+## 4. Back in Immich
+
+The edited photo is on top of its stack. The two thumbnails at the bottom left are the stack: the
+edited JPEG and the RAW. Immich's own Edit RAW button on the JPEG opens the RAW again.
+
+![Back in Immich: the edited photo on top of its stack](images/getting-started/immich-result.jpg)
+
+## Next
+
+- [Editing](editing.md), [Masks](masks.md), [Workflow](workflow.md): what the editor can do.
+- [Export](export.md), [AI Upscale](upscale.md), [Convert to DNG](dng.md): what you can make from
+  an edit.
+- [Stacking and best pick](stacking.md): sorting bursts, with the optional culler.

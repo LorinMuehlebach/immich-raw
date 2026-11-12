@@ -1,0 +1,33 @@
+diff --git a/compileLibraw.sh b/compileLibraw.sh
+index e56ecc5..d2f561e 100755
+--- a/compileLibraw.sh
++++ b/compileLibraw.sh
+@@ -66,14 +66,14 @@ if [ "${FORCE_LIBS:-0}" = "1" ] || [ ! -f libs/libraw.a ] || [ ! -f libs/liblcms
+ 	# with -s USE_LIBJPEG=1.
+ 	emconfigure ./configure \
+ 	  --host=wasm32-unknown-emscripten \
+-	  --enable-openmp \
++	  --disable-openmp \
+ 	  --enable-lcms \
+ 	  --enable-jpeg \
+ 	  --disable-shared \
+ 	  --disable-examples \
+ 	  CFLAGS="-O3 -flto -ffast-math -msimd128 -DNDEBUG -DUSE_LCMS2 -DUSE_JPEG -DUSE_JPEG8 -sUSE_LIBJPEG=1 -I../includes" \
+ 	  CXXFLAGS="-O3 -flto -ffast-math -msimd128 -DNDEBUG -DUSE_LCMS2 -DUSE_JPEG -DUSE_JPEG8 -sUSE_LIBJPEG=1 -I../includes" \
+-	  LDFLAGS="-s USE_PTHREADS=1 -sUSE_LIBJPEG=1 -lpthread -L../libs/ -llcms2"
++	  LDFLAGS="-sUSE_LIBJPEG=1 -L../libs/ -llcms2"
+ 
+ 	echo -e "\n==> Building LibRaw..."
+ 	emmake make -j8
+@@ -101,10 +101,9 @@ emcc \
+   -s DISABLE_EXCEPTION_CATCHING=0 \
+   -s ALLOW_MEMORY_GROWTH=1 \
+   -s INITIAL_MEMORY=256MB \
+-  -s USE_PTHREADS=1 \
+   -s ENVIRONMENT="web,worker" \
+   -msimd128 \
+-  -O3 -flto -pthread \
++  -O3 -flto \
+   libraw_wrapper.cpp \
+   ./libs/liblcms2.a \
+   ./libs/libraw.a \

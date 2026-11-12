@@ -1,0 +1,120 @@
+:root {
+  --bg: #1a1a1a;
+  --bg-view: #121212;
+  --panel: #262626;
+  --panel-2: #2f2f2f;
+  --line: #3a3a3a;
+  --text: #cfcfcf;
+  --text-dim: #8c8c8c;
+  --text-bright: #f2f2f2;
+  --accent: #6aa5ff;
+  --danger: #ff6b6b;
+  --ok: #7bd389;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: #555;
+  color: var(--text-bright);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b1220;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  color: #0b1220;
+}
+
+button.icon {
+  padding: 4px 7px;
+  line-height: 0;
+}
+
+button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
+/* Touch screens: bigger targets. `:root` lifts these above the components' own padding. */
+@media (pointer: coarse) {
+  html {
+    /* No double-tap page zoom: double-taps reset sliders (see lib/touch.ts). */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button {
+    padding: 7px 12px;
+  }
+  button.icon {
+    padding: 7px 9px;
+  }
+  :root button.small {
+    padding: 6px 10px;
+  }
+  select {
+    padding: 6px 8px;
+  }
+  /* iOS zooms the page into any text field or menu smaller than 16px. */
+  :root input:not([type='range']):not([type='checkbox']):not([type='radio']),
+  :root select,
+  :root textarea {
+    font-size: 16px;
+  }
+}
+
+kbd {
+  font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 0 4px;
+  color: var(--text-dim);
+}

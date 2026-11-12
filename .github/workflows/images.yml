@@ -1,0 +1,113 @@
+name: Images
+
+# Publishes the container images to GitHub's container registry:
+#   ghcr.io/<owner>/immich-raw          the editor (deploy/Dockerfile), amd64 + arm64
+#   ghcr.io/<owner>/immich-raw-culler   the optional culler (services/culler), amd64
+#   ghcr.io/<owner>/immich-raw-demo-seed  the try-it demo's photos and seed (deploy/demo), amd64 + arm64
+#   ghcr.io/<owner>/immich-raw-demo     the try-it demo's compose file (an OCI artifact for
+#                                       `docker compose -f oci://…`)
+# A push to main publishes :latest and :main-<commit>; a tag like v1.2.3 publishes :1.2.3 and :1.2.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: immich-raw
+            context: .
+            file: deploy/Dockerfile
+            platforms: linux/amd64,linux/arm64
+          - name: immich-raw-culler
+            context: services/culler
+            file: services/culler/Dockerfile
+            platforms: linux/amd64
+          - name: immich-raw-demo-seed
+            context: .
+            file: deploy/demo/Dockerfile
+            platforms: linux/amd64,linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      # Image names must be lower case; the owner name may not be.
+      - id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.name }}/${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=main-,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  # The try-it demo's compose file (deploy/demo/compose.yml), after its images, so that
+  # `docker compose -f oci://ghcr.io/<owner>/immich-raw-demo up -d` finds them. On a tag it points
+  # at that version's images instead of :latest.
+  demo-compose:
+    needs: images
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        env:
+          OWNER: ${{ steps.owner.outputs.name }}
+        run: |
+          docker compose version
+          file=deploy/demo/compose.yml
+          sed -i "s#ghcr.io/lorinmuehlebach/#ghcr.io/${OWNER}/#g" "$file"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            sed -i "s#\(ghcr.io/${OWNER}/immich-raw[a-z-]*\):latest#\1:${version}#g" "$file"
+            tags="$version ${version%.*}"
+          else
+            tags=latest
+          fi
+          grep -n 'image: ghcr.io' "$file"
+          for tag in $tags; do
+            docker compose -f "$file" publish "ghcr.io/${OWNER}/immich-raw-demo:${tag}" --yes
+          done

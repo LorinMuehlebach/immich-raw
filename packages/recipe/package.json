@@ -1,0 +1,11 @@
+{
+  "name": "@immich-raw/recipe",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0"
+  }
+}

@@ -1,0 +1,116 @@
+# immich-raw try-it demo: a throwaway Immich with immich-raw in front and five sample RAWs.
+# Not for your photos: the login below is public, and other devices on your network can open it.
+#
+#   docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo up -d                    # start
+#   docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo --profile culler up -d   # + culler and bursts
+#   docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo --profile culler down -v # remove it all
+#
+# Open http://localhost:8088 (other devices: http://<this computer's address>:8088) and log in as
+# admin@example.com / raw-editor-e2e. More in deploy/demo/README.md. Optional settings:
+#   DEMO_PORT=8088                  the port
+#   DEMO_BIND=0.0.0.0               127.0.0.1: only this computer
+#   DEMO_EMAIL / DEMO_PASSWORD      the login the first start creates
+#
+# Immich's version and its images are the same as in e2e/docker-compose.immich.yml; keep them in
+# step. Machine learning is left out.
+name: immich-raw-demo
+
+services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:v3.4.0
+    volumes:
+      - library:/data
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_DATABASE_NAME: immich
+      REDIS_HOSTNAME: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd
+    healthcheck:
+      test: redis-cli ping | grep -q PONG || exit 1
+    restart: unless-stopped
+
+  database:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    restart: unless-stopped
+
+  # The editor, in front of Immich as in the README's quick setup.
+  immich-raw:
+    image: ghcr.io/lorinmuehlebach/immich-raw:latest
+    # Long syntax: `docker compose publish` reads the file without filling in the variables.
+    ports:
+      - target: 80
+        published: '${DEMO_PORT:-8088}'
+        host_ip: '${DEMO_BIND:-0.0.0.0}'
+    depends_on:
+      - immich-server
+    restart: unless-stopped
+
+  # Runs once per start: the admin account, the sample RAWs (album "immich-raw samples") and the
+  # culler's API key. `docker compose logs seed` shows what it did.
+  seed:
+    image: ghcr.io/lorinmuehlebach/immich-raw-demo-seed:latest
+    command: ['samples']
+    environment:
+      DEMO_EMAIL: ${DEMO_EMAIL:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+      DEMO_PORT: ${DEMO_PORT:-8088}
+    volumes:
+      - secrets:/secrets
+    depends_on:
+      immich-server:
+        condition: service_healthy
+    restart: 'no'
+
+  # Profile "culler": bursts of similar shots on 2015-06-01 (album "immich-raw bursts") to try
+  # Auto-stack on, and the culler itself.
+  seed-bursts:
+    profiles: [culler]
+    image: ghcr.io/lorinmuehlebach/immich-raw-demo-seed:latest
+    command: ['bursts']
+    environment:
+      DEMO_EMAIL: ${DEMO_EMAIL:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  immich-culler:
+    profiles: [culler]
+    image: ghcr.io/lorinmuehlebach/immich-raw-culler:latest
+    environment:
+      IMMICH_URL: http://immich-server:2283
+      IMMICH_API_KEY_FILE: /secrets/culler-api-key
+    volumes:
+      - culler:/data
+      - secrets:/secrets:ro
+    depends_on:
+      seed-bursts:
+        condition: service_completed_successfully
+    cpus: 2
+    mem_limit: 2g
+    restart: unless-stopped
+
+volumes:
+  library:
+  postgres:
+  culler:
+  secrets:
