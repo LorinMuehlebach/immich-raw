@@ -49,12 +49,16 @@ import {
   uprightSize,
   viewToCrop,
   withAspect,
+  asImageData,
+  SRGB8,
   type Affine,
   type AutoParams,
   type CameraInfo,
   type Histogram,
   type LensData,
   type MaskView,
+  type OutputColor,
+  type Pixels,
   type ProfileLooks,
   type ScopeData,
   type ScopeKind,
@@ -145,10 +149,12 @@ import {
   type ExportPreset,
   type ExportPresetId,
   type ExportSettings,
+  type SaveSettings,
 } from './export-settings.ts';
 import { downloadBlob } from '../download.ts';
+import { loadLogoBitmap } from './logos.ts';
 import { captureDate } from '../export/metadata.ts';
-import { finishExport, type ExportFile } from '../export/output.ts';
+import { finishExport, outputColor, type ExportFile } from '../export/output.ts';
 import { parseContext } from '../immich/context.ts';
 import { newId } from '../id.ts';
 import { anchoredCentre, fitScale, nextScale } from './zoom.ts';
@@ -300,18 +306,25 @@ const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   render: 'Rendering',
   resize: 'Resizing',
   sharpen: 'Sharpening',
-  encode: 'Encoding JPEG',
+  encode: 'Encoding',
   prepare: 'Preparing',
   upload: 'Uploading',
-  metadata: 'Copying date, location and albums',
+  metadata: 'Copying date, location, albums and tags',
   stack: 'Stacking with the RAW',
   recipe: 'Saving edit settings',
   cleanup: 'Moving the previous version to trash',
 };
 
+/** What Save did with the stack, from the RAW's stack front after saving. */
+function savedNotice(front: string | undefined, rawId: string, renderId: string | null, saved = 'Saved'): string {
+  if (front && front === renderId) return `${saved} to Immich, stacked on top of the RAW.`;
+  if (front === rawId) return `${saved} to Immich, in the RAW's stack behind the RAW.`;
+  return `${saved} to Immich, in the RAW's stack.`;
+}
+
 const UPSCALE_SAVE_LABEL: Record<UpscaleSaveStep, string> = {
   upload: 'Uploading',
-  metadata: 'Copying date, location and albums',
+  metadata: 'Copying date, location, albums and tags',
   stack: 'Stacking with the RAW',
 };
 
@@ -2250,27 +2263,36 @@ export class Editor {
     try {
       // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
-      const { recipe, file, fallback } = await this.renderExport(asset, session, renderer, preset, step, true);
+      const settings = $state.snapshot(this.exportSettings.save) as SaveSettings;
+      // Tags, rating or favourite may have changed in Immich since the editor opened.
+      const raw = await getAssetInfo({ id: asset.id }).catch(() => asset);
+      const { recipe, file, fallback } = await this.renderExport(raw, session, renderer, preset, step, true);
       const copy = this.currentCopy();
+      const warnings: string[] = [];
       const saved = await saveRender({
-        raw: asset,
+        raw,
         recipe,
         jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
         copy,
+        settings,
         onProgress: (s, f) => step(s, f),
+        onWarning: (w) => warnings.push(w),
       });
       if (copy) this.copies = this.copies.map((c) => (c.id === copy.id ? { ...c, renderId: saved.render?.assetId ?? null } : c));
       if (this.recipe.render?.assetId) this.pastRenders.add(this.recipe.render.assetId);
       this.recipe.render = saved.render;
       this.savedRenderId = saved.render?.assetId ?? null;
+      // Read the RAW again before the way back is updated: it follows the stack's new front.
+      this.asset = await getAssetInfo({ id: asset.id }).catch(() => raw);
       this.syncReturnPath();
       this.recipe.decoder = saved.decoder;
       delete this.recipe.pending;
       this.savedJson = editableJson(saved);
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
-      this.notice = `${copy ? `Saved ${copy.name} to Immich, stacked with the RAW.` : 'Saved to Immich, stacked on top of the RAW.'}${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
-      this.asset = await getAssetInfo({ id: asset.id }).catch(() => asset);
+      this.notice = [savedNotice(this.asset.stack?.primaryAssetId, asset.id, this.savedRenderId, copy ? `Saved ${copy.name}` : 'Saved'), ...warnings, fallback ? COLOR_FALLBACK : '']
+        .filter(Boolean)
+        .join(' ');
       this.requestRender();
       return true;
     } catch (e) {
@@ -2292,20 +2314,22 @@ export class Editor {
     step: (s: RenderStep, fraction?: number) => void,
     forImmich = false,
   ): Promise<{ recipe: Recipe; file: ExportFile; fallback: boolean }> {
-    const { recipe, image, fallback } = await this.renderFull(session, renderer, step);
+    const { recipe, image, fallback } = await this.renderFull(session, renderer, step, outputColor(preset, forImmich));
     const file = await this.finish(image, asset, preset, step, forImmich);
     return { recipe, file, fallback };
   }
 
   /**
-   * The current edit rendered at full resolution, and the recipe it was rendered from.
+   * The current edit rendered at full resolution (in the colour space and bit depth `out`), and
+   * the recipe it was rendered from.
    * fallback: the recipe's film look isn't in this browser, so it rendered with Color.
    */
   private async renderFull(
     session: RawSession,
     renderer: Renderer,
     step: (s: RenderStep, fraction?: number) => void,
-  ): Promise<{ recipe: Recipe; image: ImageData; fallback: boolean }> {
+    out: OutputColor = SRGB8,
+  ): Promise<{ recipe: Recipe; image: Pixels; fallback: boolean }> {
     step('decode');
     this.startFullDecode();
     const full = await session.full();
@@ -2321,18 +2345,25 @@ export class Editor {
     recipe.app = APP_ID;
     recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
     step('render');
-    const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
+    const image = await renderer.exportPixels(recipe, full, out, (done, total) => step('render', done / total));
     return { recipe, image, fallback };
   }
 
   /** A rendered image made into the file `preset` describes. */
-  private finish(image: ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
-    return finishExport(image, asset, preset, {
-      copyright: this.exportSettings.copyright,
-      owner: this.ownerName(asset),
-      forImmich,
-      onStep: (s) => step(s),
-    });
+  private async finish(image: Pixels | ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
+    const wm = preset.watermark;
+    const logo = !forImmich && wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
+    try {
+      return await finishExport(image, asset, preset, {
+        copyright: this.exportSettings.copyright,
+        owner: this.ownerName(asset),
+        forImmich,
+        logo,
+        onStep: (s) => step(s),
+      });
+    } finally {
+      logo?.close();
+    }
   }
 
   /** The photographer, for the copyright line: the asset owner's Immich name. */
@@ -2378,7 +2409,7 @@ export class Editor {
       });
       downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
       this.error = null;
-      this.notice = `Exported ${name} (${file.width} × ${file.height}).${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
+      this.notice = [`Exported ${name} (${file.width} × ${file.height}).`, ...file.notes, fallback ? COLOR_FALLBACK : ''].filter(Boolean).join(' ');
       return true;
     } catch (e) {
       console.error(e);
@@ -2443,13 +2474,15 @@ export class Editor {
       await aiConsent.permitModels([upscaler(s.style, s.scale).model]);
       const { recipe, image } = await this.renderFull(session, renderer, (st, f) => show(STEP_LABEL[st], f));
       if (cancelled) throw new Error(CANCELLED);
-      const big = await this.runUpscale(image, s.style, s.scale, backend.gpu, (t) => (task = t), show);
+      const big = await this.runUpscale(asImageData(image), s.style, s.scale, backend.gpu, (t) => (task = t), show);
       cancellable = false;
       const high = $state.snapshot(this.exportSettings.presets.high) as ExportPreset;
       const preset: ExportPreset = {
         ...structuredClone(high),
         format: s.format,
-        quality: UPSCALE_QUALITY,
+        // The upscaler works on 8-bit sRGB.
+        color: SRGB8,
+        quality: { ...high.quality, jpeg: UPSCALE_QUALITY },
         size: { mode: 'full', value: 0, unit: 'px' },
         // The model sharpens already.
         sharpen: { for: 'none', amount: high.sharpen.amount },
@@ -2458,7 +2491,7 @@ export class Editor {
       if (target === 'download') {
         const name = upscaledDownloadName(asset.originalFileName, s.scale, s.format);
         downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
-        this.notice = `Exported ${name} (${file.width} × ${file.height}).`;
+        this.notice = [`Exported ${name} (${file.width} × ${file.height}).`, ...file.notes].join(' ');
       } else {
         await saveUpscaled({
           raw: asset,
@@ -2585,6 +2618,12 @@ export class Editor {
 
   setExportCopyright(text: string): void {
     this.storeExportSettings({ ...($state.snapshot(this.exportSettings) as ExportSettings), copyright: text });
+  }
+
+  /** How Save puts the edit into Immich (stack front, favourite). Takes effect on the next save. */
+  setSaveSettings(patch: Partial<SaveSettings>): void {
+    const current = $state.snapshot(this.exportSettings) as ExportSettings;
+    this.storeExportSettings({ ...current, save: { ...current.save, ...patch } });
   }
 
   /** Puts one preset back to its defaults. */
@@ -2735,16 +2774,18 @@ export class Editor {
     }
   }
 
-  /** Where "back" goes: the page the user came from, pointing at the new render if saved. */
+  /** Where "back" goes: the page the user came from, pointing at the stack's front photo if saved. */
   backUrl(): string {
     const renderId = this.recipe.render?.assetId;
     const rawId = this.asset?.id;
     let path = this.returnPath ?? (rawId ? `/photos/${rawId}` : '/photos');
     // The editor may have been opened from the RAW or from an earlier render (the top of
-    // the stack); either way, come back to the current render.
-    if (renderId) {
-      for (const id of [rawId, ...this.pastRenders]) {
-        if (id && id !== renderId && path.includes(id)) path = path.replaceAll(id, renderId);
+    // the stack); either way, come back to the current render, or to the RAW when Save
+    // keeps the RAW in front.
+    const target = rawId && renderId && this.asset?.stack?.primaryAssetId === rawId ? rawId : renderId;
+    if (target) {
+      for (const id of [rawId, renderId, ...this.pastRenders]) {
+        if (id && id !== target && path.includes(id)) path = path.replaceAll(id, target);
       }
     }
     return path;

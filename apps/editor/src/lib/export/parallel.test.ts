@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultParallel, deviceSpecs, isMobileDevice, oneAtATime, parallelOr } from './parallel.ts';
+import { atMost, defaultParallel, deviceSpecs, isMobileDevice, oneAtATime, parallelOr } from './parallel.ts';
 
 const WIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0';
 const MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
@@ -80,5 +80,38 @@ describe('oneAtATime', () => {
     expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled']);
     expect(log).toEqual(['start a', 'end a', 'start b', 'end b', 'start c', 'end c']);
     expect(peak).toBe(1);
+  });
+});
+
+describe('atMost', () => {
+  it('runs at most the limit at once, starting in call order, past failures', async () => {
+    const queue = atMost(2);
+    const started: string[] = [];
+    let running = 0;
+    let peak = 0;
+    const task = (name: string, ms: number, fail = false) =>
+      queue(async () => {
+        running++;
+        peak = Math.max(peak, running);
+        started.push(name);
+        await new Promise((r) => setTimeout(r, ms));
+        running--;
+        if (fail) throw new Error(name);
+        return name;
+      });
+    const results = await Promise.allSettled([task('a', 20), task('b', 2, true), task('c', 2), task('d', 2), task('e', 2)]);
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled', 'fulfilled', 'fulfilled']);
+    expect(started).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(peak).toBe(2);
+    expect(running).toBe(0);
+  });
+
+  it('also releases its slot for a task that throws before returning a promise', async () => {
+    const queue = atMost(1);
+    const bad = queue(() => {
+      throw new Error('sync');
+    });
+    await expect(bad).rejects.toThrow('sync');
+    await expect(queue(async () => 'next')).resolves.toBe('next');
   });
 });

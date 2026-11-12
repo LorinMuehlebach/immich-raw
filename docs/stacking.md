@@ -116,3 +116,7 @@ The shots that lost get tags under `Culling/` (for example `Culling/Rejected/Blu
 those to find them. `Culling/Close call` finds the stacks worth a look, and `Culling/Bracket` the
 exposure brackets. New uploads are sorted by themselves once an upload batch has been quiet for 5
 minutes ([docs/culler.md](culler.md#using-it)).
+
+Saving an edit of a shot in such a stack keeps the best shot in front. The edited JPEG joins the
+stack behind it and gets the RAW's tags, `Culling/` ones included, whichever photo Save is set to
+put in front ([Getting started](getting-started.md#3-save)).

@@ -108,6 +108,78 @@ describe('planStack', () => {
     expect(plan).toEqual({ restoreIds: [R1], createStackIds: [R1, R2, RAW], trashIds: [R2] });
   });
 
+  describe('with the RAW in front', () => {
+    it('first save: RAW in front, render behind', () => {
+      expect(planStack({ rawId: RAW, rawStack: null, newRenderId: R1, previousRender: null, uploadWasDuplicate: false, front: 'raw' })).toEqual({
+        restoreIds: [],
+        createStackIds: [RAW, R1],
+        trashIds: [],
+      });
+    });
+
+    it('re-save: the RAW stays in front, the new render joins, the previous one is trashed', () => {
+      const plan = planStack({
+        rawId: RAW,
+        rawStack: { id: 's2', primaryAssetId: RAW },
+        newRenderId: R2,
+        previousRender: { id: R1, isTrashed: false, sourceAssetId: RAW },
+        uploadWasDuplicate: false,
+        front: 'raw',
+      });
+      expect(plan).toEqual({ restoreIds: [], createStackIds: [RAW, R2], trashIds: [R1] });
+    });
+
+    it('switching from a render in front: the RAW takes the front, the whole stack comes along', () => {
+      const plan = planStack({
+        rawId: RAW,
+        rawStack: { id: 's2', primaryAssetId: R1 },
+        newRenderId: R2,
+        previousRender: { id: R1, isTrashed: false, sourceAssetId: RAW },
+        uploadWasDuplicate: false,
+        front: 'raw',
+      });
+      expect(plan).toEqual({ restoreIds: [], createStackIds: [RAW, R1, R2], trashIds: [R1] });
+    });
+
+    it('same bytes saved again only to move the RAW to the front', () => {
+      const plan = planStack({
+        rawId: RAW,
+        rawStack: { id: 's2', primaryAssetId: R1 },
+        newRenderId: R1,
+        previousRender: { id: R1, isTrashed: false, sourceAssetId: RAW },
+        uploadWasDuplicate: true,
+        newRenderIsTrashed: false,
+        front: 'raw',
+      });
+      expect(plan).toEqual({ restoreIds: [], createStackIds: [RAW, R1], trashIds: [] });
+    });
+
+    it('same bytes with the RAW in front already: nothing to do', () => {
+      const plan = planStack({
+        rawId: RAW,
+        rawStack: { id: 's2', primaryAssetId: RAW },
+        newRenderId: R1,
+        previousRender: { id: R1, isTrashed: false, sourceAssetId: RAW },
+        uploadWasDuplicate: true,
+        newRenderIsTrashed: false,
+        front: 'raw',
+      });
+      expect(plan).toEqual({ restoreIds: [], createStackIds: [], trashIds: [] });
+    });
+
+    it('camera RAW+JPEG stack: the RAW goes in front of the JPEG too', () => {
+      const plan = planStack({
+        rawId: RAW,
+        rawStack: { id: 's1', primaryAssetId: JPEG },
+        newRenderId: R1,
+        previousRender: null,
+        uploadWasDuplicate: false,
+        front: 'raw',
+      });
+      expect(plan.createStackIds).toEqual([RAW, JPEG, R1]);
+    });
+  });
+
   it('never trashes the RAW itself, even with corrupt recipe data', () => {
     const plan = planStack({
       rawId: RAW,
@@ -136,6 +208,19 @@ describe('burst stacks made by the culler', () => {
       previousRender: null,
       uploadWasDuplicate: false,
       keepPrimary: true,
+    });
+    expect(plan.createStackIds).toEqual(['best-jpg', R1]);
+  });
+
+  it('the best shot stays in front even when Save keeps the RAW in front', () => {
+    const plan = planStack({
+      rawId: 'raw',
+      rawStack: { id: 's', primaryAssetId: 'best-jpg' },
+      newRenderId: R1,
+      previousRender: null,
+      uploadWasDuplicate: false,
+      keepPrimary: true,
+      front: 'raw',
     });
     expect(plan.createStackIds).toEqual(['best-jpg', R1]);
   });

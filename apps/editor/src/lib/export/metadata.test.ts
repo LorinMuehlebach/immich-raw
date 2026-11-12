@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureDate, exportMetadata, immichCopyExif, keywordsOf, type MetadataAsset } from './metadata.ts';
+import { captureDate, exportMetadata, immichCopyExif, immichCopyXmp, keywordsOf, type MetadataAsset } from './metadata.ts';
 
 const asset: MetadataAsset = {
   localDateTime: '2022-12-17T16:03:36.000Z',
@@ -98,5 +98,16 @@ describe('helpers', () => {
     expect(exif).toMatchObject({ make: 'SONY', software: 'immich-raw', pixelWidth: 3840 });
     expect(exif.artist).toBeUndefined();
     expect(exif.copyright).toBeUndefined();
+  });
+
+  it("lists every one of the RAW's tags in the Immich copy's XMP, the culler's too, and nothing else", () => {
+    const xmp = immichCopyXmp(asset);
+    expect(xmp).toContain('<digiKam:TagsList>');
+    for (const tag of ['Travel', 'Places/Asia/Shanghai', 'Culling/Rejected/Blur', 'Culling']) expect(xmp).toContain(`<rdf:li>${tag}</rdf:li>`);
+    expect(xmp.match(/<rdf:li>Travel<\/rdf:li>/g)).toHaveLength(1);
+    expect(xmp).not.toContain('dc:subject');
+    expect(xmp).not.toContain('dc:rights');
+    expect(immichCopyXmp({ tags: [] })).toBe('');
+    expect(immichCopyXmp({})).toBe('');
   });
 });

@@ -328,6 +328,7 @@
         {#if result.copied.length}
           <div class="dim">{plural(result.copied.length, 'file')} the browser can’t read (e.g. HEIC) {result.copied.length === 1 ? 'was' : 'were'} copied unchanged.</div>
         {/if}
+        {#each result.notes as note (note)}<div class="note">{note}</div>{/each}
         {#if result.failed.length}
           <div>{plural(result.failed.length, 'photo')} failed:</div>
           <ul>
@@ -438,6 +439,9 @@
     margin: 0 0 8px;
     color: #f0c674;
     line-height: 1.4;
+  }
+  .result .note {
+    color: #f0c674;
   }
   .error {
     color: #ff8a80;

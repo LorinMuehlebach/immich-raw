@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { crc32 } from './crc32.ts';
 import { buildTiff } from './jpeg-segments.ts';
-import { addPngMetadata } from './png.ts';
+import { addPngMetadata, zlib as zlibOf } from './png.ts';
 import { buildXmp } from './xmp-packet.ts';
 
 /** zlib (de)compression through the web streams API. */
@@ -146,6 +146,17 @@ describe('addPngMetadata', () => {
     const idat = concat(...find(out, 'IDAT').map((c) => c.data));
     expect(Array.from(await inflate(idat))).toEqual(Array.from(RAW));
     expect(out.length).toBe(input.length + 13 + 21 + 12 + tiff.length + 12 + 22 + new TextEncoder().encode(xmp).length);
+  });
+
+  it('writes an ICC profile as iCCP instead of sRGB, dropping the chunks it replaces', async () => {
+    const profile = Uint8Array.from({ length: 300 }, (_, i) => i & 0xff);
+    const input = makePng({ beforeIdat: [GAMA, CHRM, ICCP, OLD_SRGB] });
+    const out = addPngMetadata(input, { ppi: 300, srgb: true, iccp: { name: 'Display P3', zlib: await zlibOf(profile) } });
+    expect(types(out)).toEqual(['IHDR', 'iCCP', 'pHYs', 'IDAT', 'IDAT', 'IEND']);
+    const d = find(out, 'iCCP')[0]!.data;
+    expect(new TextDecoder().decode(d.subarray(0, 11))).toBe('Display P3\0');
+    expect(d[11]).toBe(0); // compression method
+    expect(Array.from(await inflate(d.subarray(12)))).toEqual(Array.from(profile));
   });
 
   it('removes duplicates and chunks that conflict with sRGB, keeps the rest byte for byte', () => {

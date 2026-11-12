@@ -1,9 +1,9 @@
-// Baseline 8-bit RGB TIFF for exports: one IFD, Adobe Deflate (zlib) strips with the
-// horizontal differencing predictor, Exif and GPS IFDs and an XMP packet. Strips are
-// differenced and compressed one at a time, so beyond the input only one uncompressed strip
-// and the compressed data are held in memory.
+// Baseline 8- or 16-bit RGB TIFF for exports: one IFD, Adobe Deflate (zlib) strips with the
+// horizontal differencing predictor, Exif and GPS IFDs, an XMP packet and an ICC profile.
+// Strips are differenced and compressed one at a time, so beyond the input only one
+// uncompressed strip and the compressed data are held in memory.
 import { DATE_RE, exifIfd, gpsIfd } from './dng.ts';
-import { BYTE, Ifd, align2, layoutIfds, writeIfds } from './tiff.ts';
+import { BYTE, Ifd, UNDEFINED, align2, layoutIfds, writeIfds } from './tiff.ts';
 import { COMPRESSION_DEFLATE, EXIF_TAG, PHOTOMETRIC_RGB, PREDICTOR_HORIZONTAL, TAG } from './tags.ts';
 
 export interface RgbTiffMetadata {
@@ -31,6 +31,10 @@ export interface RgbTiffMetadata {
   ppi?: number;
   /** XMP packet, written to tag 700 (XMLPacket). */
   xmp?: string;
+  /** ICC profile of the pixels' colour space, written to tag 34675 (InterColorProfile). */
+  icc?: Uint8Array;
+  /** Exif ColorSpace: sRGB (1, the default) or uncalibrated (0xFFFF, for other spaces). */
+  colorSpace?: 'sRGB' | 'uncalibrated';
 }
 
 export interface RgbTiffOptions {
@@ -42,28 +46,29 @@ const DEFAULT_PPI = 72;
 const STRIP_BYTES = 128 * 1024;
 
 /**
- * Baseline 8-bit RGB TIFF (alpha dropped): Adobe Deflate compression (8) with horizontal
+ * Baseline RGB TIFF (alpha dropped): Adobe Deflate compression (8) with horizontal
  * differencing (Predictor 2), ~128 KB strips, Orientation 1, PlanarConfiguration 1,
- * Photometric RGB. `img.data` is RGBA (ImageData) or packed RGB. The Exif IFD is always
- * written, with ColorSpace sRGB and the pixel dimensions, plus whatever `meta` gives.
- * Async because deflate uses CompressionStream('deflate') (zlib format).
+ * Photometric RGB. `img.data` is RGBA (ImageData) or packed RGB; a Uint16Array makes a 16-bit
+ * TIFF. The Exif IFD is always written, with ColorSpace and the pixel dimensions, plus
+ * whatever `meta` gives. Async because deflate uses CompressionStream('deflate') (zlib format).
  * Throws on badly formatted dates and GPS positions out of range.
  */
 export async function encodeRgbTiff(
-  img: { data: Uint8ClampedArray | Uint8Array; width: number; height: number },
+  img: { data: Uint8ClampedArray | Uint8Array | Uint16Array; width: number; height: number },
   meta: RgbTiffMetadata = {},
   opts: RgbTiffOptions = {},
 ): Promise<Uint8Array> {
   const { data, width, height } = img;
   if (!(Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0)) throw new Error(`Bad image size ${width}x${height}`);
   const channels = data.length === width * height * 4 ? 4 : data.length === width * height * 3 ? 3 : 0;
-  if (!channels) throw new Error(`Expected ${width * height * 4} (RGBA) or ${width * height * 3} (RGB) bytes for ${width}x${height}, got ${data.length}`);
+  if (!channels) throw new Error(`Expected ${width * height * 4} (RGBA) or ${width * height * 3} (RGB) samples for ${width}x${height}, got ${data.length}`);
+  const bits = data instanceof Uint16Array ? 16 : 8;
 
   // Metadata first, so bad values fail before the slow part.
   const ifd0 = new Ifd();
   ifd0.longs(TAG.ImageWidth, [width]);
   ifd0.longs(TAG.ImageLength, [height]);
-  ifd0.shorts(TAG.BitsPerSample, [8, 8, 8]);
+  ifd0.shorts(TAG.BitsPerSample, [bits, bits, bits]);
   ifd0.shorts(TAG.Compression, [COMPRESSION_DEFLATE]);
   ifd0.shorts(TAG.PhotometricInterpretation, [PHOTOMETRIC_RGB]);
   ifd0.shorts(TAG.Orientation, [1]);
@@ -85,6 +90,7 @@ export async function encodeRgbTiff(
   if (meta.artist) ifd0.ascii(TAG.Artist, meta.artist);
   if (meta.copyright) ifd0.ascii(TAG.Copyright, meta.copyright);
   if (meta.xmp) ifd0.bytes(TAG.XMP, BYTE, new TextEncoder().encode(meta.xmp));
+  if (meta.icc?.length) ifd0.bytes(TAG.ICCProfile, UNDEFINED, meta.icc);
 
   const exif = exifIfd({
     dateTimeOriginal: meta.dateTime || undefined,
@@ -95,7 +101,7 @@ export async function encodeRgbTiff(
     focalLength: meta.focalLength,
     lensModel: meta.lensModel || undefined,
   });
-  exif.shorts(EXIF_TAG.ColorSpace, [1]); // sRGB
+  exif.shorts(EXIF_TAG.ColorSpace, [meta.colorSpace === 'uncalibrated' ? 0xffff : 1]);
   exif.longs(EXIF_TAG.PixelXDimension, [width]);
   exif.longs(EXIF_TAG.PixelYDimension, [height]);
   ifd0.longs(TAG.ExifIFD, [0]);
@@ -103,7 +109,7 @@ export async function encodeRgbTiff(
   if (gps) ifd0.longs(TAG.GPSInfo, [0]);
 
   // Image data.
-  const rowBytes = width * 3;
+  const rowBytes = width * 3 * (bits / 8);
   const rowsPerStrip = Math.max(1, Math.min(height, Math.floor((opts.stripBytes ?? STRIP_BYTES) / rowBytes)));
   const stripCount = Math.ceil(height / rowsPerStrip);
   const strip = new Uint8Array(rowsPerStrip * rowBytes);
@@ -111,7 +117,10 @@ export async function encodeRgbTiff(
   for (let s = 0; s < stripCount; s++) {
     const y0 = s * rowsPerStrip;
     const rows = Math.min(rowsPerStrip, height - y0);
-    for (let r = 0; r < rows; r++) differenceRow(data, channels, width, y0 + r, strip, r * rowBytes);
+    for (let r = 0; r < rows; r++) {
+      if (data instanceof Uint16Array) differenceRow16(data, channels, width, y0 + r, strip, r * rowBytes);
+      else differenceRow(data, channels, width, y0 + r, strip, r * rowBytes);
+    }
     strips.push(await deflate(strip.subarray(0, rows * rowBytes)));
   }
   ifd0.longs(TAG.RowsPerStrip, [rowsPerStrip]);
@@ -156,6 +165,34 @@ function differenceRow(src: Uint8ClampedArray | Uint8Array, channels: number, wi
     dst[d] = r - pr; // Uint8Array stores mod 256
     dst[d + 1] = g - pg;
     dst[d + 2] = b - pb;
+    pr = r;
+    pg = g;
+    pb = b;
+  }
+}
+
+/**
+ * One row of 16-bit RGB(A) as RGB with horizontal differencing (mod 65536), each sample written
+ * little-endian, as the TIFF's byte order ("II") says.
+ */
+function differenceRow16(src: Uint16Array, channels: number, width: number, y: number, dst: Uint8Array, at: number): void {
+  let s = y * width * channels;
+  let pr = 0;
+  let pg = 0;
+  let pb = 0;
+  for (let x = 0, d = at; x < width; x++, s += channels, d += 6) {
+    const r = src[s]!;
+    const g = src[s + 1]!;
+    const b = src[s + 2]!;
+    const dr = (r - pr) & 0xffff;
+    const dg = (g - pg) & 0xffff;
+    const db = (b - pb) & 0xffff;
+    dst[d] = dr & 0xff;
+    dst[d + 1] = dr >> 8;
+    dst[d + 2] = dg & 0xff;
+    dst[d + 3] = dg >> 8;
+    dst[d + 4] = db & 0xff;
+    dst[d + 5] = db >> 8;
     pr = r;
     pg = g;
     pb = b;

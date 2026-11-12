@@ -1,4 +1,5 @@
-// Decides which Immich calls put a new render on top of its RAW. Pure, so it can be tested.
+// Decides which Immich calls put a new render into its RAW's stack: in front (the default), or
+// behind the RAW when Save is set to keep the RAW in front. Pure, so it can be tested.
 //
 // Immich facts this relies on (checked against v3.3.6 in M0):
 // - createStack(ids) makes ids[0] the primary and absorbs every stack whose *primary* is in
@@ -28,6 +29,8 @@ export interface StackPlanInput {
   newRenderIsTrashed?: boolean;
   /** The stack's front photo belongs to another capture (see keepsOtherCaptureInFront). */
   keepPrimary?: boolean;
+  /** Which of the two goes in front (default: the render). keepPrimary wins over it. */
+  front?: 'render' | 'raw';
 }
 
 export interface StackPlan {
@@ -40,7 +43,7 @@ export interface StackPlan {
 }
 
 export function planStack(input: StackPlanInput): StackPlan {
-  const { rawId, rawStack, newRenderId, previousRender, uploadWasDuplicate, newRenderIsTrashed, keepPrimary } = input;
+  const { rawId, rawStack, newRenderId, previousRender, uploadWasDuplicate, newRenderIsTrashed, keepPrimary, front = 'render' } = input;
   const copyId = input.copyId ?? null;
 
   const restoreIds = uploadWasDuplicate && newRenderIsTrashed ? [newRenderId] : [];
@@ -49,8 +52,13 @@ export function planStack(input: StackPlanInput): StackPlan {
   // A copy's render takes the front only from the RAW itself or from its own previous render.
   const behind = keepPrimary || (!!copyId && currentPrimary !== rawId && currentPrimary !== previousRender?.id);
   // Passing the current primary absorbs the whole stack; only its order decides who is in front.
-  const createStackIds =
-    currentPrimary === newRenderId ? [] : behind ? unique([currentPrimary, newRenderId]) : unique([newRenderId, currentPrimary, rawId]);
+  let createStackIds: string[];
+  if (behind) createStackIds = currentPrimary === newRenderId ? [] : unique([currentPrimary, newRenderId]);
+  else if (front === 'raw') {
+    // Saving the same bytes again while the RAW is in front: the render is in its stack already.
+    const unchanged = uploadWasDuplicate && !newRenderIsTrashed && currentPrimary === rawId && previousRender?.id === newRenderId;
+    createStackIds = unchanged ? [] : unique([rawId, currentPrimary, newRenderId]);
+  } else createStackIds = currentPrimary === newRenderId ? [] : unique([newRenderId, currentPrimary, rawId]);
 
   // Only the same edit's previous render: the original's and each copy's are kept apart.
   const trashIds =

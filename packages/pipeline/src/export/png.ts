@@ -11,6 +11,8 @@ export interface PngMetadata {
   ppi?: number;
   /** Writes an sRGB chunk (perceptual rendering intent). */
   srgb?: boolean;
+  /** Writes an iCCP chunk: the profile's name and the profile, zlib-compressed (see zlib()). */
+  iccp?: { name: string; zlib: Uint8Array };
 }
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -51,7 +53,8 @@ function isXmpChunk(png: Uint8Array, c: Chunk): boolean {
   return key.every((b, i) => png[at + i] === b) && png[at + key.length] === 0;
 }
 
-function chunk(type: string, data: Uint8Array): Uint8Array {
+/** One PNG chunk: length, type, data and CRC. */
+export function chunk(type: string, data: Uint8Array): Uint8Array {
   const out = new Uint8Array(12 + data.length);
   const dv = new DataView(out.buffer);
   dv.setUint32(0, data.length);
@@ -95,12 +98,28 @@ function exifChunk(tiff: Uint8Array): Uint8Array {
   return chunk('eXIf', tiff);
 }
 
+function iccpChunk(name: string, zlib: Uint8Array): Uint8Array {
+  // Profile name: 1-79 Latin-1 characters, then \0 and compression method 0.
+  const key = encoder.encode(name.replace(/[^\x20-\x7e]/g, '').slice(0, 79) || 'ICC profile');
+  const data = new Uint8Array(key.length + 2 + zlib.length);
+  data.set(key);
+  data.set(zlib, key.length + 2);
+  return chunk('iCCP', data);
+}
+
+/** zlib stream of `bytes` (CompressionStream 'deflate'), for iCCP and image data. */
+export async function zlib(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
+  const out = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer();
+  return new Uint8Array(out);
+}
+
 /**
- * Returns a new PNG with the given chunks: sRGB and pHYs right after IHDR, eXIf and the XMP
- * iTXt right before the first IDAT. Existing chunks of the kinds being written are removed (only
- * the XMP iTXt, not other text), and with `srgb` also iCCP, gAMA and cHRM, which sRGB
- * replaces. A `ppi` that isn't positive and finite and an empty `xmp` count as not given.
- * Only the signature and chunk framing are checked; other chunks are copied as they are.
+ * Returns a new PNG with the given chunks: sRGB or iCCP and pHYs right after IHDR, eXIf and the
+ * XMP iTXt right before the first IDAT. Existing chunks of the kinds being written are removed
+ * (only the XMP iTXt, not other text), and with `srgb` or `iccp` also sRGB, iCCP, gAMA and
+ * cHRM, which they replace. A `ppi` that isn't positive and finite and an empty `xmp` count as
+ * not given. Only the signature and chunk framing are checked; other chunks are copied as they
+ * are.
  */
 export function addPngMetadata(png: Uint8Array, m: PngMetadata): Uint8Array {
   const chunks = readChunks(png);
@@ -108,17 +127,20 @@ export function addPngMetadata(png: Uint8Array, m: PngMetadata): Uint8Array {
   const firstIdat = chunks.findIndex((c) => c.type === 'IDAT');
   if (firstIdat < 0) throw new Error('Corrupt PNG: no IDAT chunk.');
 
-  const srgb = m.srgb === true;
+  const iccp = m.iccp;
+  const srgb = m.srgb === true && !iccp;
+  const colour = srgb || !!iccp;
   const ppm = pixelsPerMetre(m.ppi);
   const afterIhdr: Uint8Array[] = [];
   if (srgb) afterIhdr.push(chunk('sRGB', Uint8Array.of(0)));
+  if (iccp) afterIhdr.push(iccpChunk(iccp.name, iccp.zlib));
   if (ppm !== undefined) afterIhdr.push(physChunk(ppm));
   const beforeIdat: Uint8Array[] = [];
   if (m.exif) beforeIdat.push(exifChunk(m.exif));
   if (m.xmp) beforeIdat.push(xmpChunk(m.xmp));
 
   const drop = (c: Chunk): boolean =>
-    (srgb && (c.type === 'sRGB' || c.type === 'iCCP' || c.type === 'gAMA' || c.type === 'cHRM')) ||
+    (colour && (c.type === 'sRGB' || c.type === 'iCCP' || c.type === 'gAMA' || c.type === 'cHRM')) ||
     (ppm !== undefined && c.type === 'pHYs') ||
     (m.exif !== undefined && c.type === 'eXIf') ||
     (!!m.xmp && isXmpChunk(png, c));

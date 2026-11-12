@@ -18,8 +18,8 @@ phones and tablets.
 Each feature has a guide with screenshots.
 
 - **[Edit from Immich and save back](docs/getting-started.md):** the Edit RAW button, a JPEG of
-  your edit stacked on the RAW with its date, location, albums and rating, and the edit kept for
-  later.
+  your edit stacked with the RAW (in front of it, or behind it) with its date, location, albums,
+  tags and rating, and the edit kept for later.
 - **[Lightroom-style editing](docs/editing.md):** white balance, tone, Auto tone, profiles
   (including Fujifilm film looks), curves, Color Mixer, Color Grading, sharpening and noise
   reduction, lens corrections (Lensfun), transform and Guided Upright, vignette and grain, crop.
@@ -29,9 +29,10 @@ Each feature has a guide with screenshots.
 - **[Workflow](docs/workflow.md):** histogram, waveform and vectorscope, clipping, before/after,
   zoom to 800 %, history, snapshots, virtual copies, presets, copy and paste, a filmstrip, keyboard
   shortcuts, and [Lightroom import](docs/workflow.md#lightroom-import) of XMP sidecars and presets.
-- **[Export](docs/export.md):** JPEG, PNG or TIFF at a size of your choice, with sharpening,
-  watermark, metadata and file name settings; one photo, a whole album, or the photos selected in
-  Immich.
+- **[Export](docs/export.md):** JPEG, PNG, TIFF, WebP, AVIF or JPEG XL in sRGB, Display P3,
+  Adobe RGB or ProPhoto RGB, 8 or 16 bits, at a size of your choice, with sharpening, a text or
+  logo watermark, metadata and file name settings; one photo, a whole album, or the photos selected
+  in Immich.
 - **[AI Upscale](docs/upscale.md):** 2× or 4× larger, in the browser, with a preview of a detail.
 - **[Stacking and best pick](docs/stacking.md)** (optional culler): bursts and re-takes stacked
   with the best shot in front, the others tagged with why they lost, exposure brackets kept whole

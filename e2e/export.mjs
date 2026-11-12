@@ -1,7 +1,9 @@
 // End-to-end test of the export options and the album export against the test Immich
 // (e2e/docker-compose.immich.yml, seeded). The presets are set to PNG, TIFF and a print-sized
 // JPEG; each is exported once, then a two-photo album is exported as a ZIP (the folder picker
-// can't be driven by a script, so it is hidden and the editor falls back to a ZIP).
+// can't be driven by a script, so it is hidden and the editor falls back to a ZIP). Then the
+// presets switch to WebP, AVIF and JPEG XL, and each of those is exported once, and a logo
+// watermark is picked in the settings and exported.
 // Usage: node e2e/export.mjs <out-dir>
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,6 +61,16 @@ const SETTINGS = {
   },
   immichPreset: 'medium',
   copyright: '© {year} {owner} e2e',
+};
+
+/** The same presets as WebP, AVIF and JPEG XL. */
+const CODEC_SETTINGS = {
+  ...SETTINGS,
+  presets: {
+    low: { ...SETTINGS.presets.low, format: 'webp', color: { space: 'display-p3', bits: 8 }, quality: { webp: 80 }, watermark },
+    medium: { ...SETTINGS.presets.medium, format: 'avif', color: { space: 'display-p3', bits: 8 }, size: { mode: 'longEdge', value: 1200, unit: 'px' }, quality: { avif: 60 }, metadata: 'all', naming: '{name}-{preset}' },
+    high: { ...SETTINGS.presets.high, format: 'jxl', size: { mode: 'longEdge', value: 1000, unit: 'px' }, quality: { jxl: 85 }, metadata: 'all', naming: '{name}-{preset}' },
+  },
 };
 
 // --- file readers ----------------------------------------------------------------------
@@ -125,6 +137,41 @@ function zipEntries(buf) {
   return out;
 }
 
+/** WebP chunks: [{ type, data }], or null. */
+function riffChunks(buf) {
+  if (buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WEBP') return null;
+  const chunks = [];
+  for (let p = 12; p + 8 <= buf.length; ) {
+    const size = buf.readUInt32LE(p + 4);
+    chunks.push({ type: buf.toString('latin1', p, p + 4), data: buf.subarray(p + 8, p + 8 + size) });
+    p += 8 + size + (size & 1);
+  }
+  return chunks;
+}
+
+/** ISO BMFF boxes between start and end: [{ type, start, end }] (payload offsets). */
+function bmffBoxes(buf, start = 0, end = buf.length) {
+  const boxes = [];
+  for (let p = start; p + 8 <= end; ) {
+    const size = buf.readUInt32BE(p) || end - p;
+    boxes.push({ type: buf.toString('latin1', p + 4, p + 8), start: p + 8, end: p + size });
+    p += size;
+  }
+  return boxes;
+}
+
+/** CICP of each nclx colr box of an AVIF: [[primaries, transfer, matrix]]. */
+function avifNclx(buf) {
+  const out = [];
+  const meta = bmffBoxes(buf).find((b) => b.type === 'meta');
+  const iprp = meta && bmffBoxes(buf, meta.start + 4, meta.end).find((b) => b.type === 'iprp');
+  const ipco = iprp && bmffBoxes(buf, iprp.start, iprp.end).find((b) => b.type === 'ipco');
+  for (const c of ipco ? bmffBoxes(buf, ipco.start, ipco.end) : []) {
+    if (c.type === 'colr' && buf.toString('latin1', c.start, c.start + 4) === 'nclx') out.push([buf.readUInt16BE(c.start + 4), buf.readUInt16BE(c.start + 6), buf.readUInt16BE(c.start + 8)]);
+  }
+  return out;
+}
+
 const longEdge = (s) => (s ? Math.max(s.width, s.height) : 0);
 
 // --- test ------------------------------------------------------------------------------
@@ -156,8 +203,12 @@ try {
   albumId = album.body?.id;
   check('album created', !!albumId);
 
+  // Once per tab, so a test can change the settings and reload.
   await context.addInitScript((settings) => {
-    localStorage.setItem('raw-editor.export', JSON.stringify(settings));
+    if (!sessionStorage.getItem('e2e.seeded')) {
+      localStorage.setItem('raw-editor.export', JSON.stringify(settings));
+      sessionStorage.setItem('e2e.seeded', '1');
+    }
     delete window.showDirectoryPicker;
     window.showDirectoryPicker = undefined;
   }, SETTINGS);
@@ -236,6 +287,134 @@ try {
   const format = await page.locator('.dialog select').first().inputValue();
   check('settings dialog shows the preset', format === 'tiff', { format });
   await page.keyboard.press('Escape');
+
+  // WebP, AVIF and JPEG XL: the same presets in the formats encoded in a worker.
+  await page.evaluate((s) => localStorage.setItem('raw-editor.export', JSON.stringify(s)), CODEC_SETTINGS);
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  /** Width and height as this browser decodes the file, or null when it can't. */
+  const decoded = (buf, type) =>
+    page.evaluate(
+      async ({ b64, type }) => {
+        try {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const bmp = await createImageBitmap(new Blob([bytes], { type }));
+          return { width: bmp.width, height: bmp.height };
+        } catch {
+          return null;
+        }
+      },
+      { b64: buf.toString('base64'), type },
+    );
+  const timed = async (button) => {
+    const t = Date.now();
+    const file = await download(button);
+    return { ...file, seconds: (Date.now() - t) / 1000 };
+  };
+
+  const webp = await timed(page.getByRole('button', { name: 'Low', exact: true }));
+  const riff = riffChunks(webp.buf) ?? [];
+  const vp8x = riff.find((c) => c.type === 'VP8X')?.data;
+  const webpXmp = riff.find((c) => c.type === 'XMP ')?.data.toString('utf8') ?? '';
+  const webpSize = await decoded(webp.buf, 'image/webp');
+  const webpIcc = riff.find((c) => c.type === 'ICCP')?.data;
+  check('Low as Display P3 WebP: VP8X with ICC profile, EXIF and XMP, 1000 px wide, decodes', webp.name === `${base}-low.webp` && riff.map((c) => c.type).join() === 'VP8X,ICCP,VP8 ,EXIF,XMP ' && (vp8x?.[0] & 0x2c) === 0x2c && webpIcc?.toString('latin1', 36, 40) === 'acsp' && riff.find((c) => c.type === 'EXIF')?.data.toString('latin1', 0, 4) === 'II*\0' && webpXmp.includes('e2e') && webpSize?.width === 1000, {
+    name: webp.name,
+    chunks: riff.map((c) => c.type),
+    decoded: webpSize,
+    bytes: webp.buf.length,
+    seconds: webp.seconds,
+  });
+
+  const avif = await timed(page.getByRole('button', { name: 'Medium', exact: true }));
+  const brand = avif.buf.toString('latin1', 8, 12);
+  const nclx = avifNclx(avif.buf);
+  const avifSize = await decoded(avif.buf, 'image/avif');
+  check('Medium as Display P3 AVIF: P3 colour description, 1200 px, decodes', avif.name === `${base}-medium.avif` && brand === 'avif' && nclx.length > 0 && nclx.every(([p, t]) => p === 12 && t === 13) && longEdge(avifSize) === 1200, {
+    name: avif.name,
+    brand,
+    nclx,
+    decoded: avifSize,
+    bytes: avif.buf.length,
+    seconds: avif.seconds,
+  });
+
+  const jxl = await timed(page.getByRole('button', { name: 'High', exact: true }));
+  const jxlBoxes = bmffBoxes(jxl.buf).map((b) => b.type);
+  const jxlc = bmffBoxes(jxl.buf).find((b) => b.type === 'jxlc');
+  const jxlXmp = bmffBoxes(jxl.buf).find((b) => b.type === 'xml ');
+  check('High as JPEG XL: container with Exif, XMP and the codestream', jxl.name === `${base}-high.jxl` && jxlBoxes.join() === 'JXL ,ftyp,Exif,xml ,jxlc' && jxl.buf[jxlc.start] === 0xff && jxl.buf[jxlc.start + 1] === 0x0a && jxl.buf.toString('utf8', jxlXmp.start, jxlXmp.end).includes('e2e') && jxl.buf.length > 20000, {
+    name: jxl.name,
+    boxes: jxlBoxes,
+    bytes: jxl.buf.length,
+    seconds: jxl.seconds,
+  });
+
+  // JPEG in Adobe RGB: the profile in APP2, Exif ColorSpace uncalibrated.
+  await page.evaluate((s) => localStorage.setItem('raw-editor.export', JSON.stringify({ ...s, presets: { ...s.presets, high: { ...s.presets.high, format: 'jpeg', color: { space: 'adobe-rgb', bits: 8 } } } })), CODEC_SETTINGS);
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  const adobe = await download(page.getByRole('button', { name: 'High', exact: true }));
+  const app2 = (() => {
+    for (let p = 2; p + 4 < adobe.buf.length && adobe.buf[p + 1] !== 0xda; p += 2 + adobe.buf.readUInt16BE(p + 2)) {
+      if (adobe.buf[p + 1] === 0xe2 && adobe.buf.toString('latin1', p + 4, p + 15) === 'ICC_PROFILE') return adobe.buf.subarray(p + 18, p + 2 + adobe.buf.readUInt16BE(p + 2));
+    }
+    return null;
+  })();
+  check('High as Adobe RGB JPEG: ICC profile in APP2', !!app2 && app2.toString('latin1', 36, 40) === 'acsp' && app2.includes(Buffer.from('Adobe RGB (1998)')) && longEdge(jpegSize(adobe.buf)) === 1000, { name: adobe.name, icc: app2?.length });
+
+  // Logo watermark: a red PNG picked in the settings, drawn into the bottom right of Low.
+  const logoPng = Buffer.from(
+    await page.evaluate(async () => {
+      const c = new OffscreenCanvas(200, 100);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ff0000';
+      ctx.fillRect(0, 0, 200, 100);
+      const bytes = new Uint8Array(await (await c.convertToBlob({ type: 'image/png' })).arrayBuffer());
+      return btoa(String.fromCharCode(...bytes));
+    }),
+    'base64',
+  );
+  const logoWatermark = { ...watermark, enabled: true, kind: 'image', imageSize: 20, opacity: 100, position: 'bottom-right' };
+  const logoSettings = { ...SETTINGS, presets: { ...SETTINGS.presets, low: { ...SETTINGS.presets.low, watermark: logoWatermark } } };
+  await page.evaluate((s) => localStorage.setItem('raw-editor.export', JSON.stringify(s)), logoSettings);
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  await page.getByRole('button', { name: 'Export settings' }).click();
+  await page.getByRole('tab', { name: /Low/ }).click();
+  await page.locator('input[aria-label="Logo file"]').setInputFiles({ name: 'red.png', mimeType: 'image/png', buffer: logoPng });
+  const picked = await page.locator('.dialog .logo-name', { hasText: '200 × 100' }).waitFor({ timeout: 15000 }).then(() => true, () => false);
+  const thumbShown = await page.locator('.dialog .logo img').count();
+  await page.screenshot({ path: join(outDir, 'settings-logo.png') });
+  await page.keyboard.press('Escape');
+  check('logo picked in the settings: name, size and thumbnail shown', picked && thumbShown === 1, { picked, thumbShown });
+
+  const logoExport = await download(page.getByRole('button', { name: 'Low', exact: true }));
+  // Where logoLayout puts a 2:1 logo at 20 % of the short edge, bottom right; and the middle.
+  const samples = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(bmp, 0, 0);
+    const margin = Math.max(4, Math.round(Math.min(bmp.width, bmp.height) * 0.03));
+    const long = 0.2 * Math.min(bmp.width, bmp.height);
+    const at = (x, y) => [...ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data.slice(0, 3)];
+    return { width: bmp.width, logo: at(bmp.width - margin - long / 2, bmp.height - margin - long / 4), middle: at(bmp.width / 2, bmp.height / 2) };
+  }, logoExport.buf.toString('base64'));
+  const red = ([r, g, b]) => r > 230 && g < 30 && b < 30;
+  check('Low with the logo: red where the logo goes, the photo elsewhere', logoExport.name === `${base}-low.png` && samples.width === 1000 && red(samples.logo) && !red(samples.middle), samples);
+
+  // A preset whose logo isn't in this browser exports without it and says so.
+  await page.evaluate(
+    (s) => localStorage.setItem('raw-editor.export', JSON.stringify({ ...s, presets: { ...s.presets, low: { ...s.presets.low, watermark: { ...s.presets.low.watermark, imageId: 'logo-gone' } } } })),
+    logoSettings,
+  );
+  await page.reload();
+  await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
+  const noLogo = await download(page.getByRole('button', { name: 'Low', exact: true }));
+  const noLogoNotice = (await page.locator('.toast').first().textContent().catch(() => '')) ?? '';
+  check('missing logo: exported without it, with a notice', noLogo.name === `${base}-low.png` && /watermark logo isn't in this browser/.test(noLogoNotice), { notice: noLogoNotice.trim() });
 
   // Immich: select the album's two photos, export them with the button in the selection bar
   const immich = await context.newPage();
