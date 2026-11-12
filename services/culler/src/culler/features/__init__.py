@@ -1,5 +1,5 @@
 """Per-photo measurements: exposure (of the photo, its faces and its people), sharpness, faces with
-eye state and smile, people, and a similarity embedding."""
+eye state and smile, people, animals, and a similarity embedding."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from culler.features.exposure import measure_exposure
 from culler.features.eyes import EyeStateDetector, MediaPipeEyes, classify_eyes
 from culler.features.faces import FaceDetector, relevant_faces
 from culler.features.image import decode_jpeg
-from culler.features.people import PeopleDetector, relevant_people
+from culler.features.people import PeopleDetector, relevant_animals, relevant_people
 from culler.features.raw_exposure import measure_raw_exposure
 from culler.features.sharpness import measure_sharpness_parts
 from culler.model_files import EMBEDDING_FILES, EYES_FILES, PEOPLE_FILES, missing
@@ -24,7 +24,8 @@ from culler.models import Features
 log = logging.getLogger(__name__)
 
 # Bump when a measurement changes, so cached features are recomputed.
-FEATURE_VERSION = 3  # 2: RAW exposure from the RAW file. 3: faces, people and smiles measured apart
+# 2: RAW exposure from the RAW file. 3: faces, people and smiles measured apart. 4: animals.
+FEATURE_VERSION = 4
 
 
 class Analyzer:
@@ -65,7 +66,7 @@ class Analyzer:
                 log.warning("people model missing in %s: people without a face are not found", md)
             else:
                 try:
-                    self.people = PeopleDetector(md / "efficientdet_lite0.tflite")
+                    self.people = PeopleDetector(md / "efficientdet_lite0.tflite", cfg.subjects.labels)
                 except Exception:
                     log.exception("could not load the people model: people without a face are not found")
 
@@ -112,7 +113,9 @@ class Analyzer:
                 face.smile = m.smile
                 face.state = classify_eyes(m, self.cfg.eyes)
         h, w = rgb.shape[:2]
-        bodies = relevant_people(self.people.detect(rgb), self.cfg.people, w, h) if self.people else []
+        found = self.people.detect(rgb) if self.people else []
+        bodies = relevant_people(found, self.cfg.people, w, h)
+        animals = relevant_animals(found, self.cfg.subjects, w, h)
         boxes = [f.box for f in faces]
         body_boxes = [b.box for b in bodies]
         measured, exposure_source = None, "preview"
@@ -123,20 +126,22 @@ class Analyzer:
             except Exception as e:  # a RAW LibRaw can't read: fall back to the preview
                 log.warning("could not read the RAW file of %s (%s): measuring its preview", asset_id, e)
         measured = measured or measure_exposure(rgb, boxes, body_boxes)
-        photo_sharp, face_sharp = measure_sharpness_parts(rgb, boxes)
+        sharp = measure_sharpness_parts(rgb, boxes, [a.box for a in animals])
         return Features(
             asset_id=asset_id,
             source=source,
             width=w,
             height=h,
             exposure=measured.photo,
-            sharpness=photo_sharp if face_sharp is None else face_sharp,
+            sharpness=sharp.photo if sharp.face is None else sharp.face,
             faces=faces,
             embedding=self.embedder.embed(rgb) if self.embedder else None,
             exposure_source=exposure_source,
             bodies=bodies,
             face_exposure=measured.faces,
             body_exposure=measured.people,
-            photo_sharpness=photo_sharp,
-            face_sharpness=face_sharp is not None,
+            photo_sharpness=sharp.photo,
+            face_sharpness=sharp.face is not None,
+            animals=animals,
+            subject_sharpness=sharp.subject,
         )

@@ -217,17 +217,21 @@ class FaceInfo:
 
 @dataclass
 class BodyInfo:
-    """A person found by the object detector (also without a usable face)."""
+    """A person (also without a usable face) or an animal found by the object detector."""
 
     box: tuple[float, float, float, float]  # x, y, w, h in analysis-image pixels
     score: float
+    label: str = "person"  # COCO's name: 'person', 'bird', 'dog', ...
 
     def to_json(self) -> dict[str, Any]:
-        return {"box": list(self.box), "score": self.score}
+        d: dict[str, Any] = {"box": list(self.box), "score": self.score}
+        if self.label != "person":
+            d["label"] = self.label
+        return d
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> BodyInfo:
-        return cls(box=tuple(d["box"]), score=d["score"])
+        return cls(box=tuple(d["box"]), score=d["score"], label=d.get("label", "person"))
 
 
 @dataclass
@@ -247,6 +251,8 @@ class Features:
     # `sharpness` is the face's eye band when there is a face, else this: the sharpest 5 % of tiles.
     photo_sharpness: float | None = None
     face_sharpness: bool = False  # `sharpness` was measured on a face
+    animals: list[BodyInfo] = field(default_factory=list)  # largest first
+    subject_sharpness: float | None = None  # the largest animal's box
 
     @property
     def faces_known(self) -> int:
@@ -279,6 +285,8 @@ class Features:
             "bodyExposure": self.body_exposure.to_json() if self.body_exposure else None,
             "photoSharpness": self.photo_sharpness,
             "faceSharpness": self.face_sharpness,
+            "animals": [a.to_json() for a in self.animals],
+            "subjectSharpness": self.subject_sharpness,
         }
 
     @classmethod
@@ -298,6 +306,8 @@ class Features:
             body_exposure=ExposureStats.from_json(d.get("bodyExposure")),
             photo_sharpness=d.get("photoSharpness"),
             face_sharpness=bool(d.get("faceSharpness")),
+            animals=[BodyInfo.from_json(a) for a in d.get("animals") or ()],
+            subject_sharpness=d.get("subjectSharpness"),
         )
 
 

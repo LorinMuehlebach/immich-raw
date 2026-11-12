@@ -102,7 +102,10 @@ def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
         "faces": f.faces_known,
         "closed": f.faces_closed,
         "judgedOn": c.judged_on,
+        "sharpOn": c.basis.sharpness,
     }
+    if c.basis.sharpness == "subject" and f.animals:
+        out["subjectLabel"] = f.animals[0].label
     openness = f.eyes_openness()
     if openness:
         out["eyesOpen"] = round(100 * sum(openness) / len(openness))

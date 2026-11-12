@@ -1,8 +1,8 @@
 """Settings: built-in defaults, then a TOML file, then environment variables.
 
 The TOML file is CULLER_CONFIG, or <data dir>/culler.toml when it exists. Its sections match the
-dataclasses below ([grouping], [lighting], [blur], [eyes], [people], [smiles], [ranking], [tags],
-[watcher]).
+dataclasses below ([grouping], [lighting], [blur], [eyes], [people], [subjects], [smiles],
+[ranking], [tags], [watcher]).
 Runs started from the editor may pass `options` with the same shape to try other thresholds.
 """
 
@@ -97,6 +97,21 @@ class PeopleConfig:
     min_area_ratio: float = 0.15  # of the largest person
 
 
+# The animals of COCO, which the people detector (EfficientDet-Lite0) knows as well.
+ANIMALS = ("bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe")
+
+
+@dataclass(frozen=True)
+class SubjectsConfig:
+    """Animals, found by the same object detector as people. Without a face, sharpness is measured
+    on the largest animal when every shot of a group shows one, instead of the sharpest areas."""
+
+    enabled: bool = True
+    labels: tuple[str, ...] = ANIMALS
+    min_score: float = 0.4
+    min_area: float = 0.01  # share of the photo
+
+
 @dataclass(frozen=True)
 class SmilesConfig:
     """Among the shots that pass every check, the one with the most smiling faces is the best."""
@@ -142,6 +157,7 @@ class Config:
     blur: BlurConfig = field(default_factory=BlurConfig)
     eyes: EyesConfig = field(default_factory=EyesConfig)
     people: PeopleConfig = field(default_factory=PeopleConfig)
+    subjects: SubjectsConfig = field(default_factory=SubjectsConfig)
     smiles: SmilesConfig = field(default_factory=SmilesConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
     tags: TagConfig = field(default_factory=TagConfig)
@@ -153,16 +169,17 @@ class Config:
 
     def analysis_dict(self) -> dict[str, Any]:
         """The settings that change measured features (part of the feature cache key)."""
-        e, p = self.eyes, self.people
+        e, p, s = self.eyes, self.people, self.subjects
         return {
             "faces": [e.detector_score, e.min_face_px, e.min_face_area_ratio, e.max_yaw_proxy],
             "people": [p.min_score, p.min_area, p.min_area_ratio],
+            "animals": [sorted(s.labels), s.min_score, s.min_area],
             "raw": [self.lighting.raw_source, self.lighting.raw_headroom_ev],
         }
 
 
 # Section names a run's `options` may change. Connection settings and the tag root are not.
-OVERRIDABLE = {"grouping", "lighting", "blur", "eyes", "people", "smiles", "ranking"}
+OVERRIDABLE = {"grouping", "lighting", "blur", "eyes", "people", "subjects", "smiles", "ranking"}
 
 
 def _coerce(name: str, current: Any, value: Any) -> Any:
