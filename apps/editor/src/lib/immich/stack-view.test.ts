@@ -1,7 +1,7 @@
 import type { AssetResponseDto } from '@immich/sdk';
 import { describe, expect, it } from 'vitest';
 import type { CullInfo } from './culler.ts';
-import { buildStackView, frameIndexOf, planDeleteOthers, preferredFrame, step } from './stack-view.ts';
+import { buildStackView, frameIndexOf, isBracketView, planDeleteOthers, preferredFrame, step } from './stack-view.ts';
 
 const asset = (id: string, name: string, extra: Partial<AssetResponseDto> = {}) =>
   ({ id, originalFileName: name, fileCreatedAt: '2024-05-01T10:00:00.000Z', isTrashed: false, ...extra }) as AssetResponseDto;
@@ -112,5 +112,21 @@ describe('navigation', () => {
 
   it('the preferred shot is the best one', () => {
     expect(preferredFrame(v)?.frameId).toBe('F1');
+    expect(isBracketView(v)).toBe(false);
+  });
+
+  it('an exposure bracket keeps its front shot in front and offers no "delete others"', () => {
+    const bracket: Record<string, CullInfo> = {
+      r1: info('F1', 2, 'bracket'),
+      j1: info('F1', 2, 'bracket'),
+      e1: info('F1', 2, 'bracket'),
+      r2: info('F2', 1, 'bracket'),
+      r3: info('F3', 3, 'bracket'),
+      j3: info('F3', 3, 'bracket'),
+    };
+    const b = buildStackView(stack, bracket, {}, 'G');
+    expect(b.frames.map((f) => f.frameId)).toEqual(['F2', 'F1', 'F3']);
+    expect(preferredFrame(b)?.frameId).toBe('F2');
+    expect(isBracketView(b)).toBe(true);
   });
 });

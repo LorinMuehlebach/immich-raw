@@ -431,6 +431,9 @@
   .badge.runner-up {
     color: #cfd8e3;
   }
+  .badge.bracket {
+    color: #9fd3ff;
+  }
   .badge.rejected {
     color: #fff;
     background: rgba(200, 50, 50, 0.85);

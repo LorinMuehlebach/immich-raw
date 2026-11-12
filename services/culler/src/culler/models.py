@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -22,7 +23,7 @@ RENDER_KEY = "raw-editor.render"
 CULL_KEY = "raw-editor.cull"
 APP_ID = "immich-raw-culler@0.1.0"
 
-Role = Literal["best", "runner-up", "rejected"]
+Role = Literal["best", "runner-up", "rejected", "bracket"]
 Reason = Literal["lighting", "blur", "eyes"]
 
 
@@ -34,6 +35,32 @@ def parse_time(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return t if t.tzinfo else t.replace(tzinfo=UTC)
+
+
+def parse_exposure_time(value: Any) -> float | None:
+    """Seconds from Immich's exposure time: '1/250', '0.5', '30' or a number."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        t = float(value)
+    else:
+        text = str(value).strip().removesuffix("s").strip()
+        try:
+            if "/" in text:
+                num, den = text.split("/", 1)
+                t = float(num) / float(den)
+            else:
+                t = float(text)
+        except (ValueError, ZeroDivisionError):
+            return None
+    return t if math.isfinite(t) and t > 0 else None
+
+
+def camera_exposure_ev(exposure_time: float | None, f_number: float | None, iso: float | None) -> float | None:
+    """How much light the settings let in, in stops (more = brighter): log2(t * ISO/100 / N^2)."""
+    if not exposure_time or not f_number or not iso or exposure_time <= 0 or f_number <= 0 or iso <= 0:
+        return None
+    return math.log2(exposure_time * iso / 100 / (f_number * f_number))
 
 
 def extension(name: str) -> str:
@@ -85,6 +112,13 @@ class Asset:
     visibility: str = "timeline"
     width: int | None = None
     height: int | None = None
+    exposure_time: float | None = None  # seconds
+    f_number: float | None = None
+    iso: float | None = None
+
+    @property
+    def exposure_ev(self) -> float | None:
+        return camera_exposure_ev(self.exposure_time, self.f_number, self.iso)
 
     @property
     def is_raw(self) -> bool:
@@ -130,6 +164,9 @@ class Asset:
             visibility=d.get("visibility", "timeline"),
             width=d.get("width"),
             height=d.get("height"),
+            exposure_time=parse_exposure_time(exif.get("exposureTime")),
+            f_number=exif.get("fNumber"),
+            iso=exif.get("iso"),
         )
 
 
@@ -156,6 +193,8 @@ class Frame:
     favorite: bool = False
     starred: bool = False  # the user gave it 1-5 stars
     duplicate_ids: frozenset[str] = frozenset()
+    exposure_ev: float | None = None  # the camera settings' exposure (see camera_exposure_ev)
+    exposure_time: float | None = None  # seconds
 
 
 @dataclass
@@ -217,17 +256,21 @@ class FaceInfo:
 
 @dataclass
 class BodyInfo:
-    """A person found by the object detector (also without a usable face)."""
+    """A person (also without a usable face) or an animal found by the object detector."""
 
     box: tuple[float, float, float, float]  # x, y, w, h in analysis-image pixels
     score: float
+    label: str = "person"  # COCO's name: 'person', 'bird', 'dog', ...
 
     def to_json(self) -> dict[str, Any]:
-        return {"box": list(self.box), "score": self.score}
+        d: dict[str, Any] = {"box": list(self.box), "score": self.score}
+        if self.label != "person":
+            d["label"] = self.label
+        return d
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> BodyInfo:
-        return cls(box=tuple(d["box"]), score=d["score"])
+        return cls(box=tuple(d["box"]), score=d["score"], label=d.get("label", "person"))
 
 
 @dataclass
@@ -247,6 +290,8 @@ class Features:
     # `sharpness` is the face's eye band when there is a face, else this: the sharpest 5 % of tiles.
     photo_sharpness: float | None = None
     face_sharpness: bool = False  # `sharpness` was measured on a face
+    animals: list[BodyInfo] = field(default_factory=list)  # largest first
+    subject_sharpness: float | None = None  # the largest animal's box
 
     @property
     def faces_known(self) -> int:
@@ -279,6 +324,8 @@ class Features:
             "bodyExposure": self.body_exposure.to_json() if self.body_exposure else None,
             "photoSharpness": self.photo_sharpness,
             "faceSharpness": self.face_sharpness,
+            "animals": [a.to_json() for a in self.animals],
+            "subjectSharpness": self.subject_sharpness,
         }
 
     @classmethod
@@ -298,6 +345,8 @@ class Features:
             body_exposure=ExposureStats.from_json(d.get("bodyExposure")),
             photo_sharpness=d.get("photoSharpness"),
             face_sharpness=bool(d.get("faceSharpness")),
+            animals=[BodyInfo.from_json(a) for a in d.get("animals") or ()],
+            subject_sharpness=d.get("subjectSharpness"),
         )
 
 
@@ -313,9 +362,39 @@ class FrameResult:
 
 
 @dataclass
+class PickInfo:
+    """The user chose another best than the culler would have: what the culler would have picked,
+    and how the user's shot compared (for the "your picks" report and its suggestions)."""
+
+    source: Literal["you", "favourite"]
+    your_frame: str
+    auto_frame: str
+    your_role: Role  # what the user's shot would have been without the pick
+    your_reason: Reason | None
+    # sharpRatio (of the sharpest shot), lightingWorse (exposure score above the best one), evGap
+    # (stops from the best-exposed shot), openGap (least open eyes below the best), closedMore,
+    # you/auto: the tie-break parts (sharpness, exposure, eyes), smiles: [you, auto]
+    deltas: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "yourFrame": self.your_frame,
+            "autoFrame": self.auto_frame,
+            "yourRole": self.your_role,
+            "yourReason": self.your_reason,
+            "deltas": self.deltas,
+        }
+
+
+@dataclass
 class GroupResult:
-    frame_ids: list[str]  # ranked: best first
+    frame_ids: list[str]  # ranked: best first (for a bracket: the shot in front)
     results: dict[str, FrameResult]
+    close_call: bool = False  # the best and the next shot nearly tied: worth a look
+    margin: float | None = None  # the best's lead over the next shot on the tie-break score
+    kind: Literal["burst", "bracket"] = "burst"
+    pick: PickInfo | None = None  # the user's pick differs from the culler's
 
     @property
     def best(self) -> str:

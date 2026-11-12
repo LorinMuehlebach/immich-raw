@@ -6,7 +6,9 @@
    group's last few frames and to the group's most typical frame (so a slow pan doesn't chain
    into one endless group). A group spans at most `max_span_s` and `max_size` frames.
 3. Frames Immich already marked as duplicates of each other always join.
-4. Shots the user added to a stack (on the auto-stack page) go into that stack: `apply_joins`.
+4. Moments: a group is split into one per moment (`split_moments`). A continuous burst is never
+   split; a burst after a pause joins the earlier moment it looks like, else starts a new one.
+5. Shots the user added to a stack (on the auto-stack page) go into that stack: `apply_joins`.
 """
 
 from __future__ import annotations
@@ -74,9 +76,43 @@ def group_frames(frames: list[Frame], emb: dict[str, np.ndarray], cfg: GroupingC
                 open_groups.append([f])
             else:
                 choice.append(f)
-        groups.extend(open_groups)
+        for g in open_groups:
+            groups.extend(split_moments(g, emb, cfg))
     groups.sort(key=lambda g: (g[0].taken, g[0].name))
     return [[f.id for f in g] for g in groups]
+
+
+def split_moments(group: list[Frame], emb: dict[str, np.ndarray], cfg: GroupingConfig) -> list[list[Frame]]:
+    """One list per moment, each in time order. Bursts are cut at pauses longer than
+    `moment_gap_s`; each burst joins the earlier moment with the most alike pair of shots when that
+    pair is at least `moment_similarity` alike (Immich's duplicates always join), else it starts a
+    new moment."""
+    if cfg.moment_similarity <= 0 or len(group) < 2:
+        return [group]
+    bursts: list[list[Frame]] = []
+    for f in sorted(group, key=lambda f: (f.taken, f.name)):
+        if bursts and _seconds(bursts[-1][-1], f) <= cfg.moment_gap_s:
+            bursts[-1].append(f)
+        else:
+            bursts.append([f])
+    if len(bursts) < 2:
+        return [group]
+    moments: list[list[Frame]] = []
+    for b in bursts:
+        choice, choice_sim = None, -2.0
+        for m in moments:
+            if any(f.duplicate_ids & x.duplicate_ids for f in b for x in m):
+                choice, choice_sim = m, 2.0
+                break
+            sims = [cosine(emb[f.id], emb[x.id]) for f in b for x in m if f.id in emb and x.id in emb]
+            sim = max(sims) if sims else 2.0  # nothing to compare: don't split
+            if sim > choice_sim:
+                choice, choice_sim = m, sim
+        if choice is not None and choice_sim >= cfg.moment_similarity:
+            choice.extend(b)
+        else:
+            moments.append(list(b))
+    return [sorted(m, key=lambda f: (f.taken, f.name)) for m in moments]
 
 
 def neighbour_similarities(frames: list[Frame], emb: dict[str, np.ndarray]) -> list[tuple[Frame, Frame, float, float]]:

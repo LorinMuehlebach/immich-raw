@@ -106,3 +106,28 @@ def test_runner_reads_the_raw_file_when_previews_look_alike(dngs, tmp_path):
     _, from_previews = run(runner, dry_run=True, scope=DAY, options={"lighting": {"raw_source": "preview"}})
     assert roles(from_previews)["dark"] != ("rejected", "lighting")  # what Immich's previews alone would give
     store.close()
+
+
+def test_a_raw_bracket_is_found_from_the_raw_files(tmp_path):
+    # As e2e/cull.mjs scene E: 0 / -2 / +2 EV by the shutter speed (1/250, 1/1000, 1/60 s at f/4, ISO 100).
+    from datetime import timedelta
+
+    from conftest import T0
+
+    from culler.brackets import find_brackets
+    from culler.config import BracketsConfig
+    from culler.models import camera_exposure_ev
+
+    scene = make_scene(6, h=480, w=720)
+    shots = {"e0": (0.0, 1 / 250), "e1": (-2.0, 1 / 1000), "e2": (2.06, 1 / 60)}
+    paths = write_dngs(tmp_path, {n: scene * 2.0**ev for n, (ev, _) in shots.items()})
+    frames, feats = [], {}
+    for i, (n, (_, t)) in enumerate(shots.items()):
+        ev = camera_exposure_ev(t, 4.0, 100.0)
+        frames.append(
+            Frame(n, (n,), n, n, None, (), T0 + timedelta(seconds=0.3 * i), "Test", n, exposure_ev=ev, exposure_time=t)
+        )
+        feats[n] = Features(n, "raw", 720, 480, raw_exposure(paths[n]), 0.05, exposure_source="raw")
+    keys = {n: round(f.exposure.key - feats["e0"].exposure.key, 2) for n, f in feats.items()}
+    assert keys["e1"] < -1.0 and keys["e2"] > 1.0, keys  # the steps show in the RAW files, clipping and all
+    assert find_brackets(frames, feats, BracketsConfig()) == [["e0", "e1", "e2"]]

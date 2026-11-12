@@ -55,7 +55,8 @@
   const cullText = $derived.by(() => {
     const badge = badgeFor(cullInfo);
     if (!cullInfo || !badge) return '';
-    if (cullInfo.role === 'best') return `${badge.icon} best of ${cullInfo.groupSize}${cullInfo.pinned ? ' (your pick)' : ''}`;
+    if (cullInfo.role === 'best') return `${badge.icon} best of ${cullInfo.groupSize}${cullInfo.pinned ? ' (your pick)' : cullInfo.closeCall ? ' · close call' : ''}`;
+    if (cullInfo.role === 'bracket') return `${badge.icon} exposure bracket (${cullInfo.rank} of ${cullInfo.groupSize})`;
     if (cullInfo.role === 'runner-up') return `${badge.icon} runner-up (${cullInfo.rank} of ${cullInfo.groupSize})`;
     return `${badge.icon} ${badge.label.toLowerCase()}`;
   });
