@@ -14,6 +14,11 @@ export interface RuntimeConfig {
   mediapipeBase: string;
 }
 
+/** ONNX Runtime's CPU threads: more than one needs cross-origin isolation (HTTPS with the editor's headers). */
+export function wasmThreads(): number {
+  return self.crossOriginIsolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+}
+
 type Ort = typeof OrtModule;
 type Vision = typeof VisionModule;
 /** What FilesetResolver.forVisionTasks resolves to (the type isn't exported). */
@@ -85,8 +90,7 @@ export class Runtime {
     this.ort ??= (async () => {
       const ort = (await import(/* @vite-ignore */ `${this.cfg.ortBase}ort.webgpu.min.js`)) as Ort;
       ort.env.wasm.wasmPaths = { mjs: `${this.cfg.ortBase}ort-wasm-simd-threaded.asyncify.js`, wasm: `${this.cfg.ortBase}ort-wasm-simd-threaded.asyncify.wasm` };
-      // Threads need cross-origin isolation (HTTPS with the editor's headers).
-      ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+      ort.env.wasm.numThreads = wasmThreads();
       ort.env.logLevel = 'error';
       return ort;
     })();
@@ -183,10 +187,18 @@ export class Runtime {
     return new ort.Tensor(type, data, dims);
   }
 
-  /** Runs a model; on a GPU failure it starts over on the CPU once. */
-  async run(id: ModelId, feeds: Record<string, Tensor>): Promise<Record<string, Tensor>> {
+  /** Where models run: a GPU, or the CPU with this many threads. */
+  async backend(): Promise<{ gpu: boolean; threads: number }> {
+    return { gpu: !this.gpuFailed && (await this.gpuUsable()), threads: wasmThreads() };
+  }
+
+  /**
+   * Runs a model; on a GPU failure it starts over on the CPU once. `quiet`: no "Running…"
+   * message (a model run once per tile reports its own progress).
+   */
+  async run(id: ModelId, feeds: Record<string, Tensor>, quiet = false): Promise<Record<string, Tensor>> {
     const s = await this.session(id);
-    this.progress({ kind: 'detect', label: `Running the ${MODELS[id].label}…` });
+    if (!quiet) this.progress({ kind: 'detect', label: `Running the ${MODELS[id].label}…` });
     try {
       return await s.run(feeds);
     } catch (e) {

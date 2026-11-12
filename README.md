@@ -150,6 +150,21 @@ and your edit all move to the DNG; then the original is deleted (to the trash, o
   laptop, 4 at once was 2.7 to 3.9 times faster than one at a time, and 8 up to 3.5 times faster for
   40 to 65 MP files ([Export speed](docs/export-speed.md), which also covers what HTTPS adds). Wider
   colour spaces, 16-bit files and Content Credentials are [feature requests](docs/feature-requests.md).
+- **AI Upscale** (left panel): makes the edit 2× or 4× larger with an AI model running in the browser.
+  The result can be downloaded (JPEG or TIFF) or saved to Immich as a JPEG in the RAW's stack. The
+  copy sits behind the photo in front, and Immich's Edit button on it opens the RAW. The RAW and the
+  saved edit stay as they are.
+  - **Sharp** (Real-ESRGAN) gives crisp edges and smooths fine texture. **Natural** (RealPLKSR,
+    darktable's upscaler) keeps texture but is about 5× slower.
+  - **Preview a detail** puts a square on the photo: drag it, and a loupe shows that spot plainly
+    enlarged and AI-upscaled side by side.
+  - It needs WebGPU for whole photos, so open the editor over HTTPS or on localhost. With an
+    integrated laptop GPU (Radeon 780M), 2× of a 45 MP photo took 5 minutes with Sharp. On plain HTTP
+    the model gets one CPU thread (about 80 seconds per megapixel), so only the preview and crops
+    that take under 10 minutes are allowed.
+  - Results go up to 200 MP (50 MP on phones and tablets), which covers 2× of photos up to 50 MP.
+  - The panel shows the result size and the expected time; a running upscale can be cancelled.
+  - Model choice and speeds: [AI Upscale in the spike results](docs/spike-results.md#ai-upscale-model-choice-2026-11-12).
 - **Lightroom XMP sidecar import** on first open: basic, curves, colour mixer, B&W, colour grading,
   calibration, detail, lens corrections, transform, effects, crop and masks, including AI masks
   (Subject, Sky, Background, People parts, Landscape), which are found again in the photo. AI

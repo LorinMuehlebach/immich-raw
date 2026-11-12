@@ -90,6 +90,7 @@ import {
   getPath,
   normalizeRecipe,
   pickGroups,
+  recipeHash,
   setPath,
   type AiComponent,
   type AiTarget,
@@ -133,14 +134,18 @@ import { parseContext } from '../immich/context.ts';
 import { newId } from '../id.ts';
 import { anchoredCentre, fitScale, nextScale } from './zoom.ts';
 import { AiMasks } from './ai-masks.svelte.ts';
-import { imageToMask } from '../ai.svelte.ts';
+import { aiClient, aiConsent, imageToMask } from '../ai.svelte.ts';
+import { CANCELLED, tileSide, upscaler, type Progress, type UpscaleScale, type UpscaleStyle, type UpscaleTask } from '@immich-raw/ai';
+import { saveUpscaled, type UpscaleSaveStep } from '../immich/save-upscaled.ts';
+import { PATCH, UpscaleState } from './upscale.svelte.ts';
+import { UPSCALE_QUALITY, checkUpscale, formatDuration, upscaledDownloadName, type UpscaleCheck } from './upscale.ts';
 
 export type Status = 'loading' | 'auth' | 'error' | 'ready';
 /**
  * 'tat': Lightroom's targeted adjustment tool (drag on the photo to change the Color Mixer).
  * 'mask': the Masking panel with its on-image handles.
  */
-export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask';
+export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale';
 
 /** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
 export interface MaskDraft {
@@ -277,6 +282,12 @@ const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   cleanup: 'Moving the previous version to trash',
 };
 
+const UPSCALE_SAVE_LABEL: Record<UpscaleSaveStep, string> = {
+  upload: 'Uploading',
+  metadata: 'Copying date, location and albums',
+  stack: 'Stacking with the RAW',
+};
+
 const CHANNEL_LABEL: Record<MixerChannel, string> = { hue: 'Hue', saturation: 'Saturation', luminance: 'Luminance' };
 
 /** History label for a slider change, e.g. "Exposure +0.50", "Saturation: Blue -30". */
@@ -358,7 +369,8 @@ export class Editor {
   maskView = $state<MaskView>('none');
   histogram = $state<Histogram | null>(null);
   fullStatus = $state<'idle' | 'decoding' | 'ready' | 'error'>('idle');
-  saving = $state<{ label: string; fraction: number } | null>(null);
+  /** A save, export or upscale in progress; `cancel` when it can be stopped. */
+  saving = $state<{ label: string; fraction: number; cancel?: () => void } | null>(null);
   canUndo = $state(false);
   canRedo = $state(false);
   historySteps = $state<HistoryStep[]>([]);
@@ -401,6 +413,8 @@ export class Editor {
     photoKey: () => (this.asset ? `${this.asset.id}:${this.asset.checksum}` : null),
     requestRender: () => this.requestRender(),
   });
+  /** AI Upscale: settings, where it runs, the preview patch. */
+  upscale = new UpscaleState();
   private history = new History();
   private pendingLabel = 'Edit';
   private previewRecipe: Recipe | null = null;
@@ -1476,6 +1490,16 @@ export class Editor {
     return this.renderer?.viewToMask(x, y) ?? null;
   }
 
+  /** Point of the view (0..1) -> frame coordinates (0..1) of the cropped photo. */
+  viewToFrame(x: number, y: number): [number, number] | null {
+    return this.renderer?.previewToFrame(x, y) ?? null;
+  }
+
+  /** Frame coordinates (0..1) -> point of the view (0..1, may lie outside). */
+  frameToView(x: number, y: number): [number, number] | null {
+    return this.renderer?.frameToPreview(x, y) ?? null;
+  }
+
   maskToView(p: [number, number]): [number, number] | null {
     return this.renderer?.maskToView(p[0], p[1]) ?? null;
   }
@@ -1483,7 +1507,8 @@ export class Editor {
   // ---------------------------------------------------------------- view
 
   setTool(tool: Tool): void {
-    if (tool !== 'edit' && this.readOnly) return;
+    // The upscale preview changes nothing, so it works on photos that are only shared with you.
+    if (tool !== 'edit' && tool !== 'upscale' && this.readOnly) return;
     this.endTargeted();
     if (tool !== 'mask') {
       this.maskDraft = null;
@@ -1783,6 +1808,13 @@ export class Editor {
     step: (s: RenderStep, fraction?: number) => void,
     forImmich = false,
   ): Promise<{ recipe: Recipe; file: ExportFile }> {
+    const { recipe, image } = await this.renderFull(session, renderer, step);
+    const file = await this.finish(image, asset, preset, step, forImmich);
+    return { recipe, file };
+  }
+
+  /** The current edit rendered at full resolution, and the recipe it was rendered from. */
+  private async renderFull(session: RawSession, renderer: Renderer, step: (s: RenderStep, fraction?: number) => void): Promise<{ recipe: Recipe; image: ImageData }> {
     step('decode');
     this.startFullDecode();
     const full = await session.full();
@@ -1793,13 +1825,17 @@ export class Editor {
     recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
     step('render');
     const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
-    const file = await finishExport(image, asset, preset, {
+    return { recipe, image };
+  }
+
+  /** A rendered image made into the file `preset` describes. */
+  private finish(image: ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
+    return finishExport(image, asset, preset, {
       copyright: this.exportSettings.copyright,
       owner: this.ownerName(asset),
       forImmich,
       onStep: (s) => step(s),
     });
-    return { recipe, file };
   }
 
   /** The photographer, for the copyright line: the asset owner's Immich name. */
@@ -1854,6 +1890,188 @@ export class Editor {
       return false;
     } finally {
       this.saving = null;
+    }
+  }
+
+  // ---------------------------------------------------------------- AI Upscale
+
+  /** Size of the full-resolution image an export renders (the cropped photo). */
+  exportSize(): { width: number; height: number } | null {
+    const r = this.renderer;
+    if (!r || !this.camera || this.status !== 'ready') return null;
+    return r.exportSize(this.recipe);
+  }
+
+  /** Result size, time and whether the current setting can run on the whole photo here. */
+  upscaleCheck(): UpscaleCheck | null {
+    const r = this.renderer;
+    if (!r || !this.camera || this.status !== 'ready') return null;
+    const { width, height } = r.exportSize(this.recipe);
+    const s = this.upscale.settings;
+    return checkUpscale({
+      width,
+      height,
+      style: s.style,
+      scale: s.scale,
+      backend: this.upscale.backend,
+      rate: this.upscale.rate(),
+      maxPixels: this.upscale.maxPixels(),
+    });
+  }
+
+  /** AI Upscale of the current edit (saved or not): downloads it, or saves a copy to Immich in the RAW's stack. */
+  async upscalePhoto(target: 'download' | 'immich'): Promise<boolean> {
+    const asset = this.asset;
+    const session = this.session;
+    const renderer = this.renderer;
+    if (!asset || !session || !renderer || this.saving || this.status !== 'ready') return false;
+    if (target === 'immich' && this.readOnly) return false;
+    const s = { ...this.upscale.settings };
+    let task: UpscaleTask | null = null;
+    let cancelled = false;
+    // Until the model is done: encoding and uploading are not stopped halfway.
+    let cancellable = true;
+    const cancel = () => {
+      cancelled = true;
+      task?.cancel();
+    };
+    const show = (label: string, fraction = 0) =>
+      (this.saving = { label: `AI Upscale ${s.scale}×: ${label}`, fraction, cancel: cancellable ? cancel : undefined });
+    try {
+      show('Preparing');
+      const backend = await this.upscale.loadBackend();
+      const check = this.upscaleCheck();
+      if (check?.blocked) throw new Error(check.blocked);
+      aiConsent.again();
+      await aiConsent.permitModels([upscaler(s.style, s.scale).model]);
+      const { recipe, image } = await this.renderFull(session, renderer, (st, f) => show(STEP_LABEL[st], f));
+      if (cancelled) throw new Error(CANCELLED);
+      const big = await this.runUpscale(image, s.style, s.scale, backend.gpu, (t) => (task = t), show);
+      cancellable = false;
+      const high = $state.snapshot(this.exportSettings.presets.high) as ExportPreset;
+      const preset: ExportPreset = {
+        ...structuredClone(high),
+        format: s.format,
+        quality: UPSCALE_QUALITY,
+        size: { mode: 'full', value: 0, unit: 'px' },
+        // The model sharpens already.
+        sharpen: { for: 'none', amount: high.sharpen.amount },
+      };
+      const file = await this.finish(big, asset, preset, (st) => show(STEP_LABEL[st]), target === 'immich');
+      if (target === 'download') {
+        const name = upscaledDownloadName(asset.originalFileName, s.scale, s.format);
+        downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
+        this.notice = `Exported ${name} (${file.width} × ${file.height}).`;
+      } else {
+        await saveUpscaled({
+          raw: asset,
+          jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
+          info: { scale: s.scale, style: s.style, recipeHash: await recipeHash(recipe) },
+          onProgress: (st, f) => show(UPSCALE_SAVE_LABEL[st], f),
+        });
+        this.notice = `Saved the ${s.scale}× copy to Immich (${file.width} × ${file.height}), stacked with the RAW.`;
+      }
+      this.error = null;
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (cancelled || msg === CANCELLED) {
+        this.notice = 'AI Upscale cancelled.';
+        return false;
+      }
+      console.error(e);
+      this.notice = null;
+      this.error = `AI Upscale failed: ${msg}`;
+      return false;
+    } finally {
+      this.saving = null;
+    }
+  }
+
+  /** Runs the model over `image` with progress in the saving overlay, and times it for the estimates. */
+  private async runUpscale(
+    image: ImageData,
+    style: UpscaleStyle,
+    scale: UpscaleScale,
+    gpu: boolean,
+    started: (t: UpscaleTask) => void,
+    show: (label: string, fraction?: number) => void,
+  ): Promise<ImageData> {
+    const side = tileSide(upscaler(style, scale), gpu);
+    let first = 0;
+    let tiles = 0;
+    // The rendered image isn't needed afterwards: hand it over instead of copying ~4 bytes a pixel.
+    const task = aiClient.upscale({ style, scale, side, image, transfer: true }, (p: Progress) => {
+      if (p.kind === 'download') show(`Downloading the ${p.label}`, p.total ? p.loaded / p.total : 0);
+      else if (p.kind === 'work') {
+        const now = performance.now();
+        if (p.done === 1) first = now;
+        tiles = p.done;
+        const left = p.done > 1 ? (((now - first) / (p.done - 1)) * (p.total - p.done)) / 1000 : null;
+        show(left === null ? 'Upscaling' : `Upscaling, ${formatDuration(left)} left`, p.done / p.total);
+      } else show(p.label);
+    });
+    started(task);
+    const r = await task.promise;
+    // The first tile includes loading the model, so timing starts after it.
+    if (tiles > 1) this.upscale.record(style, (performance.now() - first) / 1000, tiles - 1, side);
+    return new ImageData(r.data as Uint8ClampedArray<ArrayBuffer>, r.width, r.height);
+  }
+
+  private previewRun = 0;
+  private previewsRunning = 0;
+
+  /** Upscales the preview patch of the AI Upscale tool (before and after). The latest call wins. */
+  async upscalePreview(): Promise<void> {
+    const session = this.session;
+    const renderer = this.renderer;
+    if (!session || !renderer || this.status !== 'ready' || this.tool !== 'upscale') return;
+    const run = ++this.previewRun;
+    const up = this.upscale;
+    const stale = () => run !== this.previewRun || this.tool !== 'upscale';
+    const s = { ...up.settings };
+    up.previewError = null;
+    this.previewsRunning++;
+    const alone = this.previewsRunning === 1;
+    try {
+      const backend = await up.loadBackend();
+      const u = upscaler(s.style, s.scale);
+      const side = u.fixedSide ?? PATCH + 2 * u.pad;
+      const seconds = (side * side * up.rate(s.style)) / 1e6;
+      if (!backend.gpu && seconds > 60) throw new Error(`Without a GPU the ${s.style} preview would take ${formatDuration(seconds)}. Try Sharp, or open the editor over HTTPS or on localhost.`);
+      up.previewStatus = this.fullImage ? 'Rendering…' : 'Loading full resolution…';
+      this.startFullDecode();
+      const full = await session.full();
+      if (stale()) return;
+      const recipe = cloneRecipe($state.snapshot(this.recipe) as Recipe);
+      await this.ai.ready(recipe);
+      if (stale()) return;
+      const { width: W, height: H } = renderer.exportSize(recipe);
+      const p = Math.min(PATCH, W, H);
+      const x = Math.round(Math.max(0, Math.min(W - p, up.patch[0] * W - p / 2)));
+      const y = Math.round(Math.max(0, Math.min(H - p, up.patch[1] * H - p / 2)));
+      up.previewStatus = 'Rendering…';
+      const before = await renderer.exportRegion(recipe, full, { x, y, w: p, h: p });
+      if (stale()) return;
+      await aiConsent.permitModels([u.model]);
+      up.previewStatus = 'Upscaling…';
+      const t0 = performance.now();
+      const task = aiClient.upscale({ style: s.style, scale: s.scale, side, image: before }, (pr) => {
+        if (pr.kind === 'download') up.previewStatus = `Downloading the ${pr.label}: ${Math.round(pr.loaded / 1e6)} of ${Math.round(pr.total / 1e6)} MB`;
+      });
+      const r = await task.promise;
+      // Timed only when nothing else ran meanwhile, and not the first run (it loads the model).
+      if (alone && this.previewsRunning === 1 && up.warm.has(s.style)) up.record(s.style, (performance.now() - t0) / 1000, 1, side);
+      up.warm.add(s.style);
+      if (stale()) return;
+      up.preview = { before, after: new ImageData(r.data as Uint8ClampedArray<ArrayBuffer>, r.width, r.height), scale: s.scale };
+      up.previewStatus = null;
+    } catch (e) {
+      if (stale()) return;
+      up.previewStatus = null;
+      up.previewError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.previewsRunning--;
     }
   }
 

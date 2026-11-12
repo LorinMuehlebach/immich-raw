@@ -5,11 +5,12 @@ import { analyzeObjectBox, analyzeObjectPoints, analyzePeople, analyzeScene, ana
 import { cacheGet, cachePut } from './cache.ts';
 import { composeRaster, listPeople, type Analysis } from './compose.ts';
 import { fitSize, luma, normalizeBrightness, resizeRgba } from './image.ts';
-import { ANALYSIS_VERSION } from './models.ts';
+import { ANALYSIS_VERSION, tileSide, upscaler } from './models.ts';
 import type { Request, Response } from './protocol.ts';
 import { Runtime } from './runtime.ts';
 import { objectKey } from './spec.ts';
-import type { AiSpec, ByteMap, PeopleMaps, RgbaImage, SceneMaps } from './types.ts';
+import type { AiSpec, ByteMap, PeopleMaps, RgbaImage, SceneMaps, UpscaleResult } from './types.ts';
+import { CANCELLED, upscaleImage } from './upscale/run.ts';
 
 /** Longest side of the image the models and the composing work on. */
 export const WORK_SIDE = 2048;
@@ -30,6 +31,43 @@ const post = (m: Response, transfer: Transferable[] = []) => scope.postMessage(m
 let runtime: Runtime | null = null;
 /** The photos in use, most recent last (the open one, and one being exported). */
 const photos = new Map<string, Photo>();
+/** Upscales run one after another (one model session can't run twice at once). */
+let upscales: Promise<unknown> = Promise.resolve();
+/** The upscale running now: the runtime's progress (a model download) is reported to it. */
+let job: number | null = null;
+/** Upscales asked to stop. */
+const cancelled = new Set<number>();
+
+/** AI Upscale of one image, tile by tile, with progress for request `id`. */
+async function upscale(m: Extract<Request, { type: 'upscale' }>): Promise<UpscaleResult> {
+  const rt = runtime!;
+  const u = upscaler(m.style, m.scale);
+  job = m.id;
+  try {
+    const side = m.side ?? tileSide(u, (await rt.backend()).gpu);
+    const { inputs, outputs } = await rt.names(u.model);
+    const label = `Upscaling ${m.scale}×`;
+    const image: RgbaImage = { width: m.width, height: m.height, data: new Uint8ClampedArray(m.data) };
+    const out = await upscaleImage(
+      image,
+      u,
+      m.scale,
+      side,
+      async (input, s) => {
+        const r = await rt.run(u.model, { [inputs[0]!]: await rt.tensor('float32', input, [1, 3, s, s]) }, true);
+        return r[outputs[0]!]!.data as Float32Array;
+      },
+      {
+        onTile: (done, total) => post({ type: 'progress', id: m.id, progress: { kind: 'work', label, done, total } }),
+        cancelled: () => cancelled.has(m.id),
+      },
+    );
+    return { width: out.width, height: out.height, data: out.data.buffer as ArrayBuffer };
+  } finally {
+    job = null;
+    cancelled.delete(m.id);
+  }
+}
 
 function photo(key: string): Photo {
   const p = photos.get(key);
@@ -129,8 +167,32 @@ async function analysis(key: string, spec: AiSpec): Promise<Analysis> {
 async function handle(m: Request): Promise<void> {
   switch (m.type) {
     case 'init':
-      runtime = new Runtime(m.cfg, (progress) => post({ type: 'progress', progress }));
+      runtime = new Runtime(m.cfg, (progress) => post(job === null ? { type: 'progress', progress } : { type: 'progress', progress, id: job }));
       return;
+    case 'cancel':
+      cancelled.add(m.id);
+      return;
+    case 'backend':
+    case 'upscale': {
+      const run = async () => {
+        try {
+          if (!runtime) throw new Error('The AI worker was not started.');
+          if (m.type === 'backend') {
+            post({ type: 'result', id: m.id, value: await runtime.backend() });
+          } else {
+            const r = await upscale(m);
+            post({ type: 'result', id: m.id, value: r }, [r.data]);
+          }
+        } catch (e) {
+          if (m.type === 'upscale' && !(e instanceof Error && e.message === CANCELLED)) console.error('AI Upscale:', e);
+          post({ type: 'error', id: m.id, message: e instanceof Error ? e.message : String(e) });
+        }
+      };
+      if (m.type === 'backend') return run();
+      // Cancelled while waiting for its turn: never starts.
+      upscales = upscales.then(() => (cancelled.delete(m.id) ? post({ type: 'error', id: m.id, message: CANCELLED }) : run()));
+      return;
+    }
     case 'photo': {
       const raw: RgbaImage = { width: m.width, height: m.height, data: new Uint8ClampedArray(m.data) };
       const [w, h] = fitSize(raw.width, raw.height, WORK_SIDE);

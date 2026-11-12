@@ -73,6 +73,23 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   Object and People mask on one photo (`leica-q2.DNG` has sky, water and a ferry), then exports it.
   It needs internet: the models (about 316 MB) download on first use and stay in the browser
   profile it keeps in `<out-dir>/profile`.
+- AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
+  (`nikon-z7` by default):
+  - the preview patch;
+  - the size and time check;
+  - a 2× download of a centre crop;
+  - Cancel;
+  - Save to Immich (in the RAW's stack, front photo unchanged, tagged as made from the RAW).
+
+  It removes the copy it uploaded afterwards. Options:
+  - `INSECURE=1` checks the plain-HTTP path (one CPU thread: whole photos refused, a small crop
+    allowed);
+  - `STYLE=natural` checks the slower model;
+  - `CROP` sets the side of the crop (0 to 1).
+
+  Against the dev server, start Vite on 127.0.0.1 so that `immich.test` reaches it:
+  `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=immich.test npx vite --port 5180 --host 127.0.0.1`
+  (in `apps/editor`), then use `IMMICH_URL=http://127.0.0.1:5180`.
 
 ## Stop and reset
 

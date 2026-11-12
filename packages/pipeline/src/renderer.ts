@@ -79,6 +79,14 @@ export interface ExportProgress {
   (done: number, total: number): void;
 }
 
+/** A rectangle of the full-resolution image, in pixels. */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 interface Analysis {
   key: string;
   abLow: Target;
@@ -910,11 +918,64 @@ export class Renderer {
     return this.lastView ? this.lastView.toT(x, y) : null;
   }
 
+  /** Frame coordinates (0..1) -> point of the last presented view (0..1, may lie outside). */
+  frameToPreview(x: number, y: number): [number, number] | null {
+    return this.lastView ? this.lastView.fromT(x, y) : null;
+  }
+
   /**
    * Renders the full-resolution image in tiles and returns RGBA8 pixels.
    * `full` must be the full decode; `recipe` is rendered in edit mode (cropped).
    */
   async exportImage(recipe: Recipe, full: SourceImage, onProgress?: ExportProgress): Promise<ImageData> {
+    const { width: W, height: H } = this.exportSize(recipe);
+    const out = new Uint8ClampedArray(W * H * 4);
+    const rects: Rect[] = [];
+    for (let y = 0; y < H; y += TILE) {
+      for (let x = 0; x < W; x += TILE) rects.push({ x, y, w: Math.min(TILE, W - x), h: Math.min(TILE, H - y) });
+    }
+    await this.renderRects(recipe, full, rects, TILE, 'export', (r, buf) => {
+      for (let row = 0; row < r.h; row++) out.set(buf.subarray(row * r.w * 4, (row + 1) * r.w * 4), ((r.y + row) * W + r.x) * 4);
+    }, onProgress);
+    for (let i = 3; i < out.length; i += 4) out[i] = 255;
+    return new ImageData(out, W, H);
+  }
+
+  /** Size of the full-resolution image exportImage renders for `recipe`. */
+  exportSize(recipe: Recipe): { width: number; height: number } {
+    const { camera } = this.requireSource();
+    const frame = this.frameFor(recipe, 'edit', camera.fullWidth, camera.fullHeight);
+    return { width: frame.width, height: frame.height };
+  }
+
+  /**
+   * One rectangle of what exportImage renders (pixels of its result, clipped to it, at most
+   * TILE square): the same pixels, for a preview of a detail.
+   */
+  async exportRegion(recipe: Recipe, full: SourceImage, rect: Rect): Promise<ImageData> {
+    const { width: W, height: H } = this.exportSize(recipe);
+    const x = Math.max(0, Math.min(W - 1, Math.round(rect.x)));
+    const y = Math.max(0, Math.min(H - 1, Math.round(rect.y)));
+    const r = { x, y, w: Math.max(1, Math.min(TILE, W - x, Math.round(rect.w))), h: Math.max(1, Math.min(TILE, H - y, Math.round(rect.h))) };
+    const out = new Uint8ClampedArray(r.w * r.h * 4);
+    await this.renderRects(recipe, full, [r], Math.max(r.w, r.h), 'region', (_, buf) => out.set(buf.subarray(0, out.length)));
+    for (let i = 3; i < out.length; i += 4) out[i] = 255;
+    return new ImageData(out, r.w, r.h);
+  }
+
+  /**
+   * Renders rectangles (at most tile x tile) of the full-resolution frame from the full decode and
+   * hands each one's RGBA rows (r.w wide, packed) to `sink`.
+   */
+  private async renderRects(
+    recipe: Recipe,
+    full: SourceImage,
+    rects: Rect[],
+    tile: number,
+    prefix: 'export' | 'region',
+    sink: (r: Rect, rgba: Uint8Array) => void,
+    onProgress?: ExportProgress,
+  ): Promise<void> {
     const gl = this.gl;
     const an = this.analyze(recipe, this.frameFor(recipe, 'edit'));
     // Same frame as the 1:1 view (the decode can be a pixel larger than the camera size),
@@ -923,40 +984,35 @@ export class Renderer {
     const frame = this.frameFor(recipe, 'edit', camera.fullWidth, camera.fullHeight);
     const W = frame.width;
     const H = frame.height;
-    const out = new Uint8ClampedArray(W * H * 4);
-    const R = TILE + 2 * APRON;
+    const R = tile + 2 * APRON;
 
     // Plan tiles and the source region each one needs.
     const tiles: { x0: number; y0: number; w: number; h: number; sx: number; sy: number; sw: number; sh: number }[] = [];
     let maxSw = 1;
     let maxSh = 1;
-    for (let y0 = 0; y0 < H; y0 += TILE) {
-      for (let x0 = 0; x0 < W; x0 += TILE) {
-        const w = Math.min(TILE, W - x0);
-        const h = Math.min(TILE, H - y0);
-        const { minX, minY, maxX, maxY } = this.sourceRegion(recipe, frame.tToS, (x0 - APRON) / W, (y0 - APRON) / H, (x0 + R - APRON) / W, (y0 + R - APRON) / H, full.width, full.height);
-        const sx = Math.max(0, Math.floor(minX) - 3);
-        const sy = Math.max(0, Math.floor(minY) - 3);
-        const sw = Math.max(1, Math.min(full.width, Math.ceil(maxX) + 3) - sx);
-        const sh = Math.max(1, Math.min(full.height, Math.ceil(maxY) + 3) - sy);
-        maxSw = Math.max(maxSw, sw);
-        maxSh = Math.max(maxSh, sh);
-        tiles.push({ x0, y0, w, h, sx, sy, sw, sh });
-      }
+    for (const { x: x0, y: y0, w, h } of rects) {
+      const { minX, minY, maxX, maxY } = this.sourceRegion(recipe, frame.tToS, (x0 - APRON) / W, (y0 - APRON) / H, (x0 + R - APRON) / W, (y0 + R - APRON) / H, full.width, full.height);
+      const sx = Math.max(0, Math.floor(minX) - 3);
+      const sy = Math.max(0, Math.floor(minY) - 3);
+      const sw = Math.max(1, Math.min(full.width, Math.ceil(maxX) + 3) - sx);
+      const sh = Math.max(1, Math.min(full.height, Math.ceil(maxY) + 3) - sy);
+      maxSw = Math.max(maxSw, sw);
+      maxSh = Math.max(maxSh, sh);
+      tiles.push({ x0, y0, w, h, sx, sy, sw, sh });
     }
 
     const maxTex = this.maxTextureSize;
     if (maxSw > maxTex || maxSh > maxTex) throw new Error('Image region too large for this GPU');
-    // The zoom cache would compete for GPU memory.
-    this.releaseZoom();
+    // The zoom cache would compete for GPU memory (a small region doesn't need much).
+    if (prefix === 'export') this.releaseZoom();
     const srcInt = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, srcInt);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGB16UI, maxSw, maxSh);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     const srcF = this.ctx.target(maxSw, maxSh, gl.RGBA16F);
-    const T = this.chainTargets('export', R, R);
-    const buf = new Uint8Array(TILE * TILE * 4);
+    const T = this.chainTargets(prefix, R, R);
+    const buf = new Uint8Array(tile * tile * 4);
     try {
       for (let i = 0; i < tiles.length; i++) {
         const tl = tiles[i]!;
@@ -982,19 +1038,15 @@ export class Renderer {
         );
         gl.bindFramebuffer(gl.FRAMEBUFFER, T.fin.fb);
         gl.readPixels(APRON, APRON, tl.w, tl.h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-        for (let row = 0; row < tl.h; row++) {
-          out.set(buf.subarray(row * tl.w * 4, (row + 1) * tl.w * 4), ((tl.y0 + row) * W + tl.x0) * 4);
-        }
+        sink({ x: tl.x0, y: tl.y0, w: tl.w, h: tl.h }, buf);
         onProgress?.(i + 1, tiles.length);
         await new Promise((res) => setTimeout(res, 0));
       }
     } finally {
       gl.deleteTexture(srcInt);
       this.ctx.deleteTarget(srcF);
-      this.freeChain('export');
+      this.freeChain(prefix);
     }
-    for (let i = 3; i < out.length; i += 4) out[i] = 255;
-    return new ImageData(out, W, H);
   }
 
   dispose(): void {

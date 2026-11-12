@@ -76,4 +76,21 @@ export interface RasterResult {
 
 export type Progress =
   | { kind: 'download'; label: string; loaded: number; total: number }
-  | { kind: 'detect'; label: string };
+  | { kind: 'detect'; label: string }
+  /** A long job in steps (AI Upscale: tiles). */
+  | { kind: 'work'; label: string; done: number; total: number };
+
+/** An AI Upscale result: RGBA pixels. */
+export interface UpscaleResult {
+  width: number;
+  height: number;
+  data: ArrayBuffer;
+}
+
+/** Where the models run. */
+export interface BackendInfo {
+  /** WebGPU on a real GPU; else the CPU. */
+  gpu: boolean;
+  /** CPU threads (1 without cross-origin isolation, e.g. on plain HTTP). */
+  threads: number;
+}

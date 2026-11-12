@@ -28,6 +28,8 @@
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
   import UnsavedDialog from './lib/ui/UnsavedDialog.svelte';
+  import UpscaleOverlay from './lib/ui/UpscaleOverlay.svelte';
+  import UpscalePanel from './lib/ui/UpscalePanel.svelte';
   import MaskOverlay from './lib/ui/MaskOverlay.svelte';
   import MaskPanel from './lib/ui/MaskPanel.svelte';
   import PresetsPanel from './lib/ui/PresetsPanel.svelte';
@@ -498,6 +500,7 @@
       <button onclick={() => editor.pastePrevious()} disabled={!editor.hasPrevious || editor.readOnly} title="Paste settings of the last saved photo (Ctrl+Alt+V)">Previous</button>
     </div>
     <ExportPanel />
+    <UpscalePanel />
     <DngPanel />
   {/snippet}
 
@@ -535,6 +538,9 @@
         {/if}
         {#if editor.tool === 'mask' && editor.status === 'ready' && !editor.before}
           <MaskOverlay width={display.w} height={display.h} />
+        {/if}
+        {#if editor.tool === 'upscale' && editor.status === 'ready' && !editor.before}
+          <UpscaleOverlay width={display.w} height={display.h} />
         {/if}
         {#if editor.before}<div class="badge">Before</div>{/if}
         {#if editor.tool === 'tat'}
@@ -590,6 +596,7 @@
           <div class="card">
             <div>{editor.saving.label}…</div>
             <div class="bar"><i style:width="{Math.round(editor.saving.fraction * 100)}%"></i></div>
+            {#if editor.saving.cancel}<button class="cancel" onclick={() => editor.saving?.cancel?.()}>Cancel</button>{/if}
           </div>
         </div>
       {/if}
@@ -1018,6 +1025,10 @@
   }
   .saving .card {
     min-width: 300px;
+  }
+  .saving .cancel {
+    display: block;
+    margin: 10px auto 0;
   }
   .toast {
     position: absolute;

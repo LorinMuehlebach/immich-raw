@@ -33,8 +33,8 @@ This software is based in part on the work of the Independent JPEG Group.
 
 ## AI models (downloaded at run time, not shipped)
 
-AI masks download these models from their public hosts the first time they are needed (after
-asking) and keep them in the browser. They are not part of immich-raw or its image.
+AI masks and AI Upscale download these models from their public hosts the first time they are
+needed (after asking) and keep them in the browser. They are not part of immich-raw or its image.
 
 | Model | Used for | Licence | Source |
 |---|---|---|---|
@@ -43,6 +43,8 @@ asking) and keep them in the browser. They are not part of immich-raw or its ima
 | SlimSAM-77 (Segment Anything), int8 | Objects (clicked) | Apache-2.0 | https://huggingface.co/Xenova/slimsam-77-uniform |
 | MediaPipe Selfie Multiclass 256 x 256 | People: hair, skin, clothes | Apache-2.0 | https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter |
 | MediaPipe Face Landmarker | People: eyes, brows, lips, teeth | Apache-2.0 | https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker |
+| Real-ESRGAN general x4v3 (SRVGGNetCompact) | AI Upscale, Sharp | BSD-3-Clause | https://huggingface.co/jonathanst29/tinier-upscale-models (ONNX export of https://github.com/xinntao/Real-ESRGAN) |
+| RealPLKSR 2x and 4x, MSSIM pretrain | AI Upscale, Natural | MIT (weights); ONNX packaging GPL-3.0-or-later | https://huggingface.co/darktable-org/upscale-realplksr-onnx (weights from https://github.com/dslisleedh/PLKSR) |
 
 ## Code adapted from other projects
 

@@ -200,6 +200,34 @@ Lightroom's XMP codes for AI masks are not documented by Adobe. The ones used (M
 2 sky, 3 + MaskSubCategoryID for a part of everyone, 0 + 50001-50008 for landscape categories) come
 from a Lightroom Classic plugin that recorded them from real catalogs (Automaat/lightroom-mcp).
 
+### AI Upscale: model choice (2026-11-12)
+
+Two permissive super-resolution models with ONNX exports were compared:
+- Real-ESRGAN general x4v3 (SRVGGNetCompact, 4.9 MB, BSD-3-Clause, 4× only; dynamic input size).
+- RealPLKSR, darktable 5.6's upscaler (30 MB each for 2× and 4×, MIT weights; fixed 512² and 256² input).
+
+Speed was measured with [spikes/ai-masks/upscale-bench.mjs](../spikes/ai-masks/upscale-bench.mjs) (WASM in
+Node) and [upscale-bench-webgpu.mjs](../spikes/ai-masks/upscale-bench-webgpu.mjs) (WebGPU in Edge). The
+machine was a Ryzen 7 7840U with integrated Radeon 780M graphics, using onnxruntime-web 1.31.1.
+Times are per megapixel of input; the right-hand column is a whole 24 MP photo.
+
+| Model | 1 thread (plain HTTP) | 4 threads | WebGPU | 24 MP on WebGPU | Peak memory (WASM) |
+|---|---|---|---|---|---|
+| Real-ESRGAN x4v3 | 76 s/MP | 25 s/MP | 5.4 s/MP | 2.2 min | 0.2 GB |
+| RealPLKSR 2× | 654 s/MP | 238 s/MP | 28 s/MP | 11.3 min | 1.1 GB |
+| RealPLKSR 4× | 706 s/MP | 234 s/MP | 29 s/MP | 11.5 min | 1.1 GB |
+
+Quality was compared on 200 px crops of the Leica Q2 and Sony A7R V samples, at 2× next to bicubic.
+- Real-ESRGAN gives crisp, clean edges (a ship's mast and its wires) but smooths fine texture: grass
+  looks slightly painted.
+- RealPLKSR stays natural and keeps texture, with softer edges. It is about 5× slower on a GPU and
+  9× slower on the CPU. Its fixed 512² tile alone takes almost 3 minutes on one thread.
+
+**Decision:** Real-ESRGAN is the default ("Sharp"). RealPLKSR is offered as "Natural" for anyone
+with a GPU and the patience. Without WebGPU (plain HTTP), a 24 MP photo would take about 30 minutes
+even with Real-ESRGAN, so the tool keeps to what fits in about 10 minutes there (crops of up to
+about 8 MP). Real-ESRGAN makes 2× by upscaling 4× and averaging 2×2 blocks.
+
 ## Still open
 - Lightroom's AI mask codes checked against a real sidecar written with AI masks (the importer
   uses codes recorded by a third-party plugin).
