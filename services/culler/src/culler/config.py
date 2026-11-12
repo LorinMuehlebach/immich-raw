@@ -25,6 +25,12 @@ class GroupingConfig:
     medoid_similarity: float = 0.82  # cosine to the group's most typical frame (stops drift in a pan)
     recent_frames: int = 3
     split_by_camera: bool = True
+    # Moments: a group splits into one stack per moment. A new burst (after a pause longer than
+    # moment_gap_s) starts a new moment unless it looks like an earlier one (some pair of shots at
+    # least moment_similarity alike): a re-take stays, a new pose goes. 0 keeps one stack per scene.
+    # Provisional: the same scene measured 0.92-0.99; check `calibrate` on your own bursts.
+    moment_gap_s: float = 1.5
+    moment_similarity: float = 0.94
 
 
 @dataclass(frozen=True)

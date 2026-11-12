@@ -472,6 +472,11 @@ class Runner:
             progress("ranking", 0, 0)
         desired: list[DesiredGroup] = []
         used: set[str] = set()
+        # Old groups whose shots now sit in more than one group (split into moments): a shot the
+        # user put in front keeps its place in whichever of them it lands.
+        spread = Counter(
+            old for g in groups if len(g) > 1 for old in {rows[f]["group_id"] for f in g if f in rows} if old
+        )
         for g in groups:
             if len(g) < 2:
                 continue
@@ -479,7 +484,16 @@ class Runner:
             counts = Counter(rows[f]["group_id"] for f in g if f in rows and rows[f]["group_id"] and f not in placed)
             gid = next((x for x, _ in counts.most_common() if x not in used), None) or str(uuid.uuid4())
             used.add(gid)
-            pinned = next((f for f in g if f in rows and rows[f]["pinned"] and rows[f]["group_id"] == gid), None)
+            pinned = next(
+                (
+                    f
+                    for f in g
+                    if f in rows
+                    and rows[f]["pinned"]
+                    and (rows[f]["group_id"] == gid or (f not in placed and spread[rows[f]["group_id"]] > 1))
+                ),
+                None,
+            )
             group_frames_ = [frames_by_id[f] for f in g]
             # A group holding a bracket set stays a bracket, also with shots the user added to it.
             if any(s <= set(g) for s in brackets):

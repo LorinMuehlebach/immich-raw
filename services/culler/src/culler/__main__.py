@@ -130,10 +130,16 @@ def _run_command(args: argparse.Namespace, service) -> None:
         feats, _ = runner.measure(frames, live, cfg, None)
         emb = {fid: f.embedding for fid, f in feats.items() if f.embedding is not None}
         g = cfg.grouping
-        print(f"grouping: same scene if similarity >= {g.link_similarity} and gap <= {g.max_gap_s:.0f} s\n")
+        print(f"grouping: same scene if similarity >= {g.link_similarity} and gap <= {g.max_gap_s:.0f} s")
+        print(
+            f"moments: after a pause > {g.moment_gap_s:g} s, a new stack if similarity < {g.moment_similarity}"
+            " (to every earlier moment; here only to the shot before)\n"
+        )
         for a, b, seconds, sim in neighbour_similarities([f for f in frames if f.id in emb], emb):
-            mark = "same" if sim >= g.link_similarity and seconds <= g.max_gap_s else "    "
-            print(f"{mark}  {sim:5.3f}  {seconds:7.1f} s  {a.name} -> {b.name}")
+            same = sim >= g.link_similarity and seconds <= g.max_gap_s
+            moment = same and g.moment_similarity > 0 and seconds > g.moment_gap_s and sim < g.moment_similarity
+            mark = "new moment" if moment else "same" if same else ""
+            print(f"{mark:<10}  {sim:5.3f}  {seconds:7.1f} s  {a.name} -> {b.name}")
         return
 
     from culler.report import format_report
