@@ -44,11 +44,22 @@ the optional culler looks at photos on your own server ([Under the hood](docs/un
 
 ## Try it
 
-A throwaway Immich with immich-raw and five sample RAWs, with nothing but Docker:
+A throwaway Immich with immich-raw and five sample RAWs, with nothing but Docker. Start it straight
+from the registry (macOS, Linux):
 
 ```sh
 docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo up -d
 ```
+
+Or download its compose file first. Use this on Windows with Docker Desktop, where the `oci://`
+command currently fails, and with older Docker Compose versions:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/LorinMuehlebach/immich-raw/main/deploy/demo/compose.yml
+docker compose -f compose.yml up -d
+```
+
+In PowerShell, write `curl.exe` instead of `curl`.
 
 Open http://localhost:8088 (or `http://<this computer's address>:8088` on a phone) and log in as
 `admin@example.com` / `raw-editor-e2e`. Add `--profile culler` for auto-stacking, with bursts to try

@@ -1,12 +1,33 @@
 # Try it: a demo Immich with immich-raw
 
-One command starts a throwaway Immich with immich-raw in front of it and five sample RAW files
-(Sony, Nikon, Canon, Fujifilm, Leica; CC0, from [raw.pixls.us](https://raw.pixls.us)). Nothing
-else is needed but Docker. It doesn't touch an Immich you already run.
+A throwaway Immich with immich-raw in front of it and five sample RAW files (Sony, Nikon, Canon,
+Fujifilm, Leica; CC0, from [raw.pixls.us](https://raw.pixls.us)). Nothing else is needed but
+Docker. It doesn't touch an Immich you already run.
+
+## Start it
+
+There are two ways; both start the same demo.
+
+**Straight from the registry** (macOS, Linux):
 
 ```sh
 docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo up -d
 ```
+
+**From a downloaded compose file**: on Windows with Docker Desktop, and with Docker Compose
+versions that can't run compose files from a registry.
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/LorinMuehlebach/immich-raw/main/deploy/demo/compose.yml
+docker compose -f compose.yml up -d
+```
+
+In PowerShell, write `curl.exe` instead of `curl`. On Windows the `oci://` command currently fails
+with `proxyconnect tcp: open ./pipe/dockerHttpProxy`. Compose sends the download through Docker
+Desktop's proxy, a Windows named pipe, and can't open it (seen with Docker Compose 5.1.4).
+
+The commands below use `-f oci://ghcr.io/lorinmuehlebach/immich-raw-demo`. With the downloaded
+file, write `-f compose.yml` instead, in the folder you downloaded it to.
 
 Then open **http://localhost:8088** and log in as `admin@example.com` / `raw-editor-e2e`. Open a
 RAW from the album "immich-raw samples" and click the iris button (Edit RAW) in the viewer's
@@ -67,17 +88,8 @@ docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo --profile culler
 Keep `--profile culler` in `down` even if you never used it: without it, a culler you started
 once stays behind.
 
-## Without `oci://`
-
-Docker Compose runs compose files straight from a registry only in recent versions. With an older
-one, download the file and use it instead:
-
-```sh
-curl -fsSLO https://raw.githubusercontent.com/LorinMuehlebach/immich-raw/main/deploy/demo/compose.yml
-docker compose -f compose.yml up -d
-```
-
-On Windows, use `curl.exe` in PowerShell.
+With the downloaded file, download it again before `pull`, so that you also get changes to the
+demo itself.
 
 ## What's in it
 
@@ -95,7 +107,7 @@ address and login, so the e2e scripts run against it. To try changes, build the 
 checkout (`-p` and the port keep it apart from the test Immich):
 
 ```sh
-DEMO_PORT=8090 docker compose -f deploy/demo/compose.yml -f deploy/demo/compose.build.yml \
+DEMO_PORT=8091 docker compose -f deploy/demo/compose.yml -f deploy/demo/compose.build.yml \
   -p immich-raw-demo-test --profile culler up -d --build
 ```
 

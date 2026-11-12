@@ -5,6 +5,9 @@
 #   docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo --profile culler up -d   # + culler and bursts
 #   docker compose -f oci://ghcr.io/lorinmuehlebach/immich-raw-demo --profile culler down -v # remove it all
 #
+# On Windows with Docker Desktop, oci:// currently fails: download this file and use
+# `-f compose.yml` instead (deploy/demo/README.md).
+#
 # Open http://localhost:8088 (other devices: http://<this computer's address>:8088) and log in as
 # admin@example.com / raw-editor-e2e. More in deploy/demo/README.md. Optional settings:
 #   DEMO_PORT=8088                  the port
