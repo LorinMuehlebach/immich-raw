@@ -1,6 +1,6 @@
 import type { AssetResponseDto } from '@immich/sdk';
 import { describe, expect, it } from 'vitest';
-import { arrangeFilmstrip, captureTime, filmstripFilter, parseContext } from './context.ts';
+import { arrangeFilmstrip, captureTime, filmstripFilter, parseContext, shotSettings } from './context.ts';
 
 const ALBUM = '11111111-2222-4333-8444-555555555555';
 
@@ -66,5 +66,13 @@ describe('arrangeFilmstrip', () => {
 
   it('falls back to the file date when there is no local date', () => {
     expect(captureTime({ fileCreatedAt: '2024-01-01T00:00:00Z' } as AssetResponseDto)).toBe(Date.UTC(2024, 0, 1));
+  });
+});
+
+describe('shotSettings', () => {
+  it('lists the camera settings that are known', () => {
+    expect(shotSettings({ iso: 400, focalLength: 49.6, fNumber: 2.8, exposureTime: '1/250' })).toEqual(['ISO 400', '50 mm', 'ƒ/2.8', '1/250 s']);
+    expect(shotSettings({ iso: 100 })).toEqual(['ISO 100']);
+    expect(shotSettings(null)).toEqual([]);
   });
 });

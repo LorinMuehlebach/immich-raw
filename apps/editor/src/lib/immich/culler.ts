@@ -150,6 +150,8 @@ export const applyRun = async (id: string): Promise<string> => runId(await call(
 export const undoRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/undo`));
 export const makeBest = async (groupId: string, assetId: string): Promise<string> =>
   runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/best`, { assetId }));
+/** Sorts the group again, e.g. after photos of it were trashed (a group of one is taken apart). */
+export const recullGroup = async (groupId: string): Promise<string> => runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/recull`));
 
 export async function getRun(id: string): Promise<CullRun | null> {
   return call<CullRun>('GET', `/runs/${encodeURIComponent(id)}`);

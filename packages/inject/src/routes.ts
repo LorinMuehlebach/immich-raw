@@ -53,3 +53,11 @@ export function editorUrl(base: string, rawId: string, context: string, returnPa
   const sep = base.includes('?') ? '&' : '?';
   return `${base}${sep}${params.toString()}`;
 }
+
+/** The editor's stack window for the stack `assetId` is in, as a page of its own. */
+export function stackPageUrl(base: string, assetId: string, context: string, returnPath: string): string {
+  const params = new URLSearchParams({ stack: assetId, ctx: context });
+  if (isSafeReturnPath(returnPath)) params.set('return', returnPath);
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}${params.toString()}`;
+}

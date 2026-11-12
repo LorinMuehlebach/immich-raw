@@ -1,11 +1,13 @@
-// Adds an "Edit RAW" icon button to Immich's asset viewer toolbar, and an "Export" button to
-// the toolbar shown while photos are selected (opens the editor's export page for them).
+// Adds an "Edit RAW" icon button to Immich's asset viewer toolbar, a "Compare stack" button there
+// for photos in a culler stack (opens the editor's stack window), and an "Export" button to the
+// toolbar shown while photos are selected (opens the editor's export page for them).
 // Loaded into Immich's page by the reverse proxy (/immich-raw/inject.js) or as a userscript.
 import { HANDOFF_PREFIX, exportPageUrl, newHandoffKey, staleHandoffKeys, type ExportHandoff } from './handoff.ts';
 import { createEditTargetResolver } from './raw.ts';
-import { editorUrl, isExcludedPath, pageContext, parseViewerRoute, type ViewerRoute } from './routes.ts';
+import { editorUrl, isExcludedPath, pageContext, parseViewerRoute, stackPageUrl, type ViewerRoute } from './routes.ts';
 import { captureSelectedIds, installDownloadCatcher, selectedCount, selectionBar, visibleSelectedIds } from './selection.ts';
-import { ACTIONS_SELECTOR, BUTTON_ATTR, EXPORT_BUTTON_ATTR } from './selectors.ts';
+import { ACTIONS_SELECTOR, BUTTON_ATTR, EXPORT_BUTTON_ATTR, STACK_BUTTON_ATTR } from './selectors.ts';
+import { createCullerStackResolver } from './stack.ts';
 
 // The userscript build declares this at the top of the file so users can change it.
 declare const RAW_EDITOR_BASE: string | undefined;
@@ -20,6 +22,10 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // Material Design Icons "camera-iris" (Apache-2.0), the icon set Immich uses.
 const ICON_PATH =
   'M13.73,15L9.83,21.76C10.53,21.91 11.25,22 12,22C14.4,22 16.6,21.15 18.32,19.75L14.66,13.4M2.46,15C3.38,17.92 5.61,20.26 8.45,21.34L12.12,15M8.54,12L4.64,5.25C3,7 2,9.39 2,12C2,12.68 2.07,13.35 2.2,14H9.69M21.8,10H14.31L14.6,10.5L19.36,18.75C21,16.97 22,14.6 22,12C22,11.31 21.93,10.64 21.8,10M21.54,9C20.62,6.07 18.39,3.74 15.55,2.66L11.88,9M9.4,10.5L14.17,2.24C13.47,2.09 12.75,2 12,2C9.6,2 7.4,2.84 5.68,4.25L9.34,10.6L9.4,10.5Z';
+
+// Material Design Icons "camera-burst" (Apache-2.0), Immich's own icon for stacks.
+const STACK_ICON_PATH =
+  'M1,5H3V19H1V5M5,5H7V19H5V5M22,5H10A1,1 0 0,0 9,6V18A1,1 0 0,0 10,19H22A1,1 0 0,0 23,18V6A1,1 0 0,0 22,5M11,17L13.5,13.85L15.29,16L17.79,12.78L21,17H11Z';
 
 // Material Design Icons "export-variant" (Apache-2.0).
 const EXPORT_ICON_PATH =
@@ -113,14 +119,9 @@ function createExportButton(group: Element): HTMLButtonElement {
   return button;
 }
 
-function createButton(bar: Element, rawId: string, route: ViewerRoute): HTMLButtonElement {
-  const url = editorUrl(EDITOR_BASE, rawId, route.context, location.pathname + location.search);
-  const button = iconButton(bar.querySelector('button'), 'Edit RAW', ICON_PATH);
-  button.setAttribute(BUTTON_ATTR, '');
-  button.dataset.sourceAsset = route.assetId;
-  button.dataset.rawAsset = rawId;
+/** Opens `url` on click; Ctrl/Shift/middle click opens it in a new tab. */
+function linkTo(button: HTMLButtonElement, url: string): void {
   button.dataset.href = url;
-
   const open = (newTab: boolean) => (newTab ? window.open(url, '_blank', 'noopener') : location.assign(url));
   button.addEventListener('click', (e) => {
     e.preventDefault();
@@ -133,6 +134,23 @@ function createButton(bar: Element, rawId: string, route: ViewerRoute): HTMLButt
     e.stopPropagation();
     open(true);
   });
+}
+
+function createButton(bar: Element, rawId: string, route: ViewerRoute): HTMLButtonElement {
+  const button = iconButton(bar.querySelector('button'), 'Edit RAW', ICON_PATH);
+  button.setAttribute(BUTTON_ATTR, '');
+  button.dataset.sourceAsset = route.assetId;
+  button.dataset.rawAsset = rawId;
+  linkTo(button, editorUrl(EDITOR_BASE, rawId, route.context, location.pathname + location.search));
+  return button;
+}
+
+function createStackButton(bar: Element, route: ViewerRoute): HTMLButtonElement {
+  const button = iconButton(bar.querySelector('button'), 'Compare stack', STACK_ICON_PATH);
+  button.setAttribute(STACK_BUTTON_ATTR, '');
+  button.title = 'Compare stack with immich-raw: look through the shots of this stack, pick the best, delete the others';
+  button.dataset.sourceAsset = route.assetId;
+  linkTo(button, stackPageUrl(EDITOR_BASE, route.assetId, route.context, location.pathname + location.search));
   return button;
 }
 
@@ -142,10 +160,11 @@ function install() {
 
   installDownloadCatcher();
   const resolve = createEditTargetResolver();
+  const resolveStack = createCullerStackResolver(`${EDITOR_BASE}culler/api/v1`);
   let generation = 0;
 
-  const removeButtons = (keep?: (b: HTMLElement) => boolean) => {
-    for (const b of document.querySelectorAll<HTMLElement>(`[${BUTTON_ATTR}]`)) {
+  const removeButtons = (attr: string, keep?: (b: HTMLElement) => boolean) => {
+    for (const b of document.querySelectorAll<HTMLElement>(`[${attr}]`)) {
       if (!keep?.(b)) b.remove();
     }
   };
@@ -166,16 +185,25 @@ function install() {
     const gen = ++generation;
     const route = parseViewerRoute(location.pathname);
     if (!route || !document.querySelector(ACTIONS_SELECTOR)) {
-      removeButtons();
+      removeButtons(BUTTON_ATTR);
+      removeButtons(STACK_BUTTON_ATTR);
       return;
     }
-    const rawId = await resolve(route.assetId);
+    const [rawId, inStack] = await Promise.all([resolve(route.assetId), resolveStack(route.assetId)]);
     // A newer update (navigation, re-render) superseded this one.
     if (gen !== generation) return;
     const bar = document.querySelector(ACTIONS_SELECTOR);
-    removeButtons((b) => !!rawId && b.parentElement === bar && b.dataset.sourceAsset === route.assetId);
-    if (!rawId || !bar || bar.querySelector(`[${BUTTON_ATTR}]`)) return;
-    bar.prepend(createButton(bar, rawId, route));
+    const current = (b: HTMLElement) => b.parentElement === bar && b.dataset.sourceAsset === route.assetId;
+    removeButtons(BUTTON_ATTR, (b) => !!rawId && current(b));
+    removeButtons(STACK_BUTTON_ATTR, (b) => inStack && current(b));
+    if (!bar) return;
+    // Prepended: the stack button ends up right of Edit RAW.
+    if (inStack && !bar.querySelector(`[${STACK_BUTTON_ATTR}]`)) bar.prepend(createStackButton(bar, route));
+    if (rawId && !bar.querySelector(`[${BUTTON_ATTR}]`)) {
+      const stackButton = bar.querySelector(`[${STACK_BUTTON_ATTR}]`);
+      if (stackButton) stackButton.before(createButton(bar, rawId, route));
+      else bar.prepend(createButton(bar, rawId, route));
+    }
   }
 
   let scheduled = false;

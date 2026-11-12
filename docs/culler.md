@@ -111,11 +111,30 @@ A run that finds nothing new changes nothing.
   ◉ eyes.
 - **Tooltip:** the reason and the measurements, for example "−1.5 EV vs best" or "sharpness 54 % of
   best".
-- **Stack controls:** the number on a stack collapses it to its best photo. ★ on another photo makes
-  that one the best.
+- **Stack controls:** the number on a stack opens the stack window (below). ★ on another photo makes
+  that one the best. **Collapse stacks** in the filmstrip's header shows only the best photo of each
+  stack.
 - **Auto-stack…** previews a run (a dry run), applies it, or undoes the last one.
 - **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6" or
-  "rejected: not sharp".
+  "rejected: not sharp". Click it to open the stack window.
+
+**The stack window.** It shows the shots of one stack, best first, one at a time and large.
+- **Opening it:** the number on a stack in the filmstrip, the verdict in the editor's title line, or
+  **Compare stack** in Immich's photo viewer. That button shows on photos in a stack the culler made
+  with at least two shots. It opens the window as a page of its own; Esc goes back to Immich.
+- **Switching shots:** ← / →, Home / End, the thumbnails at the bottom, or a swipe on touch screens.
+- **Details:** the verdict and its place in the stack, sharpness and exposure compared with the best
+  shot, blown highlights, crushed shadows, the exposure error, eyes, the camera settings and the
+  files of the shot. The measurement a shot was rejected for is shown in red.
+- **Pictures:** each shot shows its edit if it has one, else the camera JPEG, else the RAW. Immich's
+  RAW previews are auto-brightened, so for exposure trust the numbers more than the RAW's picture.
+- **★ Make preferred** (or P) puts the shot in front, the same as ★ in the filmstrip.
+- **Delete others…** keeps the preferred shot and moves every other shot to Immich's trash: its RAW,
+  camera JPEG and edits. It asks first.
+  - Files in the stack the culler doesn't know are left alone.
+  - The culler then sorts the group again. With one shot left, it takes the stack apart, puts a RAW
+    + JPEG pair back into its own stack and removes the `Culling/` tags.
+  - To get the shots back, restore them from Immich's trash and run **Auto-stack…** again.
 
 The filmstrip shows only RAWs. Stacks of JPEGs are sorted too, and show in Immich.
 
@@ -218,5 +237,8 @@ enabled = true
 - **Small faces:** faces under 40 px, as in group photos taken from afar, get no eyes verdict.
 - **Starting values:** the thresholds were tuned on test bursts. Check a dry run or `calibrate` on
   your own photos.
-- **Filmstrip:** it lists RAWs only.
+- **Filmstrip:** it lists RAWs only. Stacks of JPEGs can still be opened in the stack window from
+  Immich's photo viewer.
+- **Compare stack button:** it needs the culler on the same address as Immich (the immich-raw
+  container or the proxy setup). With the userscript on another address it doesn't show.
 - **One library per container:** run one container per user.

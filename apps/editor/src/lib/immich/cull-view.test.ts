@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { arrangeGroups, badgeFor, describeMetrics, tooltipFor } from './cull-view.ts';
+import { arrangeGroups, badgeFor, describeMetrics, metricRows, tooltipFor, type MetricRow } from './cull-view.ts';
 import type { CullInfo } from './culler.ts';
 
 const info = (groupId: string, rank: number, role: CullInfo['role'], reason: CullInfo['reason'] = null, metrics = {}): CullInfo => ({
@@ -72,5 +72,44 @@ describe('badges and tooltips', () => {
     expect(describeMetrics(blink)).toEqual(['2 of 3 faces with eyes closed']);
     expect(tooltipFor('DSC1.ARW', soft)).toBe('DSC1.ARW\nRejected: not sharp (3 of 3)\nsharpness 54 % of best\n3 faces, eyes open');
     expect(tooltipFor('DSC1.ARW', null)).toBe('DSC1.ARW');
+  });
+});
+
+describe('metricRows', () => {
+  const row = (rows: MetricRow[], label: string) => rows.find((r) => r.label === label);
+
+  it('the best shot is the reference', () => {
+    const rows = metricRows({ ...info('A', 1, 'best', null, { evVsBest: 0, sharpPct: 100, clipHiPct: 0.4, clipLoPct: 2, lighting: 0.12, faces: 2, closed: 0 }), pinned: true });
+    expect(rows.map((r) => [r.label, r.value])).toEqual([
+      ['Verdict', '★ Best of 3 (your pick)'],
+      ['Sharpness', 'reference'],
+      ['Exposure', 'reference'],
+      ['Exposure error', '0.12 (0 = ideal)'],
+      ['Blown highlights', '0.4 %'],
+      ['Crushed shadows', '2 %'],
+      ['Eyes', '2 faces, eyes open'],
+    ]);
+    expect(rows.some((r) => r.bad)).toBe(false);
+  });
+
+  it('shows every measurement of a runner-up, not only the deciding ones', () => {
+    const rows = metricRows(info('A', 2, 'runner-up', null, { evVsBest: 0.1, sharpPct: 97, faces: 0 }));
+    expect(row(rows, 'Verdict')?.value).toBe('◐ Runner-up · 2 of 3');
+    expect(row(rows, 'Exposure')?.value).toBe('+0.1 EV vs best');
+    expect(row(metricRows(info('A', 2, 'runner-up', null, { evVsBest: 0.03 })), 'Exposure')?.value).toBe('±0.0 EV vs best');
+    expect(row(rows, 'Sharpness')?.value).toBe('97 % of best');
+    expect(row(rows, 'Eyes')?.value).toBe('no faces found');
+  });
+
+  it('marks the measurement a shot was rejected for', () => {
+    const bad = (reason: 'blur' | 'lighting' | 'eyes') =>
+      metricRows(info('A', 3, 'rejected', reason, { evVsBest: -1.5, lighting: 0.9, sharpPct: 54, faces: 3, closed: 1 }))
+        .filter((r) => r.bad)
+        .map((r) => r.label);
+    expect(bad('blur')).toEqual(['Verdict', 'Sharpness']);
+    expect(bad('lighting')).toEqual(['Verdict', 'Exposure', 'Exposure error']);
+    expect(bad('eyes')).toEqual(['Verdict', 'Eyes']);
+    expect(metricRows(info('A', 3, 'rejected', 'eyes', { faces: 3, closed: 1 })).at(-1)?.value).toBe('1 of 3 faces with eyes closed');
+    expect(metricRows(info('A', 3, 'rejected', 'lighting', { evVsBest: -1.5 }))[1]?.value).toBe('−1.5 EV vs best');
   });
 });

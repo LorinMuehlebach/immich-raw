@@ -106,6 +106,44 @@ export function describeMetrics(info: CullInfo): string[] {
   return lines;
 }
 
+export interface MetricRow {
+  label: string;
+  value: string;
+  /** The measurement this photo was rejected for. */
+  bad?: boolean;
+}
+
+/** "+1.5", "−0.4", and "±0.0" for anything that rounds to zero. */
+const signed = (n: number, digits: number) => {
+  const r = Number(n.toFixed(digits));
+  return `${r > 0 ? '+' : r < 0 ? '−' : '±'}${Math.abs(r).toFixed(digits)}`;
+};
+
+/** Everything the culler measured for a photo, for the stack window (also what didn't decide). */
+export function metricRows(info: CullInfo): MetricRow[] {
+  const m: CullMetrics = info.metrics ?? {};
+  const best = info.role === 'best';
+  const rows: MetricRow[] = [];
+  const badge = badgeFor(info);
+  if (badge && best) {
+    rows.push({ label: 'Verdict', value: `${badge.icon} Best${info.groupSize ? ` of ${info.groupSize}` : ''}${info.pinned ? ' (your pick)' : ''}` });
+  } else if (badge) {
+    const place = info.rank && info.groupSize ? ` · ${info.rank} of ${info.groupSize}` : '';
+    rows.push({ label: 'Verdict', value: `${badge.icon} ${badge.label}${place}`, bad: badge.tone === 'rejected' });
+  }
+  if (m.sharpPct != null) rows.push({ label: 'Sharpness', value: best ? 'reference' : `${m.sharpPct} % of best`, bad: info.reason === 'blur' });
+  if (m.evVsBest != null) rows.push({ label: 'Exposure', value: best ? 'reference' : `${signed(m.evVsBest, 1)} EV vs best`, bad: info.reason === 'lighting' });
+  if (m.lighting != null) rows.push({ label: 'Exposure error', value: `${m.lighting.toFixed(2)} (0 = ideal)`, bad: info.reason === 'lighting' });
+  if (m.clipHiPct != null) rows.push({ label: 'Blown highlights', value: `${m.clipHiPct} %` });
+  if (m.clipLoPct != null) rows.push({ label: 'Crushed shadows', value: `${m.clipLoPct} %` });
+  if (m.faces != null) {
+    const faces = `${m.faces} ${m.faces === 1 ? 'face' : 'faces'}`;
+    const value = !m.faces ? 'no faces found' : m.closed ? `${m.closed} of ${faces} with eyes closed` : `${faces}, eyes open`;
+    rows.push({ label: 'Eyes', value, bad: info.reason === 'eyes' });
+  }
+  return rows;
+}
+
 export function tooltipFor(title: string, info: CullInfo | null): string {
   const badge = badgeFor(info);
   if (!info || !badge) return title;

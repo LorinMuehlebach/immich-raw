@@ -64,8 +64,8 @@ original is deleted (to the trash, or permanently).
 - **Rendering:** a WebGL2 pipeline in a wide linear colour space. It previews at reduced size while
   you drag a slider and renders full resolution for 100 % zoom and for saving.
 - **The buttons:** a small script that the immich-raw container (or your own proxy, or a browser
-  userscript) adds to Immich's pages: Edit RAW in the photo viewer, Export in the bar shown while
-  photos are selected. To find out which photos are selected (Immich keeps only those on screen in
+  userscript) adds to Immich's pages: Edit RAW in the photo viewer, Compare stack there for photos
+  in a stack the culler made, and Export in the bar shown while photos are selected. To find out which photos are selected (Immich keeps only those on screen in
   the page), the export button presses Immich's download shortcut (Shift+D) and catches the
   request, so nothing is downloaded. Immich then clears its selection, as after a download.
 - **Stored data:** the edit settings live in Immich's asset metadata on the RAW. The original file is
@@ -330,6 +330,9 @@ The culler groups bursts and similar shots into Immich stacks and puts the best 
 on top. It tags the others with the reason they lost: lighting, blur or closed eyes. It works on
 RAWs, JPEGs and RAW + JPEG pairs. It sorts new uploads automatically, and you can run it on a day or
 an album from the editor's filmstrip (**Auto-stack…**), with a preview first and undo afterwards.
+The **stack window** (the number on a stack in the filmstrip, or **Compare stack** in Immich's photo
+viewer) shows a stack's shots one at a time with what the culler measured; pick the one you prefer
+and move the others to Immich's trash.
 
 It runs small AI models (CLIP, YuNet, MediaPipe) on the server's CPU; they are part of the image,
 which is about a 1.8 GB download. How it decides, all settings and the command line are in

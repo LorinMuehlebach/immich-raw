@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CullerError, cullerStatus, lookupCull, setCullerFetch, startRun, waitForRun } from './culler.ts';
+import { CullerError, cullerStatus, lookupCull, recullGroup, setCullerFetch, startRun, waitForRun } from './culler.ts';
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -40,6 +40,16 @@ describe('culler client', () => {
     expect((post?.headers as Record<string, string>)['X-Raw-Editor']).toBe('1');
     expect(JSON.parse(String(post?.body))).toEqual({ scope: { kind: 'album', id: 'x' }, dryRun: false });
     expect(f.mock.calls[0]![0]).toBe(`${import.meta.env.BASE_URL}culler/api/v1/runs`);
+  });
+
+  it('sorts a group again', async () => {
+    const f = vi.fn(async () => json(202, { runId: 'r2' }));
+    setCullerFetch(f);
+    expect(await recullGroup('g/1')).toBe('r2');
+    const [url, init] = f.mock.calls[0]! as unknown as [string, RequestInit];
+    expect(url).toBe(`${import.meta.env.BASE_URL}culler/api/v1/groups/g%2F1/recull`);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['X-Raw-Editor']).toBe('1');
   });
 
   it('waits for a run to finish', async () => {
