@@ -157,8 +157,9 @@ opens a page for those photos with the same checkboxes as **Auto-stack…** in t
 - **Undo** takes the stacks apart again. After a change in the stack window the run can no longer be
   undone there (undo goes newest run first).
 - **Photos taken out of stacks before** are left alone, as everywhere (see the table above), and
-  the summary says how many. **Include them** previews again with them; only stacking that preview
-  makes the culler forget that you took them apart.
+  the summary says how many. **Include previously stacked pictures** (unchecked at first), or
+  **Include them** in the summary, includes them; only stacking with it makes the culler forget
+  that you took them apart.
 - The button shows only when the culler works for you: on the same address as Immich, and run with
   your API key.
 

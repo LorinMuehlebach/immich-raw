@@ -316,7 +316,13 @@ try {
   await cullPage.locator('h2', { hasText: 'Auto-stack' }).waitFor({ timeout: 60000 });
   const cullHeading = (await cullPage.locator('h2').first().textContent())?.trim();
   const boxes = await cullPage.locator('fieldset.choices input[type="checkbox"]').count();
-  check('it opens the auto-stack page with the options', cullHeading === 'Auto-stack 4 selected photos' && boxes === 4, { cullHeading, boxes });
+  const previouslyStacked = cullPage.getByLabel('Include previously stacked pictures');
+  const forceShown = (await previouslyStacked.count()) === 1 && !(await previouslyStacked.isChecked());
+  check('it opens the auto-stack page with the options, "include previously stacked" unchecked', cullHeading === 'Auto-stack 4 selected photos' && boxes === 4 && forceShown, {
+    cullHeading,
+    boxes,
+    forceShown,
+  });
 
   const result = cullPage.locator('section.result');
   const resultText = async () => (await result.textContent().catch(() => ''))?.replace(/\s+/g, ' ').trim();
@@ -385,7 +391,7 @@ try {
   const included = await resultText();
   check(
     'Include them: the preview stacks them again, nothing changed yet',
-    /Preview: 1 stack from 4 photos/.test(included) && (await cullPage.getByLabel('Also stack photos taken out of stacks before').isChecked()) && !(await info(id.d0)).stack,
+    /Preview: 1 stack from 4 photos/.test(included) && (await cullPage.getByLabel('Include previously stacked pictures').isChecked()) && !(await info(id.d0)).stack,
     { included },
   );
   await cullPage.getByRole('button', { name: 'Stack and pick the best' }).click();

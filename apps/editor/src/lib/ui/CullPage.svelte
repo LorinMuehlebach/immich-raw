@@ -262,12 +262,10 @@
 
           <h3>What counts</h3>
           <CullOptionsFields {options} status={culler} disabled={!!busy || applied} onChange={setOptions} />
-          {#if force || takenApart}
-            <label class="force" title="Photos you took out of a stack, or whose stack you deleted, in Immich. The culler leaves them alone unless you include them here.">
-              <input type="checkbox" checked={force} disabled={!!busy || applied} onchange={(e) => setForce(e.currentTarget.checked)} />
-              Also stack photos taken out of stacks before
-            </label>
-          {/if}
+          <label class="force" title="Photos you took out of a stack, or whose stack you deleted, in Immich. The culler leaves them alone unless you include them here.">
+            <input type="checkbox" checked={force} disabled={!!busy || applied} onchange={(e) => setForce(e.currentTarget.checked)} />
+            Include previously stacked pictures
+          </label>
           {#if culler?.eyes === false}<p class="dim small">Faces, eyes and smiles are off: the culler has no face models.</p>{/if}
           {#if culler?.people === false}<p class="dim small">People without a visible face aren't found: the culler has no people model.</p>{/if}
 
