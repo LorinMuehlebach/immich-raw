@@ -316,6 +316,7 @@ class FrameResult:
 class GroupResult:
     frame_ids: list[str]  # ranked: best first
     results: dict[str, FrameResult]
+    close_call: bool = False  # the best and the next shot nearly tied: worth a look
 
     @property
     def best(self) -> str:

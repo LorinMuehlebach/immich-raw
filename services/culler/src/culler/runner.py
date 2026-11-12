@@ -539,7 +539,7 @@ class Runner:
         if tagged := tag_assets_of(plan.ops):
             if progress:
                 progress("checking tags", 0, 0)
-            want = {a: {s.tag} if (s := states.get(a)) and s.tag else set() for a in tagged}
+            want = {a: set(s.tags) if (s := states.get(a)) else set() for a in tagged}
             notes = settle_tags(self.client, want, root, self.tag_checks)
         group_primary = dict(plan.group_primary)
         flag_assets = {a for fid in flags_before for a in frames_by_id[fid].asset_ids}

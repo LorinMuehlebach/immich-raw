@@ -25,15 +25,29 @@ TAG_SUFFIX = {
     ("rejected", "lighting"): "Rejected/Lighting",
     ("rejected", "blur"): "Rejected/Blur",
     ("rejected", "eyes"): "Rejected/Eyes closed",
+    ("bracket", None): "Bracket",
 }
+CLOSE_CALL = "Close call"  # on the best shot, next to its role's tag
 
 
 def tag_value(root: str, role: str, reason: str | None) -> str:
     return f"{root}/{TAG_SUFFIX[(role, reason)]}"
 
 
+def close_call_tag(root: str) -> str:
+    return f"{root}/{CLOSE_CALL}"
+
+
 def all_tag_values(root: str) -> list[str]:
-    return [f"{root}/{s}" for s in TAG_SUFFIX.values()]
+    return [*(f"{root}/{s}" for s in TAG_SUFFIX.values()), close_call_tag(root)]
+
+
+def wanted_tags(root: str, role: str, reason: str | None, close_call: bool) -> tuple[str, ...]:
+    """The culler tags one photo should carry: its role's, and Close call on the best of a near-tie."""
+    tags = [tag_value(root, role, reason)]
+    if close_call and role == "best":
+        tags.append(close_call_tag(root))
+    return tuple(sorted(tags))
 
 
 # --- operations ---------------------------------------------------------------------------------
@@ -115,17 +129,24 @@ class AssetState:
 
     group_id: str
     frame_id: str
-    tag: str | None
+    tags: tuple[str, ...]  # the culler tags it should carry
     rating_set: bool  # the -1 on this photo was set by this service
     rating_blocked: bool  # the user changed a -1 this service set: never set it again
     meta: dict[str, Any] | None
     capture_stacked: bool = False  # its RAW + JPEG were stacked before this service grouped them
 
     def to_json(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        d = dict(self.__dict__)
+        d["tags"] = list(self.tags)
+        return d
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> AssetState:
+        d = dict(d)
+        if "tag" in d:  # stored before a photo could carry more than one culler tag
+            tag = d.pop("tag")
+            d.setdefault("tags", [tag] if tag else [])
+        d["tags"] = tuple(d.get("tags") or ())
         return cls(**d)
 
 
@@ -248,7 +269,7 @@ def plan_changes(
             own = live.stack_of(f.asset_ids[0])
             was_capture = bool(own and own.id not in culler_stack_ids and set(own.asset_ids) <= set(f.asset_ids))
             r = g.result.results[f.id]
-            want = tag_value(tag_root, r.role, r.reason)
+            want = wanted_tags(tag_root, r.role, r.reason, g.result.close_call)
             meta = {
                 "v": 1,
                 "app": APP_ID,
@@ -266,10 +287,10 @@ def plan_changes(
             for a in f.asset_ids:
                 asset = live.assets[a]
                 have = culler_tags(asset, tag_root)
-                for v in sorted(have - {want}):
+                for v in sorted(have - set(want)):
                     remove[v].append(a)
-                if want not in have:
-                    add[want].append(a)
+                for v in sorted(set(want) - have):
+                    add[v].append(a)
 
                 p = prev.get(a)
                 rating_set = bool(p and p.rating_set)
