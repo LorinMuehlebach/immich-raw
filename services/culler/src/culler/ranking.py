@@ -10,11 +10,13 @@ those that survived longer first.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from culler.brackets import middle
-from culler.checks import CHECKS, Basis, Candidate
+from culler.checks import CHECKS, Basis, Candidate, least_open
 from culler.config import Config, RankingConfig
 from culler.features.exposure import subject_exposure, subject_target
-from culler.models import Features, Frame, FrameResult, GroupResult, Reason
+from culler.models import Features, Frame, FrameResult, GroupResult, PickInfo, Reason
 
 
 def tie_break_parts(c: Candidate, top_sharpness: float) -> tuple[float, float, float]:
@@ -102,7 +104,47 @@ def rank_group(
             pinned=is_pinned and fid == best_id,
             metrics=_metrics(c, best, cfg),
         )
-    return GroupResult(frame_ids=[c.frame_id for c in ordered], results=results, close_call=close_call, margin=margin)
+    pick = None
+    if is_pinned:
+        no_picks = replace(cfg, ranking=replace(cfg.ranking, respect_favorites=False))
+        auto = rank_group(frames, features, no_picks)
+        if auto.best != best_id:
+            mine = auto.results[best_id]
+            pick = PickInfo(
+                source="you" if pinned in by_id else "favourite",
+                your_frame=best_id,
+                auto_frame=auto.best,
+                your_role=mine.role,
+                your_reason=mine.reason,
+                deltas=_pick_deltas(by_id[best_id], by_id[auto.best], cands, top_sharp, smiles),
+            )
+    return GroupResult(
+        frame_ids=[c.frame_id for c in ordered],
+        results=results,
+        close_call=close_call,
+        margin=margin,
+        pick=pick,
+    )
+
+
+def _pick_deltas(mine: Candidate, auto: Candidate, cands: list[Candidate], top_sharp: float, smiles) -> dict:
+    """How the user's shot compared, in the terms of each check (see suggest.py)."""
+    best_lit = min(cands, key=lambda x: x.badness)
+    out: dict = {
+        "sharpRatio": round(mine.sharpness / top_sharp, 3) if top_sharp > 0 else None,
+        "lightingWorse": round(mine.badness - best_lit.badness, 3),
+        "evGap": round(abs(mine.exposure.key - best_lit.exposure.key), 2),
+        "you": [round(v, 4) for v in tie_break_parts(mine, top_sharp)],
+        "auto": [round(v, 4) for v in tie_break_parts(auto, top_sharp)],
+        "smiles": [smiles(mine), smiles(auto)],
+    }
+    known = [x for x in cands if x.features.faces_known > 0]
+    if known and mine.features.faces_known > 0:
+        out["closedMore"] = mine.features.faces_closed - min(x.features.faces_closed for x in known)
+        opens = [v for x in known if (v := least_open(x)) is not None]
+        if opens and (v := least_open(mine)) is not None:
+            out["openGap"] = round(max(opens) - v, 3)
+    return out
 
 
 def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:

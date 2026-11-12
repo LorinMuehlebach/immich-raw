@@ -584,6 +584,9 @@ class Runner:
                 self.store.save_group(g.id, [f.id for f in g.frames], g.result.best, group_primary[g.id], run_id)
                 for f in g.frames:
                     self.store.save_frame(f.id, f.asset_ids, g.id)
+                if g.result.pick:
+                    self.store.save_pick(g.id, run_id, g.result.pick)
+            self.store.delete_picks([g.id for g in desired if not g.result.pick] + sorted(gone))
             for f in released:
                 self.store.save_frame(f.id, f.asset_ids, None)
             for gid in gone:
@@ -713,6 +716,7 @@ class Runner:
         with self.store.transaction():
             self.store.set_frame_flags(snap["frames"])
             self.store.set_asset_states({a: b.state for a, b in before.items()})
+            self.store.delete_picks_of_run(run_id)  # the next run finds them again
             for a, s in after.items():
                 b = before.get(a)
                 if s:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from typing import Any
 
@@ -65,4 +66,32 @@ def format_report(report: dict[str, Any]) -> str:
         lines.append("\nNo changes needed.")
     for e in report.get("errors", []):
         lines.append(f"error: {e}")
+    return "\n".join(lines)
+
+
+WHY = {"blur": "not sharp", "lighting": "lighting", "eyes": "eyes", "runner-up": "lost on the mix"}
+
+
+def format_picks(summary: dict[str, Any]) -> str:
+    """The `picks` command: how often the user chose another best, and the suggestions."""
+    n, total = summary["overruled"], summary["stacks"]
+    src = summary["bySource"]
+    lines = [
+        f"You chose another best than the culler in {n} of {total} stacks "
+        f"({src['you']} put in front, {src['favourite']} as the only favourite)."
+    ]
+    if n:
+        why = ", ".join(f"{WHY[k]} {v}" for k, v in summary["byReason"].items() if v)
+        lines.append(f"Why it had passed over your shot: {why}.")
+    if not summary["suggestions"]:
+        lines.append(f"\nNo suggestions: each needs at least {summary['minPicks']} of your picks behind it.")
+        return "\n".join(lines)
+    lines.append("\nSuggestions (preview one with: culler run --day <day> --options '<options>'):")
+    for i, s in enumerate(summary["suggestions"], start=1):
+        change = ", ".join(f"{c['key']} {c['from']} -> {c['to']}" for c in s["changes"])
+        lines.append(f"\n{i}. {change}  ({s['fixes']} of {s['of']} of your picks)")
+        lines.append(f"   {s['why']}")
+        lines.append(f"   options: {json.dumps(s['options'])}")
+        lines.append("   culler.toml:")
+        lines.extend(f"     {line}" for line in s["toml"].splitlines())
     return "\n".join(lines)

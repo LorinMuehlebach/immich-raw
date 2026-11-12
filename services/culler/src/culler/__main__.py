@@ -4,6 +4,7 @@ serve                           HTTP API + upload watcher (what the container ru
 run --day 2024-05-01 [--apply]  cull one day (dry run unless --apply); also --album, --from/--to, --ids
 undo <run id>                   undo an applied run
 runs                            recent runs
+picks                           how often you chose another best, why, and settings that would agree
 calibrate --day 2024-05-01      similarity and time gap of neighbouring photos, to tune grouping
 fetch-models                    download the model files into CULLER_MODELS_DIR
 """
@@ -43,6 +44,7 @@ def _parser() -> argparse.ArgumentParser:
     u = sub.add_parser("undo")
     u.add_argument("run_id")
     sub.add_parser("runs")
+    sub.add_parser("picks")
     f = sub.add_parser("fetch-models")
     f.add_argument("--verify", action="store_true", help="re-check the hashes of files already there")
     return parser
@@ -107,6 +109,12 @@ def _run_command(args: argparse.Namespace, service) -> None:
             undone = " (undone)" if r["undoneAt"] else ""
             kind = "dry run" if r["dryRun"] else r["origin"]
             print(f"{r['id']}  {r['status']:<7} {kind:<8} {json.dumps(r['scope'])}{undone}")
+        return
+
+    if args.cmd == "picks":
+        from culler.report import format_picks
+
+        print(format_picks(service.picks()))
         return
 
     if args.cmd == "undo":

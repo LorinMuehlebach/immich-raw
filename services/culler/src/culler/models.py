@@ -362,12 +362,39 @@ class FrameResult:
 
 
 @dataclass
+class PickInfo:
+    """The user chose another best than the culler would have: what the culler would have picked,
+    and how the user's shot compared (for the "your picks" report and its suggestions)."""
+
+    source: Literal["you", "favourite"]
+    your_frame: str
+    auto_frame: str
+    your_role: Role  # what the user's shot would have been without the pick
+    your_reason: Reason | None
+    # sharpRatio (of the sharpest shot), lightingWorse (exposure score above the best one), evGap
+    # (stops from the best-exposed shot), openGap (least open eyes below the best), closedMore,
+    # you/auto: the tie-break parts (sharpness, exposure, eyes), smiles: [you, auto]
+    deltas: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "yourFrame": self.your_frame,
+            "autoFrame": self.auto_frame,
+            "yourRole": self.your_role,
+            "yourReason": self.your_reason,
+            "deltas": self.deltas,
+        }
+
+
+@dataclass
 class GroupResult:
     frame_ids: list[str]  # ranked: best first (for a bracket: the shot in front)
     results: dict[str, FrameResult]
     close_call: bool = False  # the best and the next shot nearly tied: worth a look
     margin: float | None = None  # the best's lead over the next shot on the tie-break score
     kind: Literal["burst", "bracket"] = "burst"
+    pick: PickInfo | None = None  # the user's pick differs from the culler's
 
     @property
     def best(self) -> str:
