@@ -21,6 +21,7 @@ import {
 } from '@immich/sdk';
 import { RECIPE_KEY, RENDER_KEY, normalizeRecipe } from '@immich-raw/recipe';
 import { httpStatus } from './api.ts';
+import { copiesIn } from './copies.ts';
 import { cacheOriginal, forgetOriginal } from './download.ts';
 import { copyAlbums, errorMessage, readMetadata, renderUpdate, writeMetadata } from './save.ts';
 import { sha1Base64, uploadAsset } from './upload.ts';
@@ -132,10 +133,11 @@ export async function replaceWithDng({ raw, dng, deleteMode, conversion, onProgr
     if (fresh.stack && fresh.stack.primaryAssetId === raw.id) {
       await updateStack({ id: fresh.stack.id, stackUpdateDto: { primaryAssetId: dngId } });
     }
-    // The edited JPEG points back to its source.
+    // The edited JPEGs (the original's and each virtual copy's) point back to their source.
     const recipe = await readMetadata(raw.id, RECIPE_KEY).catch(() => null);
-    const renderId = recipe ? normalizeRecipe(recipe).render?.assetId : undefined;
-    if (renderId) {
+    const renderIds = [recipe ? normalizeRecipe(recipe).render?.assetId : undefined, ...copiesIn(items).map((c) => c.recipe.render?.assetId)];
+    for (const renderId of renderIds) {
+      if (!renderId) continue;
       const ref = await readMetadata(renderId, RENDER_KEY).catch(() => null);
       if (ref && ref.sourceAssetId === raw.id) await writeMetadata(renderId, RENDER_KEY, { ...ref, sourceAssetId: dngId });
     }

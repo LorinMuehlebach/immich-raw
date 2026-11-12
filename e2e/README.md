@@ -104,6 +104,11 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
 - Guided Upright: `node e2e/probe-upright.mjs <out-dir> [file name part]` draws guides on one seeded
   RAW (`nikon-z7` by default) and checks that they end up vertical, through moving, adding and
   deleting guides, guides that ask too much, undo and Constrain Crop. Nothing is saved.
+- Virtual copies: `node e2e/probe-copies.mjs <out-dir> [file name part]` (`canon` by default) makes
+  copies of one seeded RAW (Ctrl+' and the menu), saves one, and checks its key, its JPEG's name and
+  place in the stack, switching (menu, reload, unsaved changes), renaming, Escape and deleting. It
+  saves to Immich, then removes its copies and their JPEGs again (and a stack made only for them);
+  the original edit is not saved. Run it on `fuji` too, whose saved edit must stay in front.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

@@ -21,6 +21,8 @@ export interface UpscaledInfo {
   style: string;
   /** Hash of the edit it was rendered from. */
   recipeHash: string;
+  /** The virtual copy it was rendered from (copies.ts); null or absent for the original. */
+  copyId?: string | null;
 }
 
 export interface SaveUpscaledOptions {
@@ -63,7 +65,12 @@ export async function saveUpscaled({ raw, jpeg, info, onProgress }: SaveUpscaled
         fileCreatedAt: raw.fileCreatedAt,
         fileModifiedAt: new Date().toISOString(),
         isFavorite: raw.isFavorite,
-        metadata: [{ key: RENDER_KEY, value: { sourceAssetId: raw.id, recipeHash: info.recipeHash, app: APP_ID, upscale: { scale: info.scale, style: info.style } } }],
+        metadata: [
+          {
+            key: RENDER_KEY,
+            value: { sourceAssetId: raw.id, recipeHash: info.recipeHash, app: APP_ID, upscale: { scale: info.scale, style: info.style }, ...(info.copyId ? { copyId: info.copyId } : {}) },
+          },
+        ],
         checksum: await sha1Base64(jpeg),
       },
       (f) => progress('upload', f),

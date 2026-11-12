@@ -15,6 +15,7 @@ import {
   type AlbumResponseDto,
   type AssetResponseDto,
 } from '@immich/sdk';
+import { copyExportName, copyKey, parseCopy } from '../immich/copies.ts';
 import { downloadUncached } from '../immich/download.ts';
 import { loadRecipe, readMetadata } from '../immich/save.ts';
 import { exportFilename, type ExportPreset, type ExportPresetId } from '../state/export-settings.ts';
@@ -111,13 +112,15 @@ async function planFromAssets(assets: AssetResponseDto[], name: string, skipJpeg
   const planned: PlanAsset[] = await mapLimit(assets, LOOKUPS, async (a) => {
     const p: PlanAsset = { id: a.id, originalFileName: a.originalFileName, type: a.type, fileCreatedAt: a.fileCreatedAt };
     if (a.originalFileName.toLowerCase().endsWith('.edit.jpg')) {
-      const source = (await readMetadata(a.id, RENDER_KEY).catch(() => null))?.sourceAssetId;
+      const meta = await readMetadata(a.id, RENDER_KEY).catch(() => null);
+      const source = meta?.sourceAssetId;
       p.sourceId = typeof source === 'string' && source && (await rawAvailable(source, listed)) ? source : null;
+      if (typeof meta?.copyId === 'string' && meta.copyId) p.copyId = meta.copyId;
     }
     return p;
   });
   const { items, renders, skipped } = planItems(planned, skipJpegTwins);
-  const hasEdit = await mapLimit(items, LOOKUPS, async (it) => it.kind === 'raw' && !!(await readMetadata(it.id, RECIPE_KEY).catch(() => null)));
+  const hasEdit = await mapLimit(items, LOOKUPS, async (it) => it.kind === 'raw' && !!(await readMetadata(it.id, it.copyId ? copyKey(it.copyId) : RECIPE_KEY).catch(() => null)));
   return { source: { name }, items, edited: hasEdit.filter(Boolean).length, renders, skipped };
 }
 
@@ -198,10 +201,13 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
     };
     const asset = await getAssetInfo({ id: item.id });
     const owner = asset.owner?.name ?? o.fallbackOwner;
-    const names = { originalFileName: asset.originalFileName, preset: o.presetId, date: captureDate(asset), seq: i + 1, seqDigits, album: plan.source.name, owner };
+    // A virtual copy: its own settings, and its own name next to the original's.
+    const copy = item.copyId ? parseCopy(copyKey(item.copyId), await readMetadata(asset.id, copyKey(item.copyId)).catch(() => null)) : null;
+    const originalFileName = copy ? copyExportName(asset.originalFileName, copy.index) : asset.originalFileName;
+    const names = { originalFileName, preset: o.presetId, date: captureDate(asset), seq: i + 1, seqDigits, album: plan.source.name, owner };
     let image: ImageData | null;
     if (item.kind === 'raw') {
-      image = await raws.render(asset, await loadRecipe(asset.id), (s, f) => report(s, f));
+      image = await raws.render(asset, copy ? copy.recipe : await loadRecipe(asset.id), (s, f) => report(s, f));
     } else {
       report('download');
       const bytes = await downloadUncached(asset.id, (f) => report('download', f));

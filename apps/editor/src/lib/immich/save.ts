@@ -1,5 +1,6 @@
 // Loads and saves edits. The RAW file is never touched: the render is uploaded as a new
-// asset, stacked on top of the RAW, and the recipe is stored on the RAW's metadata.
+// asset, stacked on top of the RAW, and the recipe is stored on the RAW's metadata. A virtual
+// copy (copies.ts) is saved the same way, under its own key and with its own render.
 import {
   addAssetsToAlbum,
   bulkTagAssets,
@@ -21,6 +22,7 @@ import {
 import { zoneOffsetMinutes } from '@immich-raw/pipeline';
 import { APP_ID, RECIPE_KEY, RENDER_KEY, cloneRecipe, normalizeRecipe, recipeHash, type Recipe } from '@immich-raw/recipe';
 import { httpStatus } from './api.ts';
+import { copyRenderFilename, copyValue, parseCopy, recipeKeyFor, type CopyMeta } from './copies.ts';
 import { cullerStatus } from './culler.ts';
 import { keepsOtherCaptureInFront, planStack } from './stack-planner.ts';
 import { sha1Base64, uploadAsset } from './upload.ts';
@@ -52,11 +54,13 @@ export interface SaveOptions {
   /** The recipe to save. Its `render` field must be what was loaded (the previous render). */
   recipe: Recipe;
   jpeg: Blob;
+  /** The virtual copy being saved; absent or null for the original edit. */
+  copy?: CopyMeta | null;
   onProgress?: (step: SaveStep, fraction: number) => void;
 }
 
 /** Runs the whole save flow and returns the stored recipe (with `render` filled in). */
-export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions): Promise<Recipe> {
+export async function saveRender({ raw, recipe, jpeg, copy = null, onProgress }: SaveOptions): Promise<Recipe> {
   let step: SaveStep = 'prepare';
   const progress = (s: SaveStep, f: number) => {
     step = s;
@@ -64,17 +68,22 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
   };
   progress('prepare', 0);
 
-  const stored = await readMetadata(raw.id, RECIPE_KEY).catch(() => null);
+  const key = recipeKeyFor(copy?.id ?? null);
+  const stored = await readMetadata(raw.id, key).catch(() => null);
+  const storedCopy = stored && copy ? parseCopy(key, stored) : null;
+  const storedRecipe = stored ? (copy ? storedCopy?.recipe : normalizeRecipe(stored)) : undefined;
   const hash = await recipeHash(recipe);
   const checksum = await sha1Base64(jpeg);
-  const previousRenderId = recipe.render?.assetId ?? (stored ? normalizeRecipe(stored).render?.assetId : undefined) ?? null;
+  const previousRenderId = recipe.render?.assetId ?? storedRecipe?.render?.assetId ?? null;
+  // A copy keeps the name it has now (it may have been renamed elsewhere since).
+  const write = (r: Recipe) => (copy ? writeMetadata(raw.id, key, copyValue({ ...copy, name: storedCopy?.name ?? copy.name, recipe: r })) : writeRecipe(raw.id, r));
 
   let renderId: string | null = null;
   try {
     // 0: mark the save as in progress, so an interrupted save can be found again.
     const pending = cloneRecipe(recipe);
     pending.pending = { recipeHash: hash, checksum, startedAt: new Date().toISOString() };
-    await writeRecipe(raw.id, pending);
+    await write(pending);
     progress('prepare', 1);
 
     // 2: upload the render.
@@ -82,11 +91,11 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     const uploaded = await uploadAsset(
       {
         file: jpeg,
-        filename: renderFilename(raw.originalFileName),
+        filename: copy ? copyRenderFilename(raw.originalFileName, copy.index) : renderFilename(raw.originalFileName),
         fileCreatedAt: raw.fileCreatedAt,
         fileModifiedAt: new Date().toISOString(),
         isFavorite: raw.isFavorite,
-        metadata: [{ key: RENDER_KEY, value: { sourceAssetId: raw.id, recipeHash: hash, app: APP_ID } }],
+        metadata: [{ key: RENDER_KEY, value: { sourceAssetId: raw.id, recipeHash: hash, app: APP_ID, ...(copy ? { copyId: copy.id } : {}) } }],
         checksum,
       },
       (f) => progress('upload', f),
@@ -120,6 +129,7 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
       uploadWasDuplicate: isDuplicate,
       newRenderIsTrashed: renderInfo?.isTrashed ?? false,
       keepPrimary,
+      copyId: copy?.id ?? null,
     });
     if (plan.restoreIds.length) await restoreAssets({ bulkIdsDto: { ids: plan.restoreIds } });
     if (plan.createStackIds.length >= 2) await createStack({ stackCreateDto: { assetIds: plan.createStackIds } });
@@ -130,7 +140,7 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     const final = cloneRecipe(recipe);
     delete final.pending;
     final.render = { assetId: renderId, recipeHash: hash, checksum, renderedAt: new Date().toISOString() };
-    await writeRecipe(raw.id, final);
+    await write(final);
     progress('recipe', 1);
 
     // 6: trash the previous render. A failure here leaves an extra JPEG, not a broken save.
@@ -150,8 +160,8 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     // Nothing was created: put the stored recipe back so no stale "pending" remains.
     if (!renderId) {
       try {
-        if (stored) await writeMetadata(raw.id, RECIPE_KEY, stored);
-        else await deleteAssetMetadata({ id: raw.id, key: RECIPE_KEY });
+        if (stored) await writeMetadata(raw.id, key, stored);
+        else await deleteAssetMetadata({ id: raw.id, key });
       } catch {
         // best effort
       }
@@ -238,11 +248,12 @@ export async function copyCullTags(raw: AssetResponseDto, renderId: string): Pro
   }
 }
 
-async function loadRenderInfo(id: string): Promise<{ id: string; isTrashed: boolean; sourceAssetId: string | null } | null> {
+async function loadRenderInfo(id: string): Promise<{ id: string; isTrashed: boolean; sourceAssetId: string | null; copyId: string | null } | null> {
   try {
     const [info, meta] = await Promise.all([getAssetInfo({ id }), readMetadata(id, RENDER_KEY)]);
     const source = meta?.sourceAssetId;
-    return { id: info.id, isTrashed: info.isTrashed, sourceAssetId: typeof source === 'string' ? source : null };
+    const copyId = meta?.copyId;
+    return { id: info.id, isTrashed: info.isTrashed, sourceAssetId: typeof source === 'string' ? source : null, copyId: typeof copyId === 'string' ? copyId : null };
   } catch (e) {
     const status = httpStatus(e);
     if (status === 400 || status === 404) return null; // deleted for good

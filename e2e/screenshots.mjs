@@ -1,7 +1,7 @@
 // Takes the screenshots of the guides in docs/ (docs/images/<section>/<name>.jpg) on a test Immich
 // with the five seeded sample RAWs: the try-it demo (deploy/demo) or the e2e test Immich.
 // Usage: node e2e/screenshots.mjs [section ...]      (default: all sections)
-//   sections: getting-started editing upright masks polygon workflow scopes export upscale dng stacking mobile
+//   sections: getting-started editing upright masks polygon workflow scopes copies export upscale dng stacking mobile
 //   IMMICH_URL (default http://127.0.0.1:8088); HEADED=1 shows the browser.
 // - Needs internet once, for the AI mask and upscale models and the Fujifilm looks. They stay in
 //   the browser profile in e2e/out/screenshots-profile.
@@ -29,6 +29,7 @@ const SECTIONS = {
   polygon,
   workflow,
   scopes,
+  copies,
   export: exporting,
   upscale,
   dng,
@@ -331,6 +332,23 @@ async function scopes() {
   // The scope is kept in the browser profile: leave the histogram for the other sections.
   await page.getByRole('button', { name: 'Histogram', exact: true }).click();
   await settle(300);
+}
+
+/** Virtual copies (in the workflow guide): a black-and-white copy and the menu. */
+async function copies() {
+  await openEditor(await find('fuji-xt5'), { reset: false });
+  // A copy for the picture, deleted again afterwards.
+  await ed(() => globalThis.__editor.newVirtualCopy());
+  await page.waitForFunction(() => !!globalThis.__editor.copyId);
+  await ed(() => globalThis.__editor.renameCopy(globalThis.__editor.copyId, 'Black & white'));
+  await page.locator('aside.side .line:has(.lbl:text-is("Profile")) select').selectOption('monochrome');
+  await blur();
+  await settle(1200);
+  await page.locator('.copies .switch').click();
+  await settle(300);
+  await shot('workflow', 'virtual-copies', page, { clip: { x: 0, y: 0, width: 1000, height: 460 } });
+  await page.keyboard.press('Escape');
+  await ed(() => globalThis.__editor.deleteCopy(globalThis.__editor.copyId));
 }
 
 async function workflow() {

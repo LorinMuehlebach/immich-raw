@@ -32,6 +32,7 @@
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
   import UnsavedDialog from './lib/ui/UnsavedDialog.svelte';
+  import CopyMenu from './lib/ui/CopyMenu.svelte';
   import UpscaleOverlay from './lib/ui/UpscaleOverlay.svelte';
   import UprightOverlay from './lib/ui/UprightOverlay.svelte';
   import UpscalePanel from './lib/ui/UpscalePanel.svelte';
@@ -146,7 +147,8 @@
   // Leaving with unsaved changes asks first: Yes saves, No discards, Cancel stays.
   // The target is a function: after saving, "back" points at the new render.
   // back: returning to Immich, which should show the saved render (see editor.waitForRender).
-  let leaving = $state<{ target: () => string; back: boolean } | null>(null);
+  // run: switching to another edit of the same RAW (a virtual copy) instead of leaving the page.
+  let leaving = $state<{ target: () => string; back: boolean; run?: () => Promise<void> } | null>(null);
   let leaveSaving = $state(false);
   let discarding = false;
 
@@ -168,15 +170,23 @@
     leaveSaving = false;
     leaving = null;
     // A failed save keeps the editor open; the error is shown.
-    if (ok) await go(l.target, l.back);
+    if (ok) await (l.run ? l.run() : go(l.target, l.back));
   }
 
   function leaveDiscard() {
     const l = leaving;
     leaving = null;
     if (!l) return;
+    if (l.run) return void l.run();
     discarding = true;
     void go(l.target, l.back);
+  }
+
+  /** The original edit (null) or a virtual copy of this RAW, asking first about unsaved changes. */
+  function switchEdit(copyId: string | null) {
+    const run = () => editor.openEdit(copyId);
+    if (!editor.dirty) void run();
+    else leaving = { target: () => location.href, back: false, run };
   }
 
   function goBack() {
@@ -244,6 +254,10 @@
     } else if (mod && e.key === ']') {
       e.preventDefault();
       editor.rotate90(1);
+    } else if (mod && !e.shiftKey && !e.altKey && (e.key === "'" || e.code === 'Quote')) {
+      // Lightroom's Create Virtual Copy.
+      e.preventDefault();
+      void editor.newVirtualCopy();
     } else if (mod || e.altKey) {
       return;
     } else if (key === 't' && e.shiftKey) {
@@ -463,6 +477,7 @@
         {/if}
       </div>
     </div>
+    <CopyMenu onSwitch={switchEdit} />
     <div class="spacer"></div>
     <button class="icon" onclick={() => editor.undo()} disabled={!editor.canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.98 7.98 0 0 1 20.48 16l2.37-.78A10.5 10.5 0 0 0 12.5 8z" /></svg>
@@ -740,6 +755,7 @@
             <div><kbd>←</kbd><kbd>→</kbd> filmstrip</div>
             <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
             <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
+            <div><kbd>Ctrl</kbd>+<kbd>'</kbd> virtual copy</div>
             <div><kbd>Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste</div>
             <div><kbd>Alt</kbd>-drag: clipping</div>
             <div><kbd>Ctrl</kbd>+<kbd>U</kbd> auto tone</div>
