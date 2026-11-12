@@ -90,6 +90,10 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
 
   To compare builds side by side, run the editor's dev server from each checkout on its own port
   and point `IMMICH_URL` at it, e.g. `IMMICH_URL=http://localhost:5174`.
+- Scopes: `node e2e/probe-scopes.mjs <out-dir> [file name part]` switches between the histogram,
+  waveform, RGB parade and vectorscope on one seeded RAW (`nikon-z7` by default), checks that each
+  counts every pixel, that the waveform rises with Exposure and that the choice survives a reload,
+  and writes a picture of each. Nothing is saved.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

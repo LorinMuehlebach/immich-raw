@@ -11,7 +11,6 @@ export {
   sampleSource,
   type AiMaskMap,
   type ExportProgress,
-  type Histogram,
   type MaskView,
   type Rect,
   type RenderOptions,
@@ -28,3 +27,4 @@ export { outputSharpen, sharpenParams, type RgbaImage, type SharpenLevel, type S
 export { drawWatermark, watermarkLayout, type WatermarkOptions, type WatermarkPosition } from './export/watermark.ts';
 export { buildTiff as buildExifTiff, exifFromImmich, insertExif, zoneOffsetMinutes, type ExifFields, type ImmichExifLike } from './export/jpeg-segments.ts';
 export * from './brush.ts';
+export * from './scopes.ts';
