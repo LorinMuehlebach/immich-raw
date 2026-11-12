@@ -1,7 +1,7 @@
 // Takes the screenshots of the guides in docs/ (docs/images/<section>/<name>.jpg) on a test Immich
 // with the five seeded sample RAWs: the try-it demo (deploy/demo) or the e2e test Immich.
 // Usage: node e2e/screenshots.mjs [section ...]      (default: all sections)
-//   sections: getting-started editing masks workflow export upscale dng stacking mobile
+//   sections: getting-started editing masks workflow scopes export upscale dng stacking mobile
 //   IMMICH_URL (default http://127.0.0.1:8088); HEADED=1 shows the browser.
 // - Needs internet once, for the AI mask and upscale models and the Fujifilm looks. They stay in
 //   the browser profile in e2e/out/screenshots-profile.
@@ -26,6 +26,7 @@ const SECTIONS = {
   editing,
   masks,
   workflow,
+  scopes,
   export: exporting,
   upscale,
   dng,
@@ -266,6 +267,25 @@ async function masks() {
   await ai('People').click();
   await page.locator('.picker').waitFor();
   await shot('masks', 'ai-people', maskSettings());
+}
+
+/** The waveform and the vectorscope (in the workflow guide). */
+async function scopes() {
+  // The colour checker shows them best: its patches are flat bars in the waveform and points of
+  // their own hue in the vectorscope.
+  await openEditor(await find('nikon-z7'));
+  await page.getByRole('button', { name: 'Auto', exact: true }).click();
+  await setSlider('Vibrance', 30);
+  await blur();
+  await page.getByRole('button', { name: 'Waveform', exact: true }).click();
+  await settle();
+  await shot('workflow', 'waveform');
+  await page.getByRole('button', { name: 'Vectorscope', exact: true }).click();
+  await settle();
+  await shot('workflow', 'vectorscope', page.locator('.scopes'));
+  // The scope is kept in the browser profile: leave the histogram for the other sections.
+  await page.getByRole('button', { name: 'Histogram', exact: true }).click();
+  await settle(300);
 }
 
 async function workflow() {

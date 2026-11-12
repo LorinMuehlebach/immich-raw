@@ -34,7 +34,10 @@ import {
   isTransformActive,
   maxViewRect,
   quarterTurnsFromFlip,
+  SCOPE_KINDS,
+  SCOPE_SAMPLE_WIDTH,
   sampleSource,
+  scopeOf,
   tempTintForNeutral,
   totalTurns,
   transformInverse,
@@ -48,6 +51,8 @@ import {
   type LensData,
   type MaskView,
   type ProfileLooks,
+  type ScopeData,
+  type ScopeKind,
   type ViewRect,
 } from '@immich-raw/pipeline';
 import {
@@ -325,6 +330,7 @@ const COLOR_FALLBACK = "The Fujifilm film look isn't downloaded in this browser,
 const PREVIOUS_KEY = 'raw-editor.previous';
 const AUTO_PARAMS_KEY = 'raw-editor.autoParams';
 const EXPORT_KEY = 'raw-editor.export';
+const SCOPE_KEY = 'raw-editor.scope';
 
 function storageGet<T>(key: string): T | null {
   try {
@@ -376,6 +382,9 @@ export class Editor {
   clipping = $state(false);
   maskView = $state<MaskView>('none');
   histogram = $state<Histogram | null>(null);
+  /** Which scope shows above the panels (kept in this browser), and its data when it isn't the histogram. */
+  scope = $state<ScopeKind>(SCOPE_KINDS.find((k) => k === storageGet<string>(SCOPE_KEY)) ?? 'histogram');
+  scopeData = $state<ScopeData | null>(null);
   fullStatus = $state<'idle' | 'decoding' | 'ready' | 'error'>('idle');
   /** A save, export or upscale in progress; `cancel` when it can be stopped. */
   saving = $state<{ label: string; fraction: number; cancel?: () => void } | null>(null);
@@ -756,8 +765,21 @@ export class Editor {
       // While zoomed the canvas shows a region; the histogram is of the whole image.
       if (this.zoom.on && this.tool !== 'crop') r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
       else if (this.overlayMask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
-      this.histogram = r.histogram();
+      if (this.scope === 'histogram') {
+        this.histogram = r.histogram();
+      } else {
+        const img = r.scopeImage(SCOPE_SAMPLE_WIDTH[this.scope]);
+        this.scopeData = img && scopeOf(this.scope, img);
+      }
     }, wait);
+  }
+
+  setScope(kind: ScopeKind): void {
+    if (this.scope === kind) return;
+    this.scope = kind;
+    this.scopeData = null;
+    storageSet(SCOPE_KEY, kind);
+    this.scheduleHistogram();
   }
 
   // ---------------------------------------------------------------- editing

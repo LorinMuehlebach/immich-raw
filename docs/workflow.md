@@ -2,10 +2,16 @@
 
 Tools around the edit: seeing it, going back, reusing it and moving between photos.
 
-## Histogram, clipping, before/after and zoom
+## Histogram and scopes, clipping, before/after and zoom
 
 - **Histogram** at the top right, with the camera settings. J shows clipping in the photo (or
   click the triangles); Alt-dragging a tone slider shows what it clips.
+- **Scopes:** the buttons under the histogram switch it to
+  - a **waveform**: the brightness of the photo from left to right, black at the bottom;
+  - an **RGB parade**: the same for red, green and blue side by side;
+  - a **vectorscope**: hue and saturation, with the 75 % colour targets and the skin tone line.
+
+  The choice is kept in the browser.
 - **Before/after:** `\` or **Before** in the header.
 - **Zoom:** double-click the photo or Z for 100 %; Ctrl + mouse wheel, or pinch on a trackpad, for
   free zoom up to 800 %.
@@ -13,6 +19,10 @@ Tools around the edit: seeing it, going back, reusing it and moving between phot
 ![Before/after](images/workflow/before-after.jpg)
 
 ![Clipping warnings (J): blown highlights in red](images/workflow/clipping.jpg)
+
+![The waveform of a colour checker: each row of patches is a flat bar](images/workflow/waveform.jpg)
+
+![The vectorscope of the same photo](images/workflow/vectorscope.jpg)
 
 ## History, snapshots and undo
 

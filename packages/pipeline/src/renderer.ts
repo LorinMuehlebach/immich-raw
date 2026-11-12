@@ -12,6 +12,7 @@ import { GLContext, type Program, type Target } from './gl.ts';
 import { NO_LENS, defringeUniforms, lensModel, lensSourcePoint, lensUniforms, type LensData, type LensModel } from './lens.ts';
 import { MaskRefiner } from './mask-refine.ts';
 import { colorFeature, maskFrameScale, maskUniforms, type MaskResources } from './masks.ts';
+import { histogramOf, type Histogram, type ScopeImage } from './scopes.ts';
 import * as S from './shaders.ts';
 import { developUniforms, finishUniforms, lookUniforms, STATIC_UNIFORMS, type CameraInfo } from './uniforms.ts';
 
@@ -66,14 +67,6 @@ export interface ZoomView {
   /** Canvas size in device pixels. */
   width: number;
   height: number;
-}
-
-export interface Histogram {
-  r: Uint32Array;
-  g: Uint32Array;
-  b: Uint32Array;
-  /** Pixels counted. */
-  total: number;
 }
 
 export interface ExportProgress {
@@ -966,25 +959,27 @@ export class Renderer {
 
   /** Histogram of the last fitted render (display values, inside the image only). */
   histogram(): Histogram | null {
+    const img = this.scopeImage(256);
+    return img && histogramOf(img);
+  }
+
+  /**
+   * A small copy of the last fitted render for the scopes: `width` pixels wide, display values,
+   * alpha below 128 outside the image.
+   */
+  scopeImage(width: number): ScopeImage | null {
     const gl = this.gl;
     const fin = this.t['fit.fin'];
     if (!fin) return null;
-    const tw = 256;
-    const th = Math.max(1, Math.round((256 * fin.height) / fin.width));
+    const tw = Math.max(1, Math.round(width));
+    const th = Math.max(1, Math.round((tw * fin.height) / fin.width));
     const thumb = this.target('thumb', tw, th, gl.RGBA8);
     this.ctx.draw(this.p.thumb, thumb, { uImg: fin.tex }, { uSize: [tw, th] });
-    const px = new Uint8Array(tw * th * 4);
+    // The chain's targets hold the top of the image in row 0 (FS_PRESENT flips), so no flip here.
+    const data = new Uint8Array(tw * th * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, thumb.fb);
-    gl.readPixels(0, 0, tw, th, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    const h: Histogram = { r: new Uint32Array(256), g: new Uint32Array(256), b: new Uint32Array(256), total: 0 };
-    for (let i = 0; i < px.length; i += 4) {
-      if (px[i + 3]! < 128) continue;
-      h.r[px[i]!]!++;
-      h.g[px[i + 1]!]!++;
-      h.b[px[i + 2]!]!++;
-      h.total++;
-    }
-    return h;
+    gl.readPixels(0, 0, tw, th, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    return { width: tw, height: th, data };
   }
 
   /**

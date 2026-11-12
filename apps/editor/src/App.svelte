@@ -27,7 +27,7 @@
   import DetailPanel from './lib/ui/DetailPanel.svelte';
   import DngPanel from './lib/ui/DngPanel.svelte';
   import Filmstrip from './lib/ui/Filmstrip.svelte';
-  import Histogram from './lib/ui/Histogram.svelte';
+  import Scopes from './lib/ui/Scopes.svelte';
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
@@ -677,7 +677,15 @@
       {#if compact && tab === 'presets'}
         {#if editor.status === 'ready'}{@render library()}{/if}
       {:else}
-        <Histogram histogram={editor.histogram} clipping={editor.clipping} onToggleClipping={() => editor.toggleClipping()} {info} />
+        <Scopes
+          kind={editor.scope}
+          histogram={editor.histogram}
+          data={editor.scopeData}
+          clipping={editor.clipping}
+          onToggleClipping={() => editor.toggleClipping()}
+          onKind={(k) => editor.setScope(k)}
+          {info}
+        />
         {#if editor.status === 'ready'}
           {#if editor.tool === 'crop'}
             <CropPanel />
