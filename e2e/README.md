@@ -75,6 +75,13 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   can log in with the test password; run the same command without `E2E_BIND` to close it again.
 - Decoder build: `node e2e/probe-decoder-compare.mjs <samples-dir>` decodes the samples with
   `packages/libraw/lib` and the npm libraw-wasm 1.6.0 it replaced, and checks the output is the same.
+- Opening speed: `node e2e/probe-open-speed.mjs <out-dir> [sony,canon,fuji]` opens each RAW in the
+  editor, once downloading the original and once from the browser's cache, and reports the median
+  time until the photo shows plus the editor's own `immich-raw:*` step timings. Nothing is saved.
+  To compare two editor builds, serve the second one at another address (for example a second
+  nginx container on the e2e network with `-p 127.0.0.1:8087:80` and that build mounted at
+  `/usr/share/nginx/immich-raw`), then pass both:
+  `IMMICH_URLS=http://127.0.0.1:8088,http://127.0.0.1:8087`. The runs alternate between them.
 - AI masks: `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>` makes a Sky, Subject, Landscape,
   Object and People mask on one photo (`leica-q2.DNG` has sky, water and a ferry), then exports it.
   It needs internet: the models (about 316 MB) download on first use and stay in the browser

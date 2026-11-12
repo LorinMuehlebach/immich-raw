@@ -170,6 +170,69 @@ of 2 runs each; the half-size rows for Canon and Sony were re-run 6 times (first
 "Identical" means the same bytes in the image (or raw sensor data) and in the full metadata.
 Speed is unchanged within the run-to-run noise.
 
+### Opening a photo: where the time goes (2026-11-12)
+
+Same machine; the shared e2e Immich was running. Two measurements:
+- **Bench:** `Q= WARM=1 TILES=2 node spikes/decode-bench/run-bench.mjs`, the npm libraw-wasm build in
+  headless Edge.
+- **Editor:** `e2e/probe-open-speed.mjs`, 3 opens per file and cache state, alternating between two
+  editor builds. Timed from navigating to the editor until the photo shows.
+
+**`open` only parses the file (35–170 ms). Unpacking and processing both happen in `imageData`.**
+On a worker started 2 s earlier, `open` took 35–77 ms instead of 58–157 ms. So starting the worker
+early saves 20–120 ms.
+
+**Splitting a decode into 2 horizontal stripes (`cropbox`, 24 rows of overlap, 2 workers at once):**
+
+| File | Half: whole | Half: 2 stripes | Full: whole | Full: 2 stripes | Stripes identical |
+|---|---|---|---|---|---|
+| Canon R5 CR3 | 1073 ms | 874 ms | 4286 ms | 2292 ms | no (see below) |
+| Fuji X-T5 RAF (q2) | 2426 ms | 2296 ms | 14904 ms | 12357 ms | half yes, full no (130 of 5178 rows) |
+| Leica Q2 DNG | 2527 ms | 2950 ms | 9665 ms | 3848 ms | yes |
+| Nikon Z7 NEF | 1946 ms | 1931 ms | 5864 ms | 3644 ms | yes |
+| Sony A7R V ARW | 1686 ms | 1758 ms | 5929 ms | 3858 ms | yes |
+
+- **The half decode doesn't get faster.** Each worker still unpacks the whole file, and the unpacking is
+  most of a half decode.
+- **Bayer full decodes take 0.5–0.65× as long** (the Leica "whole" run was slow; earlier runs measured
+  4.6–5.2 s).
+- **X-Trans gains little:** 0.83×.
+- **Canon CR3 fails the check** for two reasons:
+  - its full decode is 8191×5463, while LibRaw's metadata says 8190×5462, so the stripes were cut
+    1 pixel too narrow;
+  - the half-size stripes are binned on a different colour-pattern phase.
+
+  Stripe edges must be aligned in raw coordinates (`top_margin` + y), not just in image coordinates.
+- **Memory:** with 2 stripes, the browser's peak was up to 0.4 GB higher than for one decode.
+
+**Editor, median ms until the photo shows** (before: main; after: the original downloads alongside
+the recipe, the worker starts early, the shaders compile during the decode, and a cache hit doesn't
+wait for the cache index):
+
+| File | Original | Before | After |
+|---|---|---|---|
+| Sony A7R V ARW | downloaded | 3432 | 3104 |
+| | from cache | 2247 | 2290 |
+| Canon CR3 | downloaded | 2189 | 2077 |
+| | from cache | 1712 | 1616 |
+| Fuji X-T5 RAF | downloaded | 3664 | 3702 |
+| | from cache | 3308 | 3331 |
+
+The editor's own timings (`immich-raw:*` measures, after):
+
+| Step | Time |
+|---|---|
+| asset info | 10–30 ms |
+| recipe and snapshots | 15–80 ms |
+| download over localhost | 320–820 ms (cache hit: 45–160 ms) |
+| renderer (shader compiling) | 50–100 ms |
+| half decode (Canon, Sony, Fuji) | 1.0, 1.5–2.0, 2.3–2.7 s |
+| first render | 40–50 ms (Fuji: 160–280 ms) |
+
+**The half decode is 60–75 % of the time until the photo shows.** Reordering the steps around it
+saves 0.1–0.3 s on this machine and network, mostly on downloads. Making the half decode itself
+faster takes a faster unpack, i.e. threads in the decoder.
+
 ### AI masks: model choice (2026-11-11)
 
 Candidates had to have a permissive licence (MIT, Apache-2.0, BSD; no non-commercial weights),

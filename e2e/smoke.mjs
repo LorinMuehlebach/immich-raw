@@ -97,6 +97,15 @@ try {
   const t0 = Date.now();
   await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
   check('editor opens and renders', true, { seconds: (Date.now() - t0) / 1000 });
+  // The editor's own timings of the open sequence (immich-raw:* measures), in ms.
+  const timings = await page.evaluate(() =>
+    performance
+      .getEntriesByType('measure')
+      .filter((m) => m.name.startsWith('immich-raw:'))
+      .map((m) => ({ step: m.name.slice('immich-raw:'.length), startMs: Math.round(m.startTime), ms: Math.round(m.duration) })),
+  );
+  console.table(timings);
+  writeFileSync(join(outDir, 'open-timings.json'), JSON.stringify(timings, null, 2));
   await page.waitForTimeout(800);
   await page.screenshot({ path: join(outDir, '1-opened.png') });
 
