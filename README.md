@@ -104,6 +104,14 @@ Whole photos need a graphics card the browser can use (WebGPU), so open the edit
   model averages 2×2 blocks. The model is downloaded once, after asking, and the photo never leaves
   the browser. Speeds and the model comparison are in
   [docs/spike-results.md](docs/spike-results.md#ai-upscale-model-choice-2026-11-12).
+- **Fujifilm film looks:** community look tables by
+  [abpy](https://github.com/abpy/FujifilmCameraProfiles) (CC BY-NC-SA 4.0), modelled on the
+  camera-matching profiles for Fujifilm X cameras. They are not part of immich-raw: the editor asks
+  before downloading them from GitHub (about 15 MB, once) and keeps them in the browser. A Fujifilm
+  RAW offers the download when it opens; without it, the photo shows with Color. The looks are DNG
+  profile tables (hue, saturation and value changes plus a tone curve) applied after the editor's own
+  camera colour, so very saturated colours can differ a little from Lightroom's camera-matching
+  profiles.
 - **Culler (optional):** a separate small service that groups bursts of similar shots into stacks,
   puts the best one on top and tags why the others lost (lighting, blur, closed eyes). People come
   first: their faces' exposure counts most, and among good shots the one with the most smiles wins.
@@ -116,6 +124,13 @@ Whole photos need a graphics card the browser can use (WebGPU), so open the edit
 
 - **Basic:** profile, white balance (as shot, presets, custom, picker), exposure, contrast, highlights,
   shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation.
+- **Profiles:** Color, Vivid, Portrait, Landscape, Neutral, Monochrome and Linear, plus the Fujifilm
+  film looks (Provia, Velvia, Astia, Classic Chrome, Reala Ace, Pro Neg. Hi and Std, Classic Neg.,
+  Nostalgic Neg., Eterna, Eterna Bleach Bypass) for photos from any camera. Vivid, Portrait,
+  Landscape and the film looks have an Amount slider (0 to 200 %). A Fujifilm RAW opens with the film
+  simulation it was shot with; Acros and the other monochrome simulations open as Monochrome, with
+  a B&W mix for the red, yellow or green filter. Lightroom's names for these profiles ("Adobe Vivid",
+  "Camera CLASSIC CHROME") are recognised when importing presets and sidecars.
 - **Auto tone (Ctrl+U)** sets exposure, contrast, highlights, shadows, whites and blacks for the photo.
   Shift+double-click a slider name to set only that slider. The gear next to Auto sets how it behaves.
 - **Tone curve:** parametric and point curves, RGB and per channel.

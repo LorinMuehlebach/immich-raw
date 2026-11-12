@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PARAMS } from './params.ts';
+import { FUJI_PROFILE_IDS, PROFILES, isProfileId, profileInfo } from './profiles.ts';
 import { canonicalJson, defaultRecipe, isDefaultRecipe, normalizeRecipe, recipeHash } from './recipe.ts';
 
 describe('defaultRecipe', () => {
@@ -97,5 +98,32 @@ describe('tone curve', () => {
     expect(r.toneCurve.point.master).toEqual([[0, 10], [128, 128], [255, 240]]);
     expect(r.toneCurve.point.red).toEqual([[0, 0], [255, 255]]);
     expect(r.toneCurve.parametric.midtoneSplit).toBe(50);
+  });
+});
+
+describe('profiles', () => {
+  it('lists every profile once, in both groups', () => {
+    const ids = PROFILES.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(PROFILES.filter((p) => p.group === 'fuji').map((p) => p.id)).toEqual([...FUJI_PROFILE_IDS]);
+    expect(PROFILES.filter((p) => p.group === 'basic').map((p) => p.id)).toEqual(['color', 'vivid', 'portrait', 'landscape', 'neutral', 'monochrome', 'linear']);
+    expect(isProfileId('fuji-classic-chrome')).toBe(true);
+    expect(isProfileId('fuji-acros')).toBe(false);
+    expect(isProfileId(3)).toBe(false);
+  });
+
+  it('gives an Amount to the looks only', () => {
+    expect(PROFILES.filter((p) => p.amount).map((p) => p.id)).toEqual(['vivid', 'portrait', 'landscape', ...FUJI_PROFILE_IDS]);
+    expect(profileInfo('fuji-provia')).toMatchObject({ label: 'Provia/Standard', download: true });
+  });
+
+  it('keeps every known profile when normalising, and defaults the Amount to 100', () => {
+    for (const p of PROFILES) expect(normalizeRecipe({ profile: p.id }).profile).toBe(p.id);
+    expect(defaultRecipe().profileAmount).toBe(100);
+    // Saved before profiles had an Amount.
+    expect(normalizeRecipe({ schema: 1, profile: 'neutral' }).profileAmount).toBe(100);
+    expect(normalizeRecipe({ profileAmount: 500 }).profileAmount).toBe(200);
+    expect(normalizeRecipe({ profileAmount: -5 }).profileAmount).toBe(0);
+    expect(normalizeRecipe({ profileAmount: 140 }).profileAmount).toBe(140);
   });
 });

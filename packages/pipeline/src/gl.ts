@@ -28,6 +28,11 @@ export class Program {
     return this;
   }
 
+  /** The texture target a sampler uniform reads (TEXTURE_3D for sampler3D, else TEXTURE_2D). */
+  samplerTarget(name: string): number {
+    return this.types.get(name) === this.gl.SAMPLER_3D ? this.gl.TEXTURE_3D : this.gl.TEXTURE_2D;
+  }
+
   /** Does the (linked) program use this uniform? */
   has(name: string): boolean {
     return this.types.has(name);
@@ -61,6 +66,7 @@ export class Program {
         case gl.INT:
         case gl.BOOL:
         case gl.SAMPLER_2D:
+        case gl.SAMPLER_3D:
         case gl.UNSIGNED_INT_SAMPLER_2D:
           gl.uniform1i(loc, v as number);
           break;
@@ -144,6 +150,24 @@ export class GLContext {
     return tex;
   }
 
+  /**
+   * A filtered RGBA16F 3D texture from RGBA float data (x fastest, then y, then z): look
+   * tables and colour LUTs. `repeatY` wraps the y axis (a look table's hue).
+   */
+  texture3d(width: number, height: number, depth: number, rgba: Float32Array, opts: { repeatY?: boolean } = {}): WebGLTexture {
+    const gl = this.gl;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, width, height, depth, 0, gl.RGBA, gl.FLOAT, rgba);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, opts.repeatY ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
   target(width: number, height: number, internalFormat: number, opts: { filter?: number; mipmaps?: boolean } = {}): Target {
     const gl = this.gl;
     const tex = this.texture(width, height, internalFormat, opts);
@@ -182,13 +206,13 @@ export class GLContext {
     const samplers: Record<string, number> = {};
     for (const [name, tex] of Object.entries(textures)) {
       gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.bindTexture(program.samplerTarget(name), tex);
       samplers[name] = unit++;
     }
     for (const [name, tex] of this.shared) {
       if (name in samplers || !program.has(name)) continue;
       gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.bindTexture(program.samplerTarget(name), tex);
       samplers[name] = unit++;
     }
     program.set({ ...samplers, ...uniforms });

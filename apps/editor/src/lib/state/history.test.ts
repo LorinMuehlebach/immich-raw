@@ -64,4 +64,14 @@ describe('History', () => {
     expect(h.undo(r)!.basic.exposure).toBe(0);
     expect(h.redo()!.basic.exposure).toBe(1.4);
   });
+
+  it('undoes a profile Amount change', () => {
+    const h = new History();
+    const r = defaultRecipe();
+    r.profile = 'vivid';
+    h.reset(r);
+    r.profileAmount = 160;
+    h.commit(r, 'Profile Amount 160');
+    expect(h.undo(r)!.profileAmount).toBe(100);
+  });
 });

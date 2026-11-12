@@ -10,6 +10,8 @@
   import { editor } from './lib/state/editor.svelte.ts';
   import { VIEW_PAD, wheelFactor } from './lib/state/zoom.ts';
   import AiDownloadDialog from './lib/ui/AiDownloadDialog.svelte';
+  import FujiLooksDialog from './lib/ui/FujiLooksDialog.svelte';
+  import { FUJI_LOOKS_MB } from './lib/fuji-looks.svelte.ts';
   import BasicPanel from './lib/ui/BasicPanel.svelte';
   import CalibrationPanel from './lib/ui/CalibrationPanel.svelte';
   import EffectsPanel from './lib/ui/EffectsPanel.svelte';
@@ -602,6 +604,22 @@
           <button class="primary" onclick={() => editor.applySidecar()}>Apply</button>
           <button onclick={() => editor.dismissSidecar()}>Ignore</button>
         </div>
+      {:else if editor.fujiOffer}
+        <div class="banner">
+          <div>
+            {#if editor.fujiOffer.reason === 'camera'}
+              <strong>Shot with {editor.fujiOffer.label}.</strong>
+              Download the Fujifilm film looks (about {FUJI_LOOKS_MB} MB) to start from it?
+            {:else}
+              <strong>This edit uses the {editor.fujiOffer.label} film look.</strong>
+              It isn't downloaded in this browser yet, so the photo shows with Color (about {FUJI_LOOKS_MB} MB).
+            {/if}
+            <div class="dim">Community look tables by abpy (CC BY-NC-SA 4.0), kept in this browser. Your photo is not uploaded.</div>
+          </div>
+          <button class="primary" onclick={() => editor.acceptFujiOffer()}>Download</button>
+          <button onclick={() => editor.dismissFujiOffer()}>Not now</button>
+          {#if editor.fujiOffer.reason === 'camera'}<button onclick={() => editor.dismissFujiOffer(true)}>Don't ask again</button>{/if}
+        </div>
       {/if}
 
       {#if editor.saving}
@@ -701,6 +719,7 @@
 
 <ConvertDngDialog />
 <AiDownloadDialog />
+<FujiLooksDialog />
 
 {#if editor.exportDialog === 'settings'}
   <ExportSettingsDialog />

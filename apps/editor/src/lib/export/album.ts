@@ -4,7 +4,7 @@
 // is the JPEG itself exported. Other images are exported as they are, at the preset's size and
 // type.
 import { RENDER_KEY } from '@immich-raw/inject/raw';
-import { RECIPE_KEY, defaultRecipe } from '@immich-raw/recipe';
+import { RECIPE_KEY } from '@immich-raw/recipe';
 import {
   AssetOrder,
   AssetVisibility,
@@ -201,8 +201,7 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
     const names = { originalFileName: asset.originalFileName, preset: o.presetId, date: captureDate(asset), seq: i + 1, seqDigits, album: plan.source.name, owner };
     let image: ImageData | null;
     if (item.kind === 'raw') {
-      const recipe = (await loadRecipe(asset.id)) ?? defaultRecipe();
-      image = await raws.render(asset, recipe, (s, f) => report(s, f));
+      image = await raws.render(asset, await loadRecipe(asset.id), (s, f) => report(s, f));
     } else {
       report('download');
       const bytes = await downloadUncached(asset.id, (f) => report('download', f));

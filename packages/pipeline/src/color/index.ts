@@ -3,3 +3,6 @@ export * from './spaces.ts';
 export * from './temperature.ts';
 export * from './wb.ts';
 export * from './look.ts';
+export * from './dcp.ts';
+export * from './profiles.ts';
+export * from './fuji-looks.ts';

@@ -30,7 +30,7 @@ export interface SettingGroup {
 }
 
 export const GROUPS: SettingGroup[] = [
-  { id: 'profile', label: 'Profile', paths: ['profile'], defaultOn: true },
+  { id: 'profile', label: 'Profile', paths: ['profile', 'profileAmount'], defaultOn: true },
   { id: 'wb', label: 'White Balance', paths: ['wb'], defaultOn: true },
   {
     id: 'tone',

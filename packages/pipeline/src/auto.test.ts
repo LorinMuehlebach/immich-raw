@@ -1,6 +1,7 @@
 import { PARAMS } from '@immich-raw/recipe';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_AUTO_PARAMS, autoTone, normalizeAutoParams, profileWhitePoint } from './auto.ts';
+import { DEFAULT_AUTO_PARAMS, autoTone, normalizeAutoParams } from './auto.ts';
+import { profileWhitePoint } from './color/profiles.ts';
 
 const MID = Math.log2(0.18);
 const TARGET = Math.log2(0.16);

@@ -8,8 +8,8 @@
 //   linear  : source -> scene-linear ProPhoto + log2 luminance      (FS_LINEAR)
 //   nr      : luminance and colour noise reduction (effects.ts), when on
 //   blurL x2: fine-scale Gaussian of log luminance (texture/clarity) (FS_BLUR_L)
-//   tone    : local tone, clarity, texture, presence, colour mixer, profile,
-//             colour grading, tone curve                             (FS_TONE)
+//   tone    : local tone, clarity, texture, profile look, presence, colour mixer,
+//             profile tone, colour grading, tone curve               (FS_TONE)
 //   blur x2 + finish: sharpening, post-crop vignetting and grain     (FS_BLUR, FS_FINISH)
 // The analysis (guided-filter coefficients, dehaze) runs at low resolution, cached.
 import { EFFECTS_GLSL } from './effects.ts';
@@ -416,7 +416,7 @@ uniform vec4 uTone;           // shadows, highlights, whites, blacks (-1..1)
 uniform float uContrast;      // -1..1
 uniform vec2 uPresence;       // vibrance, saturation (-1..1)
 uniform vec2 uDetailBands;    // clarity, texture (-1..1)
-uniform int uProfile;         // 0 color, 1 neutral, 2 linear, 3 monochrome
+uniform int uProfile;         // base tone: 0 color, 1 neutral, 2 linear, 3 monochrome (color/profiles.ts)
 uniform mat3 uWorkToLms;      // linear ProPhoto -> OKLab LMS
 uniform mat3 uLmsToWork;
 uniform mat3 uWorkToSrgb;     // linear ProPhoto -> linear sRGB
@@ -438,6 +438,20 @@ uniform vec4 uDefringe;       // purple amount, green amount (0..1), -, enabled
 uniform vec4 uDefringeHue;    // purple from/to, green from/to (OKLab hue, radians)
 uniform int uOverlay;         // mask slot whose overlay is shown, -1 for none
 uniform vec3 uOverlayColor;
+// Profile look (color/profiles.ts, color/dcp.ts). All off for Color, Neutral, Linear, Monochrome.
+uniform int uLook;            // 1: apply the hue/saturation/value look table
+uniform float uLookAmount;    // profile Amount (1 = as in the table)
+uniform int uLookSrgb;        // the table's value axis is sRGB-encoded
+uniform highp sampler3D uLookTable; // x saturation, y hue (wraps), z value: hue shift (deg), sat scale, val scale
+uniform int uProfileCurve;    // 1: the profile's own tone curve
+uniform float uProfileCurveAmount;
+uniform float uProfileCurveMax; // scene value at the end of the curve texture
+uniform highp sampler2D uProfileCurveTex; // r: curve output at x = max * u^2
+uniform int uSCurveCustom;    // 1: display S-curve strength from uSCurve, else Color's 0.25
+uniform float uSCurve;
+uniform int uFilmLut;         // 1: display-space 3D LUT after the tone curve
+uniform float uFilmLutAmount;
+uniform highp sampler3D uFilmLutTex; // display sRGB -> sRGB, red along x
 out vec4 o;
 
 const float TAU = 6.2831853;
@@ -514,9 +528,19 @@ float bandValue(float v[8], float h) {
 // Filmic shoulder (extended Reinhard) with white point w: 1.0 at x = w.
 float shoulder(float x, float w) { return x * (1.0 + x / (w * w)) / (1.0 + x); }
 
+// The profile's own tone curve (a DNG ProfileToneCurve), sampled densely in the shadows.
+float profileCurve(float x) {
+  float n = float(textureSize(uProfileCurveTex, 0).x);
+  float u = sqrt(clamp(x / uProfileCurveMax, 0.0, 1.0));
+  return textureLod(uProfileCurveTex, vec2(u * (n - 1.0) / n + 0.5 / n, 0.5), 0.0).r;
+}
+
 float baseCurve(float x) {
   if (uProfile == 2) return x;
-  return shoulder(max(x, 0.0), uProfile == 1 ? 1.8 : 1.5);
+  float y = shoulder(max(x, 0.0), uProfile == 1 ? 1.8 : 1.5);
+  // Look-based profiles: blend toward their own curve by the profile Amount.
+  if (uProfileCurve == 1) y = clamp(mix(y, profileCurve(x), uProfileCurveAmount), 0.0, 1.0);
+  return y;
 }
 
 // DNG-style hue-preserving RGB tone: curve the max and min channels, interpolate the middle.
@@ -536,6 +560,62 @@ float encodeSrgb(float v) {
 
 float decodeSrgb(float v) {
   return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+// DNG "hexcone" HSV (dng_utils.h): hue 0..6 (0 red, 2 green, 4 blue), saturation, value.
+vec3 dngHsv(vec3 c) {
+  float v = max(c.r, max(c.g, c.b));
+  float gap = v - min(c.r, min(c.g, c.b));
+  if (gap <= 0.0) return vec3(0.0, 0.0, v);
+  float h;
+  if (c.r == v) {
+    h = (c.g - c.b) / gap;
+    if (h < 0.0) h += 6.0;
+  } else if (c.g == v) {
+    h = 2.0 + (c.b - c.r) / gap;
+  } else {
+    h = 4.0 + (c.r - c.g) / gap;
+  }
+  return vec3(h, gap / v, v);
+}
+
+vec3 dngRgb(vec3 hsv) {
+  float s = hsv.y;
+  float v = hsv.z;
+  if (s <= 0.0) return vec3(v);
+  float h = mod(hsv.x, 6.0);
+  float i = min(floor(h), 5.0);
+  float f = h - i;
+  float p = v * (1.0 - s);
+  float q = v * (1.0 - s * f);
+  float t = v * (1.0 - s * (1.0 - f));
+  if (i < 0.5) return vec3(v, t, p);
+  if (i < 1.5) return vec3(q, v, p);
+  if (i < 2.5) return vec3(p, v, t);
+  if (i < 3.5) return vec3(p, q, v);
+  if (i < 4.5) return vec3(t, p, v);
+  return vec3(v, p, q);
+}
+
+// Profile look table on linear ProPhoto: DNG ProfileLookTable as in the DNG SDK's
+// RefBaselineHueSatMap. Sampling at texel centres makes the hardware's trilinear filtering
+// the SDK's interpolation (hue wraps). Mirrors applyLookCpu() in color/dcp.ts: negative
+// (out-of-gamut) parts pass through, and the value change is a gain so values above 1 keep
+// their headroom.
+vec3 applyLook(vec3 c) {
+  vec3 neg = min(c, 0.0);
+  vec3 hsv = dngHsv(c - neg);
+  if (hsv.z <= 0.0) return c;
+  float vc = min(hsv.z, 1.0);
+  float ve = uLookSrgb == 1 ? encodeSrgb(vc) : vc;
+  vec3 n = vec3(textureSize(uLookTable, 0)); // (saturation, hue, value) divisions
+  vec3 coord = vec3((hsv.y * (n.x - 1.0) + 0.5) / n.x, hsv.x / 6.0 + 0.5 / n.y, (ve * (n.z - 1.0) + 0.5) / n.z);
+  vec3 d = textureLod(uLookTable, coord, 0.0).rgb;
+  float h = hsv.x + d.x * uLookAmount * (6.0 / 360.0);
+  float s = min(hsv.y * max(1.0 + (d.y - 1.0) * uLookAmount, 0.0), 1.0);
+  float vs = max(1.0 + (d.z - 1.0) * uLookAmount, 0.0);
+  float gain = uLookSrgb == 1 ? decodeSrgb(min(ve * vs, 1.0)) / max(vc, 1e-9) : vs;
+  return dngRgb(vec3(h, s, hsv.z * gain)) + neg;
 }
 
 // Lightroom's Color Grading on display colours: shadow, midtone and highlight wheels
@@ -650,6 +730,9 @@ void main() {
     toned = tinted * (dot(toned, LUMA) / max(dot(tinted, LUMA), 1e-9));
   }
 
+  // Profile look: before the user's colour controls, which then act on its result.
+  if (uLook == 1) toned = applyLook(toned);
+
   vec3 lab = toOklab(toned);
   float C = length(lab.yz);
   // Chroma relative to lightness: how colourful, independent of exposure.
@@ -688,10 +771,19 @@ void main() {
   }
   vec3 work = fromOklab(lab);
 
-  // Profile: tone curve in ProPhoto, then to sRGB (clipped) with a mild S-curve.
+  // Profile: tone curve in ProPhoto, then to sRGB (clipped) with a mild S-curve and, for
+  // some film looks, a display-space LUT.
   vec3 srgbLin = clamp(uWorkToSrgb * rgbTone(work), 0.0, 1.0);
   vec3 enc = vec3(encodeSrgb(srgbLin.r), encodeSrgb(srgbLin.g), encodeSrgb(srgbLin.b));
-  if (uProfile == 0 || uProfile == 3) enc = mix(enc, enc * enc * (3.0 - 2.0 * enc), 0.25);
+  if (uProfile == 0 || uProfile == 3) {
+    if (uSCurveCustom == 0) enc = mix(enc, enc * enc * (3.0 - 2.0 * enc), 0.25);
+    else enc = mix(enc, enc * enc * (3.0 - 2.0 * enc), uSCurve);
+  }
+  if (uFilmLut == 1) {
+    float m = float(textureSize(uFilmLutTex, 0).x);
+    vec3 film = textureLod(uFilmLutTex, enc * ((m - 1.0) / m) + 0.5 / m, 0.0).rgb;
+    enc = clamp(mix(enc, film, uFilmLutAmount), 0.0, 1.0);
+  }
   if (uGrading == 1) enc = colorGrade(enc);
   if (lD.z != 0.0 || lD.w != 0.0) enc = localColor(enc, lD.zw);
   if (uCurve == 1) enc = vec3(lut(enc.r, 0), lut(enc.g, 1), lut(enc.b, 2));

@@ -28,6 +28,8 @@ const p = (
 ): ParamSpec => ({ path, label, min, max, default: def, step, decimals, signed });
 
 export const PARAMS = {
+  // Basic › Profile: how strongly a look-based profile applies (Lightroom's profile Amount)
+  profileAmount: p('profileAmount', 'Amount', 0, 200, 100, 1, 0, false),
   // Basic › White balance (temp/tint are only used in custom mode; see wb.mode)
   temp: p('wb.temp', 'Temp', 2000, 50000, 5500, 50, 0, false),
   tint: p('wb.tint', 'Tint', -150, 150, 0, 1),

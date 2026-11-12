@@ -8,7 +8,7 @@ import { IMMICH_SIDECAR } from './fixtures/immich.ts';
 import { LR_PRESET } from './fixtures/preset.ts';
 import { LR_SIDECAR } from './fixtures/sidecar.ts';
 import { ELEMENT_FORM, LEGACY_PV2010 } from './fixtures/variants.ts';
-import { crsToPatch, isLightroomSidecar, parseXmp } from './index.ts';
+import { crsToPatch, isLightroomSidecar, parseXmp, profileFromName } from './index.ts';
 
 /**
  * Lightroom's (left, top) is the box corner at the SENSOR top-left. In our output frame
@@ -107,9 +107,9 @@ describe('crsToPatch: preset', () => {
     expect(recipe.basic.exposure).toBe(0.35);
   });
 
-  it('approximates the profile and reports it', () => {
+  it('maps the Adobe Color profile without a warning', () => {
     expect(recipe.profile).toBe('color');
-    expect(result.warnings).toContain('Profile "Adobe Color" approximated by Color');
+    expect(result.warnings.some((w) => w.startsWith('Profile'))).toBe(false);
   });
 
   it('maps the Effects panel (post-crop vignette, grain), leaving nothing unmapped', () => {
@@ -359,5 +359,74 @@ describe('export', () => {
     expect(formatNumber(0, 0, true)).toBe('0');
     expect(formatNumber(-20, 0, true)).toBe('-20');
     expect(formatNumber(40, 0, false)).toBe('40');
+  });
+});
+
+describe('profiles', () => {
+  const xmp = (attrs: string, look?: { name: string; amount: string }) =>
+    `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" ${attrs}>${
+      look ? `<crs:Look><rdf:Description crs:Name="${look.name}" crs:Amount="${look.amount}"/></crs:Look>` : ''
+    }</rdf:Description></rdf:RDF></x:xmpmeta>`;
+
+  it('knows the Adobe and Fujifilm camera-matching names', () => {
+    const cases: [string, string, boolean][] = [
+      ['Adobe Vivid', 'vivid', true],
+      ['Adobe Portrait', 'portrait', true],
+      ['Adobe Landscape', 'landscape', true],
+      ['Adobe Neutral', 'neutral', true],
+      ['Adobe Monochrome', 'monochrome', true],
+      ['Camera PROVIA/Standard', 'fuji-provia', true],
+      ['Camera Velvia/VIVID', 'fuji-velvia', true],
+      ['Camera ASTIA/SOFT', 'fuji-astia', true],
+      ['Camera CLASSIC CHROME', 'fuji-classic-chrome', true],
+      ['Camera PRO Neg. Hi', 'fuji-pro-neg-hi', true],
+      ['Camera PRO Neg. Std', 'fuji-pro-neg-std', true],
+      ['Camera ETERNA/CINEMA', 'fuji-eterna', true],
+      ['Camera ETERNA BLEACH BYPASS', 'fuji-bleach-bypass', true],
+      ['Camera CLASSIC Neg.', 'fuji-classic-neg', true],
+      ['Camera NOSTALGIC Neg.', 'fuji-nostalgic-neg', true],
+      ['Camera REALA ACE', 'fuji-reala-ace', true],
+      ['Camera ACROS+R FILTER', 'monochrome', false],
+      ['Camera Vivid', 'vivid', false],
+      ['Adobe Standard', 'color', false],
+      ['Vintage 07', 'color', false],
+    ];
+    for (const [name, id, exact] of cases) expect(profileFromName(name), name).toEqual({ id, exact });
+  });
+
+  it('maps a camera profile, warning only for approximations', () => {
+    const chrome = imported(xmp('crs:CameraProfile="Camera CLASSIC CHROME"'));
+    expect(chrome.recipe.profile).toBe('fuji-classic-chrome');
+    expect(chrome.result.warnings).toEqual([]);
+    const acros = imported(xmp('crs:CameraProfile="Camera ACROS+R FILTER"'));
+    expect(acros.recipe.profile).toBe('monochrome');
+    expect(acros.result.warnings).toContain('Profile "Camera ACROS+R FILTER" approximated by Monochrome');
+  });
+
+  it('prefers a known camera profile over an unknown creative look on top of it', () => {
+    const r = imported(xmp('crs:CameraProfile="Camera CLASSIC CHROME"', { name: 'Vintage 07', amount: '0.8' }));
+    expect(r.recipe.profile).toBe('fuji-classic-chrome');
+    expect(r.recipe.profileAmount).toBe(100);
+    expect(r.result.warnings).toContain('Profile "Vintage 07" not supported; using Classic Chrome');
+  });
+
+  it('takes the Look amount for profiles that have one', () => {
+    const vivid = imported(xmp('crs:CameraProfile="Adobe Standard"', { name: 'Adobe Vivid', amount: '0.6' }));
+    expect(vivid.recipe.profile).toBe('vivid');
+    expect(vivid.recipe.profileAmount).toBe(60);
+    expect(vivid.result.groups).toContain('profile');
+    const color = imported(xmp('crs:CameraProfile="Adobe Standard"', { name: 'Adobe Color', amount: '0.6' }));
+    expect(color.recipe.profile).toBe('color');
+    expect(color.recipe.profileAmount).toBe(100);
+  });
+
+  it('round-trips a film look and its amount through our own fields', () => {
+    const r = defaultRecipe();
+    r.profile = 'fuji-eterna';
+    r.profileAmount = 140;
+    const { recipe, result } = imported(recipeToXmp(r));
+    expect(recipe.profile).toBe('fuji-eterna');
+    expect(recipe.profileAmount).toBe(140);
+    expect(result.unmapped).toEqual([]);
   });
 });

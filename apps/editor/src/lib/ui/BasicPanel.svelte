@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { AUTO_PARAM_SPECS, sliderToTemp, tempToSlider } from '@immich-raw/pipeline';
-  import { PARAMS, PROFILES, type ParamSpec, type ProfileId } from '@immich-raw/recipe';
+  import { AUTO_PARAM_SPECS, FUJI_LOOKS_SOURCE, sliderToTemp, tempToSlider } from '@immich-raw/pipeline';
+  import { PARAMS, PROFILE_GROUPS, PROFILES, profileInfo, type ParamSpec, type ProfileId } from '@immich-raw/recipe';
+  import { fujiLooks } from '../fuji-looks.svelte.ts';
   import { ALT_VIEW, Editor, editor } from '../state/editor.svelte.ts';
   import Section from './Section.svelte';
   import Slider from './Slider.svelte';
@@ -18,6 +19,15 @@
   };
   const roundTemp = (p: number) => Math.round(sliderToTemp(p) / 10) * 10;
   let autoOpen = $state(false);
+
+  const profile = $derived(profileInfo(editor.recipe.profile));
+  const looksHere = $derived(fujiLooks.status === 'ready');
+
+  function pickProfile(e: Event & { currentTarget: HTMLSelectElement }) {
+    const el = e.currentTarget;
+    // A film look that isn't downloaded asks first; if declined, the select goes back.
+    void editor.setProfile(el.value as ProfileId).finally(() => (el.value = editor.recipe.profile));
+  }
 </script>
 
 <Section title="Basic">
@@ -27,10 +37,41 @@
 
   <div class="line">
     <span class="lbl">Profile</span>
-    <select value={editor.recipe.profile} onchange={(e) => editor.setProfile(e.currentTarget.value as ProfileId)} disabled={editor.readOnly}>
-      {#each PROFILES as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
+    <select value={editor.recipe.profile} onchange={pickProfile} disabled={editor.readOnly}>
+      {#each PROFILE_GROUPS as g (g.id)}
+        <optgroup label={g.label}>
+          {#each PROFILES.filter((p) => p.group === g.id) as p (p.id)}
+            <option value={p.id}>{p.label}{p.download && !looksHere ? ' (download)' : ''}</option>
+          {/each}
+        </optgroup>
+      {/each}
     </select>
   </div>
+  {#if profile.amount}
+    <Slider
+      spec={PARAMS.profileAmount}
+      value={editor.value(PARAMS.profileAmount)}
+      onchange={set(PARAMS.profileAmount)}
+      oncommit={() => editor.commit()}
+      onreset={() => editor.resetParam(PARAMS.profileAmount)}
+      disabled={editor.readOnly}
+    />
+  {/if}
+  {#if profile.download}
+    <p class="note">
+      {#if !looksHere}
+        {#if fujiLooks.status === 'downloading'}
+          Downloading the film looks… {Math.round(fujiLooks.progress * 100)} %
+        {:else}
+          Not downloaded in this browser, showing Color.
+          <button class="small" onclick={() => editor.downloadFujiLooks()}>Download</button>
+        {/if}
+        <br />
+      {/if}
+      Community film look by <a href={FUJI_LOOKS_SOURCE.repo} target="_blank" rel="noreferrer">{FUJI_LOOKS_SOURCE.author}</a>,
+      <a href={FUJI_LOOKS_SOURCE.licenceUrl} target="_blank" rel="noreferrer">{FUJI_LOOKS_SOURCE.licence}</a>.
+    </p>
+  {/if}
 
   <div class="group">
     <div class="line">
