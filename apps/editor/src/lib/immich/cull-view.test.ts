@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { arrangeGroups, badgeFor, describeMetrics, describeRun, metricRows, runPhase, stackCards, tooltipFor, type MetricRow } from './cull-view.ts';
-import type { CullInfo, CullRun, ReportFrame, ReportGroup } from './culler.ts';
+import {
+  arrangeGroups,
+  badgeFor,
+  describeMetrics,
+  describeRun,
+  layoutRows,
+  metricRows,
+  NO_EDITS,
+  runPhase,
+  sameEdits,
+  stackChoices,
+  tooltipFor,
+  withJoin,
+  withRemove,
+  type MetricRow,
+} from './cull-view.ts';
+import type { CullInfo, CullRun, ReportFrame, ReportSingle } from './culler.ts';
 
 const info = (groupId: string, rank: number, role: CullInfo['role'], reason: CullInfo['reason'] = null, metrics = {}): CullInfo => ({
   groupId,
@@ -180,48 +195,55 @@ describe('runs in words', () => {
   });
 });
 
-describe('stackCards', () => {
-  const frame = (id: string, rank: number, role: ReportFrame['role'], reason: ReportFrame['reason'] = null, files = [id]): ReportFrame => ({
-    frameId: `f-${id}`,
-    name: `${id}.ARW`,
-    assetIds: files,
-    faceId: files.at(-1)!,
-    taken: null,
+describe('the auto-stack page rows', () => {
+  const at = (min: number) => `2026-10-03T11:${String(min).padStart(2, '0')}:00Z`;
+  const frame = (id: string, min: number, rank: number, role: ReportFrame['role'], reason: ReportFrame['reason'] = null): ReportFrame => ({
+    frameId: id,
+    name: `${id}.RAF`,
+    assetIds: [id, `${id}j`],
+    faceId: `${id}j`,
+    taken: at(min),
     role,
     reason,
     rank,
     pinned: false,
     metrics: {},
   });
-  const groups: ReportGroup[] = [
-    {
-      id: 'g1',
-      primaryId: 'a2j',
-      frames: [frame('a1', 3, 'rejected', 'blur'), frame('a2', 1, 'best', null, ['a2', 'a2j']), frame('a3', 2, 'runner-up'), frame('a4', 4, 'rejected', 'lighting')],
-    },
-    { id: 'g2', primaryId: 'b1', frames: [frame('b1', 1, 'best'), frame('b2', 2, 'runner-up')] },
-  ];
-  const live = (asset: string, frameId: string, role: CullInfo['role'], rank: number, pinned = false): Record<string, CullInfo> => ({
-    [asset]: { groupId: 'g1', frameId, role, reason: null, rank, groupSize: 4, pinned, metrics: {} },
+  const single = (id: string, min: number): ReportSingle => ({ frameId: id, name: `${id}.RAF`, assetIds: [id], faceId: id, taken: at(min), leftAlone: null, pending: false });
+  const report = {
+    groups: [
+      { id: 'g2', primaryId: null, frames: [frame('b2', 31, 1, 'best'), frame('b1', 30, 2, 'rejected', 'blur')] },
+      { id: 'g1', primaryId: null, frames: [frame('a3', 13, 1, 'best'), frame('a1', 10, 2, 'runner-up'), frame('a2', 12, 3, 'rejected', 'lighting')] },
+    ],
+    singles: [single('s3', 40), single('s1', 5), single('s2', 20), single('s2b', 21)],
+  };
+
+  it('puts stacks and single shots in the order taken, single shots side by side', () => {
+    const rows = layoutRows(report);
+    expect(rows.map((r) => (r.kind === 'stack' ? r.groupId : r.singles.map((s) => s.frameId).join('+')))).toEqual(['s1', 'g1', 's2+s2b', 'g2', 's3']);
+    const g1 = rows[1]!;
+    expect(g1.kind === 'stack' && g1.shots.map((f) => f.frameId)).toEqual(['a1', 'a2', 'a3']);
+    expect(g1).toMatchObject({ best: { frameId: 'a3' }, runnerUps: 1, rejected: { lighting: 1, blur: 0, eyes: 0 }, taken: at(10), frameIds: ['a1', 'a2', 'a3'] });
+    expect(layoutRows(null)).toEqual([]);
   });
 
-  it("shows each stack's best shot, its size and what was set aside", () => {
-    expect(stackCards(groups)).toEqual([
-      { groupId: 'g1', faceId: 'a2j', name: 'a2.ARW', pinned: false, shots: 4, runnerUps: 1, rejected: { lighting: 1, blur: 1, eyes: 0 }, assetIds: ['a1', 'a2', 'a2j', 'a3', 'a4'] },
-      { groupId: 'g2', faceId: 'b1', name: 'b1.ARW', pinned: false, shots: 2, runnerUps: 1, rejected: { lighting: 0, blur: 0, eyes: 0 }, assetIds: ['b1', 'b2'] },
-    ]);
+  it('offers the stacks before and after a single shot', () => {
+    const rows = layoutRows(report);
+    const ids = (c: ReturnType<typeof stackChoices>) => [c.before?.groupId ?? null, c.after?.groupId ?? null];
+    expect(ids(stackChoices(rows, 's2b'))).toEqual(['g1', 'g2']);
+    expect(ids(stackChoices(rows, 's1'))).toEqual([null, 'g1']);
+    expect(ids(stackChoices(rows, 's3'))).toEqual(['g2', null]);
+    expect(ids(stackChoices(rows, 'a1'))).toEqual([null, null]);
   });
 
-  it('follows a shot made the preferred one in the stack window', () => {
-    const now = { ...live('a3', 'f-a3', 'best', 1, true), ...live('a2j', 'f-a2', 'runner-up', 2) };
-    const [card] = stackCards(groups, now);
-    expect(card).toMatchObject({ faceId: 'a3', name: 'a3.ARW', pinned: true, runnerUps: 1, shots: 4 });
-  });
-
-  it('leaves out trashed shots, and a stack left with one shot', () => {
-    const cards = stackCards(groups, {}, new Set(['a1', 'a4', 'b2']));
-    expect(cards.map((c) => [c.groupId, c.shots, c.rejected.blur])).toEqual([['g1', 2, 0]]);
-    // A shot with one of its files left is still there.
-    expect(stackCards(groups, {}, new Set(['a2']))[0]?.shots).toBe(4);
+  it('keeps one edit per shot: taking out undoes adding, and the other way round', () => {
+    const added = withJoin(NO_EDITS, 's1', ['a1', 'a2', 's1']);
+    expect(added).toEqual({ remove: [], join: { s1: ['a1', 'a2'] } });
+    const out = withRemove(withRemove(added, 's1'), 's1');
+    expect(out).toEqual({ remove: ['s1'], join: {} });
+    expect(withJoin(out, 's1', ['b1'])).toEqual({ remove: [], join: { s1: ['b1'] } });
+    expect(sameEdits({ remove: ['b', 'a'], join: { x: ['y'] } }, { remove: ['a', 'b'], join: { x: ['y'] } })).toBe(true);
+    expect(sameEdits(NO_EDITS, null)).toBe(true);
+    expect(sameEdits(NO_EDITS, out)).toBe(false);
   });
 });

@@ -77,6 +77,28 @@ export interface ReportFrame {
   rank: number;
   pinned: boolean;
   metrics: CullMetrics;
+  /** The user added it to this stack. */
+  joined?: boolean;
+}
+
+/** A shot of the run's photos that is in no stack. */
+export interface ReportSingle {
+  frameId: string;
+  name: string;
+  assetIds: string[];
+  faceId: string;
+  taken: string | null;
+  /** Why the culler leaves it alone (taken out of a stack before), or null. */
+  leftAlone: string | null;
+  /** Immich hasn't made its preview yet. */
+  pending: boolean;
+}
+
+/** The user's own changes to the stacks: shots taken out of their stack, shots added to one (by the
+ * frame ids of the stack it joins). The culler remembers them for later runs. */
+export interface RunEdits {
+  remove: string[];
+  join: Record<string, string[]>;
 }
 
 /** A stack the run made (or, in a preview, would make). */
@@ -89,6 +111,9 @@ export interface ReportGroup {
 export interface RunReport {
   counts?: Partial<RunCounts>;
   groups?: ReportGroup[];
+  singles?: ReportSingle[];
+  /** Edits the run couldn't follow, and why. */
+  edits?: { ignored: { frameId: string; edit: 'remove' | 'join'; why: string }[] };
   errors?: string[];
   notes?: string[];
 }
@@ -100,6 +125,7 @@ export interface CullRun {
   dryRun: boolean;
   /** Also stacks the shots whose stack the user took apart. */
   force?: boolean;
+  edits?: RunEdits | null;
   status: 'queued' | 'running' | 'done' | 'failed';
   phase: string | null;
   done: number;
@@ -247,11 +273,18 @@ export function runOptions(o: CullOptions): Record<string, Record<string, boolea
   };
 }
 
-/** `force`: also stack the shots whose stack the user took apart (a preview forgets nothing). */
-export async function startRun(scope: RunScope, dryRun: boolean, options?: CullOptions, force = false): Promise<string> {
+export interface RunExtras {
+  options?: CullOptions;
+  /** Also stack the shots whose stack the user took apart (a preview forgets nothing). */
+  force?: boolean;
+  edits?: RunEdits;
+}
+
+export async function startRun(scope: RunScope, dryRun: boolean, { options, force, edits }: RunExtras = {}): Promise<string> {
   const body: Record<string, unknown> = { scope, dryRun };
   if (options) body.options = runOptions(options);
   if (force) body.force = true;
+  if (edits && (edits.remove.length || Object.keys(edits.join).length)) body.edits = edits;
   return runId(await call('POST', '/runs', body));
 }
 export const applyRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/apply`));

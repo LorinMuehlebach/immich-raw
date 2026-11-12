@@ -7,16 +7,34 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from culler.config import Config, run_overrides
 from culler.features import Analyzer
 from culler.immich import ImmichClient
-from culler.runner import RunError, Runner, Scope, new_run_id
+from culler.runner import Edits, RunError, Runner, Scope, new_run_id
 from culler.store import Store, utcnow
 from culler.watcher import Watcher
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class _Job:
+    """One queued run or undo for the worker thread."""
+
+    kind: str  # run | undo
+    run_id: str
+    scope: Scope | None = None
+    dry_run: bool = True
+    options: dict | None = None
+    force: bool = False
+    release: bool = False
+    edits: Edits = field(default_factory=Edits)
+    before: Callable[[], None] | None = None
+    after: Callable[[], None] | None = None
+    undo_of: str | None = None
 
 
 class Service:
@@ -67,19 +85,27 @@ class Service:
         source_run: str | None = None,
         before: Callable[[], None] | None = None,
         after: Callable[[], None] | None = None,
+        edits: dict | None = None,
     ) -> str:
         parsed = Scope.from_json(scope)
         run_overrides(self.cfg, options)  # validate now, so the caller hears about bad options
+        parsed_edits = Edits.from_json(edits)
         rid = new_run_id()
-        self.store.create_run(rid, origin, parsed.to_json(), options, dry_run, source_run, force=force)
-        self._jobs.put(("run", rid, parsed, dry_run, options, force, release, before, after))
+        self.store.create_run(
+            rid, origin, parsed.to_json(), options, dry_run, source_run, force=force, edits=parsed_edits.to_json()
+        )
+        self._jobs.put(
+            _Job("run", rid, parsed, dry_run, options, force, release, parsed_edits, before=before, after=after)
+        )
         return rid
 
     def submit_apply(self, run_id: str) -> str:
         run = self._run_or_fail(run_id)
         if not run["dryRun"]:
             raise RunError("this run was already applied")
-        return self.submit_run(run["scope"], False, run["options"], "apply", force=run["force"], source_run=run_id)
+        return self.submit_run(
+            run["scope"], False, run["options"], "apply", force=run["force"], source_run=run_id, edits=run["edits"]
+        )
 
     def submit_undo(self, run_id: str) -> str:
         run = self._run_or_fail(run_id)
@@ -89,7 +115,7 @@ class Service:
             raise RunError("this run was already undone")
         rid = new_run_id()
         self.store.create_run(rid, "undo", run["scope"], None, False, source_run=run_id)
-        self._jobs.put(("undo", rid, run_id))
+        self._jobs.put(_Job("undo", rid, undo_of=run_id))
         return rid
 
     def submit_best(self, group_id: str, asset_id: str) -> str:
@@ -129,24 +155,30 @@ class Service:
             job = self._jobs.get()
             if job is None:
                 return
-            rid = job[1]
+            rid = job.run_id
             self.store.update_run(rid, status="running", phase="starting")
 
             def progress(phase: str, done: int, total: int, rid: str = rid) -> None:
                 self.store.update_run(rid, phase=phase, done=done, total=total)
 
             try:
-                if job[0] == "run":
-                    _, _, scope, dry_run, options, force, release, before, after = job
-                    if before:
-                        before()
+                if job.kind == "run":
+                    if job.before:
+                        job.before()
                     report = self.runner.run(
-                        rid, scope, dry_run, options, force=force, release=release, progress=progress
+                        rid,
+                        job.scope,
+                        job.dry_run,
+                        job.options,
+                        force=job.force,
+                        release=job.release,
+                        edits=job.edits,
+                        progress=progress,
                     )
-                    if after:
-                        after()
+                    if job.after:
+                        job.after()
                 else:
-                    report = self.runner.undo(job[2])
+                    report = self.runner.undo(job.undo_of)
                 self.store.update_run(
                     rid, status="done", phase=None, report=report, summary=run_summary(report), finished_at=utcnow()
                 )

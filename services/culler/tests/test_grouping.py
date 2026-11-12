@@ -3,7 +3,7 @@ from conftest import asset
 
 from culler.config import GroupingConfig
 from culler.frames import build_frames
-from culler.grouping import group_frames
+from culler.grouping import apply_joins, group_frames
 
 CFG = GroupingConfig()
 
@@ -70,3 +70,36 @@ def test_immich_duplicates_always_join():
         [asset("a", "a.ARW", 0, duplicate_id="d"), asset("b", "b.ARW", 1, duplicate_id="d")], {}, {}, set()
     ).frames
     assert group_frames(fs, {"a": A, "b": B}, CFG) == [["a", "b"]]
+
+
+def test_an_added_shot_goes_into_the_group_with_most_of_its_stack():
+    groups = [["a", "b", "c"], ["d", "e"], ["x"]]
+    out, placed, why = apply_joins(groups, {"x": ("d", "e", "a")}, set("abcdex"))
+    assert out == [["a", "b", "c"], ["d", "e", "x"]] and placed == {"x"} and why == {}
+
+
+def test_an_added_shot_leaves_the_group_it_was_in():
+    out, placed, _ = apply_joins([["a", "b", "x"], ["d", "e"]], {"x": ("d",)}, set("abdex"))
+    assert out == [["a", "b"], ["d", "e", "x"]] and placed == {"x"}
+
+
+def test_a_single_target_makes_a_new_pair():
+    out, placed, _ = apply_joins([["a"], ["x"]], {"x": ("a",)}, {"a", "x"})
+    assert out == [["a", "x"]] and placed == {"x"}
+
+
+def test_unmeasured_shots_and_targets_stay_where_they_are():
+    out, placed, why = apply_joins([["a", "b"], ["x"], ["p"]], {"x": ("p",), "p": ("a",)}, {"a", "b", "x"})
+    assert ["x"] in out and ["p"] in out and placed == set()
+    assert why == {"x": "its stack isn't among these photos any more", "p": "waiting for Immich's preview"}
+
+
+def test_chains_of_added_shots_follow_each_other():
+    out, placed, _ = apply_joins([["a", "b"], ["x"], ["y"]], {"y": ("x",), "x": ("a",)}, {"a", "b", "x", "y"})
+    assert out == [["a", "b", "x", "y"]] and placed == {"x", "y"}
+
+
+def test_shots_whose_stack_is_gone_stay_together():
+    out, placed, why = apply_joins([["x"], ["y"], ["z"]], {"x": ("y", "gone"), "y": ("x",), "z": ("gone",)}, set("xyz"))
+    assert ["x", "y"] in out and ["z"] in out and placed == {"x", "y"}
+    assert why == {"z": "its stack isn't among these photos any more"}

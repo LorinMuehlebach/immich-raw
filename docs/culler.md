@@ -122,6 +122,8 @@ A run that finds nothing new changes nothing.
 | Take a photo out of a stack | Leaves that photo alone from then on |
 | Delete a whole stack | Doesn't stack that group again (only **Include them** on the auto-stack page, or a run with `--force`, does) |
 | Save an edit of a shot that isn't in front | The edit joins the stack without taking the front |
+| Take a shot out of a stack (− on the auto-stack page) | Leaves that shot alone from then on (until **Include previously stacked pictures**) |
+| Add a single photo to a stack (on the auto-stack page) | Keeps it in that stack, also when it doesn't look alike or was taken much later |
 
 **Undo** works per run, newest run first.
 - It puts back the stacks, tags, reject flags and details the run changed.
@@ -151,11 +153,18 @@ A run that finds nothing new changes nothing.
 **From Immich's selection.** Select two photos or more in Immich (in the timeline, an album or a
 person's page) and click **Auto-stack** (a stack of photos with a star) in the selection bar. It
 opens a page for those photos with the same checkboxes as **Auto-stack…** in the editor.
-- **Preview** shows the stacks it would make, each with its best shot in front, and changes nothing.
-- **Stack and pick the best** makes them. If a preview is on show, it applies that preview.
-- Afterwards a click on a stack opens it in the stack window, to check the pick or delete the others.
-- **Undo** takes the stacks apart again. After a change in the stack window the run can no longer be
-  undone there (undo goes newest run first).
+- **Preview** shows the result and changes nothing. Every stack is a row, with its preferred shot
+  large and all its shots beside it. Single photos come between the stacks, all in the order taken.
+- **−** on a shot takes it out of its stack, and it becomes a single photo.
+- A click on a single photo offers the stack taken just before it and the one just after it, and
+  adds it to the one you pick.
+- On a preview these edits show in a new preview at once. **Stack and pick the best** then makes
+  the stacks with them (it applies the preview on show, if it has the current choices).
+- After stacking, each edit changes the stacks in Immich at once. A click on a stack opens it in
+  the stack window, to check the pick or delete the others.
+- The culler remembers the edits for later runs (see the table above).
+- **Undo** undoes the last change, then the one before it, down to the stacking itself. After a
+  change in the stack window it is off (undo goes newest run first).
 - **Photos taken out of stacks before** are left alone, as everywhere (see the table above), and
   the summary says how many. **Include previously stacked pictures** (unchecked at first), or
   **Include them** in the summary, includes them; only stacking with it makes the culler forget

@@ -90,7 +90,7 @@
   }
 
   async function doPreview() {
-    preview = await track(() => startRun(scope, true, options), 'preview');
+    preview = await track(() => startRun(scope, true, { options }), 'preview');
   }
 
   async function doApply() {

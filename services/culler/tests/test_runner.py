@@ -14,7 +14,7 @@ from culler.executor import settle_tags
 from culler.features import Analyzer
 from culler.features.embedding import stretch_levels
 from culler.models import CULL_KEY
-from culler.runner import Runner, Scope, new_run_id
+from culler.runner import Edits, Runner, Scope, new_run_id
 from culler.store import Store
 
 ROOT = "Culling"
@@ -338,3 +338,164 @@ def test_a_run_without_changes_leaves_nothing_to_undo(env):
     assert store.snapshot(noop) is None
     runner.undo(first)  # not blocked by the run that changed nothing
     assert not immich.stacks
+
+
+# --- the user's own edits (the auto-stack page) ------------------------------------------------------------
+def members(immich, aid):
+    sid = immich.stack_id_of(aid)
+    return set(immich.stacks[sid]["assetIds"]) if sid else set()
+
+
+def frame_ids(report):
+    return {f["frameId"] for g in report["groups"] for f in g["frames"]}
+
+
+B_STACK = ("b0", "b1", "b2")
+
+
+def test_edits_are_checked():
+    assert not Edits.from_json(None) and not Edits.from_json({"remove": [], "join": {}})
+    e = Edits.from_json({"remove": ["a"], "join": {"b": ["c", "c", "d"]}})
+    assert e.remove == {"a"} and e.join == {"b": ("c", "d")}
+    assert Edits.from_json(e.to_json()) == e
+    for bad in (
+        [],
+        {"remove": "a"},
+        {"join": {"b": []}},
+        {"join": {"b": "c"}},
+        {"remove": ["a"], "join": {"a": ["c"]}},
+        {"join": {"a": ["a"]}},
+    ):
+        with pytest.raises(ValueError):
+            Edits.from_json(bad)
+
+
+def test_a_shot_taken_out_leaves_its_stack_for_good(env):
+    immich, runner, store = env
+    run(runner)
+    assert members(immich, "b0") == set(B_STACK)
+    _, report = run(runner, edits=Edits(remove=frozenset({"b1"})))
+    assert members(immich, "b0") == {"b0", "b2"}
+    assert immich.stack_id_of("b1") is None and not culler_tags(immich, "b1")
+    single = next(s for s in report["singles"] if s["frameId"] == "b1")
+    assert single["leftAlone"] == "removed from the stack" and single["faceId"] == "b1"
+    _, later = run(runner)
+    assert members(immich, "b0") == {"b0", "b2"} and later["counts"]["takenApart"] == 1
+    assert store.frame_flags(["b1"])["b1"] == ("removed from the stack", None)
+
+
+def test_taking_out_the_best_shot_puts_another_in_front(env):
+    immich, runner, _ = env
+    _, report = run(runner)
+    best = next(
+        f["frameId"] for g in report["groups"] for f in g["frames"] if f["role"] == "best" and f["frameId"][0] == "a"
+    )
+    run(runner, edits=Edits(remove=frozenset({best})))
+    other = next(a for a in ("a0", "a3", "a2") if a != best)
+    sid = immich.stack_id_of(other)
+    assert sid and best not in immich.stacks[sid]["assetIds"] and immich.stacks[sid]["primaryAssetId"] != best
+
+
+def test_a_shot_taken_out_of_a_planned_stack_is_remembered(env):
+    """The stack never reached Immich, so applying changes nothing there; the edit must stick anyway."""
+    immich, runner, _ = env
+    pair = Scope("assets", ids=("b0", "b1"))
+    _, preview = run(runner, dry_run=True, scope=pair)
+    assert frame_ids(preview) == {"b0", "b1"}
+    _, applied = run(runner, scope=pair, edits=Edits(remove=frozenset({"b1"})))
+    assert not applied["groups"] and immich.stack_id_of("b0") is None
+    _, later = run(runner, scope=pair)
+    assert not later["groups"] and later["counts"]["takenApart"] == 1
+
+
+def test_a_shot_added_to_a_stack_stays_there(env):
+    """c0 is another scene, half an hour later: never grouped on its own, but measured once added."""
+    immich, runner, store = env
+    run(runner)
+    _, report = run(runner, edits=Edits(join={"c0": B_STACK}))
+    assert "c0" in members(immich, "b0")
+    joined = {f["frameId"]: f["joined"] for g in report["groups"] for f in g["frames"]}
+    assert joined["c0"] is True and joined["b0"] is False
+    assert store.frame_flags(["c0"])["c0"] == (None, list(B_STACK))
+    _, later = run(runner)
+    assert "c0" in members(immich, "b0") and later["counts"]["changes"] == 0
+
+
+def test_a_shot_moved_to_another_stack_takes_no_stack_id_with_it(env):
+    immich, runner, _ = env
+    _, first = run(runner)
+    ids = {g["frames"][0]["frameId"][0]: g["id"] for g in first["groups"]}
+    run(runner, edits=Edits(remove=frozenset({"b2"})))
+    _, moved = run(runner, edits=Edits(join={"b2": ("a0", "a1", "a2", "a3", "a4")}))
+    now = {g["id"]: sorted(f["frameId"] for f in g["frames"]) for g in moved["groups"]}
+    assert now == {ids["a"]: ["a0", "a1", "a2", "a3", "a4", "b2"], ids["b"]: ["b0", "b1"]}
+    assert "b2" in members(immich, "a0")
+
+
+def test_a_preview_with_edits_changes_nothing(env):
+    immich, runner, store = env
+    run(runner)
+    _, preview = run(runner, dry_run=True, edits=Edits(remove=frozenset({"b2"}), join={"c0": ("a0",)}))
+    assert "b2" not in frame_ids(preview) and "c0" in frame_ids(preview)
+    assert members(immich, "b0") == set(B_STACK) and immich.stack_id_of("c0") is None
+    assert store.frame_flags(["b2", "c0"]) == {"b2": (None, None), "c0": (None, None)}
+
+
+def test_undo_of_an_edit_brings_the_shot_back(env):
+    immich, runner, store = env
+    run(runner)
+    rid, _ = run(runner, edits=Edits(remove=frozenset({"b1"})))
+    assert runner.undo(rid)["errors"] == []
+    assert members(immich, "b0") == set(B_STACK)
+    assert store.frame_flags(["b1"])["b1"] == (None, None)
+    _, later = run(runner)
+    assert members(immich, "b0") == set(B_STACK) and later["counts"]["takenApart"] == 0
+
+
+def test_undo_of_an_addition_lets_the_shot_go_again(env):
+    """The stack keeps its id: undo must put back its shots, or the next run thinks c0 was taken out."""
+    immich, runner, store = env
+    run(runner)
+    rid, _ = run(runner, edits=Edits(join={"c0": B_STACK}))
+    assert runner.undo(rid)["errors"] == []
+    assert members(immich, "b0") == set(B_STACK) and immich.stack_id_of("c0") is None
+    _, later = run(runner)
+    assert store.frame_flags(["c0"])["c0"] == (None, None)
+    assert later["counts"]["takenApart"] == 0 and later["counts"]["changes"] == 0
+    assert members(immich, "b0") == set(B_STACK)
+
+
+def test_undo_of_a_forced_run_leaves_the_taken_apart_shots_alone_again(env):
+    immich, runner, _ = env
+    run(runner)
+    immich.delete_stack(immich.stack_id_of("b0"))
+    run(runner, dry_run=True)  # notices the deleted stack
+    rid, _ = run(runner, force=True)
+    assert members(immich, "b0") == set(B_STACK)
+    runner.undo(rid)
+    _, later = run(runner, dry_run=True)
+    assert later["counts"]["takenApart"] == 3 and "b0" not in frame_ids(later)
+
+
+def test_a_shot_added_and_then_taken_out_in_immich_stays_out(env):
+    immich, runner, store = env
+    run(runner)
+    run(runner, edits=Edits(join={"c0": B_STACK}))
+    sid = immich.stack_id_of("c0")
+    if immich.stacks[sid]["primaryAssetId"] == "c0":
+        immich.update_stack(sid, "b0")
+    immich.remove_from_stack(sid, "c0")
+    run(runner)
+    assert immich.stack_id_of("c0") is None
+    assert store.frame_flags(["c0"])["c0"] == ("removed from the stack", None)
+
+
+def test_recull_and_force_keep_the_users_edits(env):
+    immich, runner, store = env
+    run(runner)
+    run(runner, edits=Edits(remove=frozenset({"b1"}), join={"c0": ("a0", "a1", "a2", "a3", "a4")}))
+    gid = store.asset_states(["b0"])["b0"].group_id
+    run(runner, scope=Scope("assets", ids=tuple(runner.group_assets(gid))), force=True)  # what recull does
+    assert members(immich, "b0") == {"b0", "b2"}
+    run(runner, force=True)
+    assert "c0" in members(immich, "a0")

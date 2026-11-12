@@ -20,7 +20,7 @@ from culler.config import Config, run_overrides
 from culler.executor import TAG_CHECKS, ExecResult, describe, execute, settle_tags, tag_assets_of
 from culler.features import Analyzer
 from culler.frames import build_frames
-from culler.grouping import group_frames, split_chains
+from culler.grouping import apply_joins, group_frames, split_chains
 from culler.immich import ImmichClient, ImmichError
 from culler.models import RENDER_KEY, Asset, Features, Frame, Stack, extension, parse_time
 from culler.planner import (
@@ -40,7 +40,7 @@ from culler.planner import (
     snapshot_before,
 )
 from culler.ranking import rank_group
-from culler.store import Store, utcnow
+from culler.store import FrameFlags, Store, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,51 @@ Progress = Callable[[str, int, int], None]
 
 class RunError(Exception):
     pass
+
+
+MAX_EDITS = 2000
+
+
+@dataclass(frozen=True)
+class Edits:
+    """The user's own changes to the stacks (the auto-stack page): shots taken out of their stack,
+    and shots added to the stack of other shots (by those shots' frame ids, which outlive a
+    preview's fresh group ids)."""
+
+    remove: frozenset[str] = frozenset()
+    join: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.remove or self.join)
+
+    @classmethod
+    def from_json(cls, d: Any) -> Edits:
+        if d is None:
+            return cls()
+        if not isinstance(d, dict):
+            raise ValueError("edits: expected an object")
+        remove, join = d.get("remove", []), d.get("join", {})
+        if not isinstance(remove, list) or len(remove) > MAX_EDITS or not all(isinstance(x, str) for x in remove):
+            raise ValueError(f"edits.remove: expected up to {MAX_EDITS} frame ids")
+        if (
+            not isinstance(join, dict)
+            or len(join) > MAX_EDITS
+            or not all(
+                isinstance(v, list) and 0 < len(v) <= MAX_EDITS and all(isinstance(x, str) for x in v)
+                for v in join.values()
+            )
+        ):
+            raise ValueError("edits.join: expected {frame id: [frame ids of the stack it joins]}")
+        if set(remove) & set(join):
+            raise ValueError("edits: a shot can't be taken out of a stack and added to one at once")
+        if any(k in v for k, v in join.items()):
+            raise ValueError("edits.join: a shot can't join a stack of itself")
+        return cls(frozenset(remove), {k: tuple(dict.fromkeys(v)) for k, v in join.items()})
+
+    def to_json(self) -> dict[str, Any] | None:
+        if not self:
+            return None
+        return {"remove": sorted(self.remove), "join": {k: list(v) for k, v in sorted(self.join.items())}}
 
 
 @dataclass(frozen=True)
@@ -228,14 +273,20 @@ class Runner:
 
     # --- measuring ------------------------------------------------------------------------------------------
     def measure(
-        self, frames: list[Frame], live: Live, cfg: Config, progress: Progress | None
+        self,
+        frames: list[Frame],
+        live: Live,
+        cfg: Config,
+        progress: Progress | None,
+        linked: frozenset[str] | set[str] = frozenset(),
     ) -> tuple[dict[str, Features], list[str]]:
-        """Features for frames that have a neighbour in time (others can't be stacked). Returns
+        """Features for frames that have a neighbour in time (others can't be stacked), and for the
+        frames in `linked` (the user added them to a stack, or such a stack is theirs). Returns
         (features by frame id, frame ids still waiting for Immich's preview)."""
         analyzer = self.analyzer(cfg)
         jobs: list[tuple[Frame, Asset, str]] = []
         for chain in split_chains(frames, cfg.grouping):
-            if len(chain) < 2:
+            if len(chain) < 2 and not any(f.id in linked for f in chain):
                 continue
             # The same kind of preview for every frame of a chain, so they compare fairly.
             if all(f.raw_id for f in chain):
@@ -332,7 +383,9 @@ class Runner:
         force: bool = False,
         release: bool = False,
         progress: Progress | None = None,
+        edits: Edits | None = None,
     ) -> dict[str, Any]:
+        edits = edits or Edits()
         cfg = run_overrides(self.cfg, options)
         root = cfg.tags.root
         if progress:
@@ -366,23 +419,47 @@ class Runner:
             group = self.store.groups_by_ids([gid]).get(gid)
             if group:
                 self.store.set_excluded(json.loads(group["frame_ids"]), "stack deleted")
-        # Force includes the shots the user took apart; only applying it forgets that they did.
-        if force and not dry_run:
-            self.store.set_excluded(frames_by_id, None)
         rows = self.store.frame_rows(frames_by_id)
-        excluded = set() if force else {fid for fid, r in rows.items() if r["excluded"]}
+        stored_excluded = {fid for fid, r in rows.items() if r["excluded"]}
+        # The user's own edits (the auto-stack page): shots taken out of their stack in this run, and
+        # shots added to a stack, before (stored) or now (this run's win).
+        removed = {fid for fid in edits.remove if fid in frames_by_id}
+        joins: dict[str, tuple[str, ...]] = {}
+        if not release:
+            joins = {fid: tuple(json.loads(r["joined"])) for fid, r in rows.items() if r["joined"]}
+            joins.update({fid: ts for fid, ts in edits.join.items() if fid in frames_by_id})
+            for fid in removed:
+                joins.pop(fid, None)
+        ignored = [
+            {"frameId": fid, "edit": kind, "why": "not among these photos"}
+            for kind, fids in (("remove", edits.remove), ("join", edits.join.keys()))
+            for fid in sorted(fids)
+            if fid not in frames_by_id
+        ]
+        # Force includes the shots the user took apart (only applying it forgets that they did);
+        # a shot the user added to a stack is never left alone, one taken out of it always is.
+        taken_apart = set() if force else stored_excluded - joins.keys()
+        excluded = taken_apart | removed
         active = [f for f in fs.frames if f.id not in excluded]
 
+        placed: set[str] = set()
         if release:
             groups: list[list[str]] = [[f.id] for f in active]
             features: dict[str, Features] = {}
             pending: list[str] = []
         else:
-            features, pending = self.measure(active, live, cfg, progress)
+            linked = set(joins) | {t for ts in joins.values() for t in ts}
+            features, pending = self.measure(active, live, cfg, progress, linked)
             measured = [f for f in active if f.id in features]
             emb = {fid: f.embedding for fid, f in features.items() if f.embedding is not None}
             groups = group_frames(measured, emb, cfg.grouping)
             groups += [[f.id] for f in active if f.id not in features]
+            groups, placed, unplaced = apply_joins(groups, joins, set(features))
+            ignored += [
+                {"frameId": fid, "edit": "join", "why": why}
+                for fid, why in sorted(unplaced.items())
+                if fid in edits.join
+            ]
 
         if progress:
             progress("ranking", 0, 0)
@@ -391,24 +468,63 @@ class Runner:
         for g in groups:
             if len(g) < 2:
                 continue
-            counts = Counter(rows[f]["group_id"] for f in g if f in rows and rows[f]["group_id"])
+            # Shots the user added don't vote: they may still carry the id of the stack they came from.
+            counts = Counter(rows[f]["group_id"] for f in g if f in rows and rows[f]["group_id"] and f not in placed)
             gid = next((x for x, _ in counts.most_common() if x not in used), None) or str(uuid.uuid4())
             used.add(gid)
-            pinned = next((f for f in g if f in rows and rows[f]["pinned"]), None)
+            pinned = next((f for f in g if f in rows and rows[f]["pinned"] and rows[f]["group_id"] == gid), None)
             group_frames_ = [frames_by_id[f] for f in g]
             result = rank_group(group_frames_, features, cfg, pinned=pinned)
             desired.append(DesiredGroup(gid, [frames_by_id[f] for f in result.frame_ids], result))
 
         grouped = {f.id for g in desired for f in g.frames}
+        # Shots taken out of their stack in this run leave it, like shots no longer in a group.
         released = [
             f
-            for f in active
+            for f in [*active, *(frames_by_id[fid] for fid in sorted(removed))]
             if f.id not in grouped and any(a in prev or culler_tags(live.assets[a], root) for a in f.asset_ids)
         ]
         plan = plan_changes(desired, released, live, prev, culler_stacks, root, run_id, utcnow())
 
         report = self._report(scope, dry_run, desired, released, fs, excluded, pending, features, plan, frames_by_id)
-        if dry_run or (not plan.ops and not plan.states):
+        report["counts"]["takenApart"] = len(taken_apart)
+        for g in report["groups"]:
+            for fr in g["frames"]:
+                fr["joined"] = fr["frameId"] in placed
+        pending_ids = set(pending)
+        report["singles"] = [
+            {
+                "frameId": f.id,
+                "name": f.name,
+                "assetIds": list(f.asset_ids),
+                "faceId": f.face_id,
+                "taken": _iso(f.taken),
+                "leftAlone": "removed from the stack"
+                if f.id in removed
+                else (rows[f.id]["excluded"] if f.id in taken_apart else None),
+                "pending": f.id in pending_ids,
+            }
+            for f in sorted(fs.frames, key=lambda f: (f.taken, f.name))
+            if f.id not in grouped
+        ]
+        report["edits"] = {"ignored": ignored}
+        if dry_run:
+            return report
+
+        # The shots' own flags this run changes: force forgets what the user took apart, the edits
+        # remember what they changed. Kept with the undo snapshot.
+        new_flags: dict[str, FrameFlags] = {}
+        if force:
+            for fid in stored_excluded:
+                new_flags[fid] = (None, json.loads(rows[fid]["joined"]) if rows[fid]["joined"] else None)
+        for fid in removed:
+            new_flags[fid] = ("removed from the stack", None)
+        for fid, ts in edits.join.items():
+            if fid in frames_by_id:
+                new_flags[fid] = (None, list(ts))
+        old_flags = self.store.frame_flags(new_flags)
+        flags_before = {fid: old_flags[fid] for fid, v in new_flags.items() if old_flags[fid] != v}
+        if not plan.ops and not plan.states and not flags_before:
             return report
 
         # Undo needs the photos this run changes, and every photo of a group whose stack it makes.
@@ -426,7 +542,18 @@ class Runner:
             want = {a: {s.tag} if (s := states.get(a)) and s.tag else set() for a in tagged}
             notes = settle_tags(self.client, want, root, self.tag_checks)
         group_primary = dict(plan.group_primary)
+        flag_assets = {a for fid in flags_before for a in frames_by_id[fid].asset_ids}
+        gone = prev_group_ids - used
+        saved = {g.id: ([f.id for f in g.frames], g.result.best, group_primary[g.id]) for g in desired}
+        groups_before = {
+            gid: row
+            for gid, row in self.store.group_rows(set(saved) | gone).items()
+            if row is None
+            or row["state"] != ("gone" if gid in gone else "active")
+            or (gid in saved and (json.loads(row["frame_ids"]), row["best_frame"], row["primary_id"]) != saved[gid])
+        }
         with self.store.transaction():
+            self.store.set_frame_flags({fid: new_flags[fid] for fid in flags_before})
             self.store.set_asset_states(states)
             for g in desired:
                 self.store.save_group(g.id, [f.id for f in g.frames], g.result.best, group_primary[g.id], run_id)
@@ -434,15 +561,17 @@ class Runner:
                     self.store.save_frame(f.id, f.asset_ids, g.id)
             for f in released:
                 self.store.save_frame(f.id, f.asset_ids, None)
-            for gid in prev_group_ids - used:
+            for gid in gone:
                 self.store.set_group_state(gid, "gone")
-            if touched:  # a run that changed nothing has nothing to undo
+            if touched or flags_before:  # a run that changed nothing has nothing to undo
                 self.store.save_snapshot(
                     run_id,
                     {a: b.to_json() for a, b in before.items()},
                     {a: (states[a].to_json() if states.get(a) else None) for a in touched if a in states},
                     {gid: group_primary[gid] for gid in stack_groups},
-                    sorted(touched),
+                    sorted(touched | flag_assets),
+                    flags_before,
+                    groups_before,
                 )
         report["errors"] = res.errors
         report["applied"] = res.done
@@ -547,17 +676,21 @@ class Runner:
             want = {a: set(b.tags) if (b := before.get(a)) else set() for a in tagged}
             notes += settle_tags(self.client, want, root, self.tag_checks)
         with self.store.transaction():
+            self.store.set_frame_flags(snap["frames"])
             self.store.set_asset_states({a: b.state for a, b in before.items()})
             for a, s in after.items():
                 b = before.get(a)
                 if s:
                     frame_assets = self.store.frame_assets([s.frame_id]).get(s.frame_id, ())
                     self.store.save_frame(s.frame_id, frame_assets, b.state.group_id if b and b.state else None)
-            still_used = self.store.asset_ids_of_groups(snap["group_primary"])
-            for gid in snap["group_primary"]:
-                members = {a for a, s in after.items() if s and s.group_id == gid}
-                if not (members & still_used):
-                    self.store.set_group_state(gid, "undone")
+            if snap["groups"] is not None:
+                self.store.restore_groups(snap["groups"])
+            else:  # an older snapshot, without the groups
+                still_used = self.store.asset_ids_of_groups(snap["group_primary"])
+                for gid in snap["group_primary"]:
+                    members = {a for a, s in after.items() if s and s.group_id == gid}
+                    if not (members & still_used):
+                        self.store.set_group_state(gid, "undone")
         report = {"changes": [op_to_json(op) for op in ops], "applied": res.done, "errors": res.errors, "notes": notes}
         self.store.update_run(run_id, undone_at=utcnow(), undo_report=report)
         return report

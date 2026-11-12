@@ -57,9 +57,10 @@ def create_app(service: Service, auth: Authenticator | None = None) -> FastAPI:
     @api.post("/runs", status_code=202, dependencies=[Depends(writer)])
     def start_run(payload: Any = Body(...)) -> dict:
         p = body_dict(payload)
-        rid = service.submit_run(
-            p.get("scope"), bool(p.get("dryRun", True)), p.get("options"), "ui", force=bool(p.get("force", False))
-        )
+        dry_run, force = p.get("dryRun", True), p.get("force", False)
+        if not isinstance(dry_run, bool) or not isinstance(force, bool):
+            raise ValueError("dryRun, force: expected true/false")
+        rid = service.submit_run(p.get("scope"), dry_run, p.get("options"), "ui", force=force, edits=p.get("edits"))
         return {"runId": rid}
 
     @api.get("/runs", dependencies=[Depends(reader)])

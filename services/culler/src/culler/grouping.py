@@ -6,9 +6,12 @@
    group's last few frames and to the group's most typical frame (so a slow pan doesn't chain
    into one endless group). A group spans at most `max_span_s` and `max_size` frames.
 3. Frames Immich already marked as duplicates of each other always join.
+4. Shots the user added to a stack (on the auto-stack page) go into that stack: `apply_joins`.
 """
 
 from __future__ import annotations
+
+from collections import Counter
 
 import numpy as np
 
@@ -84,3 +87,58 @@ def neighbour_similarities(frames: list[Frame], emb: dict[str, np.ndarray]) -> l
         if a.id in emb and b.id in emb:
             out.append((a, b, _seconds(a, b), cosine(emb[a.id], emb[b.id])))
     return out
+
+
+def apply_joins(
+    groups: list[list[str]], joins: dict[str, tuple[str, ...]], measured: set[str]
+) -> tuple[list[list[str]], set[str], dict[str, str]]:
+    """Moves each shot the user added to a stack into the group holding most of that stack's shots
+    (`joins`: shot -> the stack's shot ids when it was added). Only measured shots can be ranked, so
+    only they move, and only into a group of measured shots. Shots that point only at each other
+    (their stack is gone) form a group of their own.
+
+    Returns the groups, the shots placed, and why the others weren't (shot -> reason)."""
+    groups = [list(g) for g in groups]
+    present = {f for g in groups for f in g}
+    movers = {f: tuple(t for t in ts if t != f) for f, ts in joins.items() if f in present and f in measured}
+    why = {f: "waiting for Immich's preview" for f in joins if f in present and f not in measured}
+    groups = [[f for f in g if f not in movers] for g in groups]
+    groups = [g for g in groups if g]
+    placed: set[str] = set()
+    todo = dict(movers)
+    while todo:
+        index = {f: i for i, g in enumerate(groups) for f in g}
+        moved = False
+        for f, targets in sorted(todo.items()):
+            hits = Counter(index[t] for t in targets if t in index and all(x in measured for x in groups[index[t]]))
+            if not hits:
+                continue
+            i = max(hits, key=lambda k: (hits[k], -k))  # most of its stack; the earlier group on a tie
+            groups[i].append(f)
+            index[f] = i
+            placed.add(f)
+            del todo[f]
+            moved = True
+        if not moved:
+            break
+    # Left over: shots whose stack is gone. Those pointing at each other stay together.
+    left = set(todo)
+    seen: set[str] = set()
+    for f in sorted(left):
+        if f in seen:
+            continue
+        component, queue = [], [f]
+        while queue:
+            x = queue.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            component.append(x)
+            queue.extend(t for t in todo[x] if t in left)
+            queue.extend(y for y in left if x in todo[y])
+        groups.append(sorted(component))
+        if len(component) > 1:
+            placed.update(component)
+        else:
+            why[f] = "its stack isn't among these photos any more"
+    return groups, placed, why

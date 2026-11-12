@@ -89,6 +89,14 @@ def test_bad_scope_or_options_are_rejected(client):
         headers=WRITE,
     )
     assert r.status_code == 400 and "min_ratio" in r.json()["message"]
+    day = {"kind": "day", "date": "2024-05-01"}
+    for body in (
+        {"scope": day, "dryRun": "false"},
+        {"scope": day, "force": 1},
+        {"scope": day, "edits": {"remove": "b1"}},
+        {"scope": day, "edits": {"remove": ["b1"], "join": {"b1": ["a0"]}}},
+    ):
+        assert client.post(f"{BASE}/runs", json=body, cookies=OWNER, headers=WRITE).status_code == 400, body
 
 
 def test_dry_run_apply_lookup_pick_and_undo(client):
@@ -172,6 +180,21 @@ def test_a_forced_preview_is_applied_with_force(client):
     )
     assert applied["status"] == "done" and applied["force"] is True
     assert client.immich.stack_id_of("b0") is not None
+
+
+def test_edits_are_kept_on_the_run_and_applied_with_it(client):
+    day = {"kind": "day", "date": "2024-05-01"}
+    edits = {"remove": ["b2"], "join": {"c0": ["a0", "a1"]}}
+    rid = client.post(
+        f"{BASE}/runs", json={"scope": day, "dryRun": True, "edits": edits}, cookies=OWNER, headers=WRITE
+    ).json()["runId"]
+    preview = wait(client, rid)
+    assert preview["edits"] == edits and not client.immich.stacks
+    assert any(s["frameId"] == "b2" for s in preview["report"]["singles"])
+    applied = wait(client, client.post(f"{BASE}/runs/{rid}/apply", cookies=OWNER, headers=WRITE).json()["runId"])
+    assert applied["status"] == "done" and applied["edits"] == edits
+    assert client.immich.stack_id_of("b2") is None
+    assert client.immich.stack_id_of("c0") == client.immich.stack_id_of("a0") is not None
 
 
 def test_webhook_needs_the_secret(client):

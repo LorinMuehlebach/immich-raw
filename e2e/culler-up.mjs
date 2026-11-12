@@ -40,13 +40,14 @@ export async function cullerUp({ quiet = false } = {}) {
   const stdio = ['ignore', quiet ? 'ignore' : 'inherit', 'inherit'];
   execFileSync('docker', [...COMPOSE, 'rm', '--stop', '--force', 'culler'], { stdio: ['ignore', 'ignore', 'ignore'] });
   execFileSync('docker', [...COMPOSE, 'up', '-d', '--build', 'culler', 'proxy'], { env: { ...process.env, CULLER_API_KEY: key.body.secret }, stdio });
-  for (const k of oldKeys) await json('DELETE', `/api/api-keys/${k.id}`, undefined, token);
   // nginx reads its config at start: make sure the /immich-raw/culler/ route is loaded.
   execFileSync('docker', [...COMPOSE, 'exec', 'proxy', 'nginx', '-s', 'reload'], { stdio: ['ignore', 'ignore', 'ignore'] });
 
   for (let i = 0; i < 180; i++) {
-    const health = await json('GET', '/immich-raw/culler/api/v1/health').catch(() => null); // nginx may be reloading
+    const health = await json('GET', '/immich-raw/culler/api/v1/health').catch(() => null); // nginx may be (re)starting
     if (health?.body?.ok) {
+      // Only now: a recreated proxy doesn't take requests right away.
+      for (const k of oldKeys) await json('DELETE', `/api/api-keys/${k.id}`, undefined, token);
       log(`culler is up: ${BASE}/immich-raw/culler/ (library of ${ADMIN.email})`);
       return health.body;
     }

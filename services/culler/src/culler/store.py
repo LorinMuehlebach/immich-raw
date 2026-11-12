@@ -39,7 +39,21 @@ MIGRATIONS = [
     """,
     # Runs that also regroup stacks the user took apart: applying such a preview does the same.
     "ALTER TABLE runs ADD COLUMN force INTEGER NOT NULL DEFAULT 0",
+    # The user's own edits of the stacks: shots taken out of a stack, shots added to one (the frame
+    # ids of that stack when they were added), stored on the run (so applying a preview does them
+    # too) and in the undo snapshot.
+    """
+    ALTER TABLE runs ADD COLUMN edits TEXT;
+    ALTER TABLE frames ADD COLUMN joined TEXT;
+    ALTER TABLE snapshots ADD COLUMN frames TEXT
+    """,
+    # The groups as they were before a run changed them, so undo puts back a stack's shots too.
+    "ALTER TABLE snapshots ADD COLUMN groups TEXT",
 ]
+
+GROUP_COLUMNS = ("frame_ids", "best_frame", "primary_id", "stacked", "state", "run_id")
+
+FrameFlags = tuple[str | None, list[str] | None]  # (excluded reason, joined stack frame ids)
 
 
 def utcnow() -> str:
@@ -131,10 +145,11 @@ class Store:
         dry_run: bool,
         source_run: str | None = None,
         force: bool = False,
+        edits: dict | None = None,
     ) -> None:
         self._x(
-            "INSERT INTO runs(id, origin, scope, options, dry_run, status, created_at, source_run, force) "
-            "VALUES(?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+            "INSERT INTO runs(id, origin, scope, options, dry_run, status, created_at, source_run, force, edits) "
+            "VALUES(?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
             (
                 run_id,
                 origin,
@@ -144,6 +159,7 @@ class Store:
                 utcnow(),
                 source_run,
                 int(force),
+                json.dumps(edits) if edits else None,
             ),
         )
 
@@ -217,11 +233,43 @@ class Store:
             self._x("UPDATE frames SET pinned = 1, group_id = ? WHERE id = ?", (group_id, frame_id))
 
     def set_excluded(self, frame_ids: Iterable[str], reason: str | None) -> None:
+        """Leave these shots alone from now on (`reason`), or not any more (None). Taking a shot out
+        of a stack also ends where the user had added it, and its pin."""
+        extra = ", joined = NULL, pinned = 0" if reason is not None else ""
         for fid in frame_ids:
             self._x(
                 "INSERT INTO frames(id, asset_ids, excluded) VALUES(?, '[]', ?) "
-                "ON CONFLICT(id) DO UPDATE SET excluded = ?",
+                f"ON CONFLICT(id) DO UPDATE SET excluded = ?{extra}",
                 (fid, reason, reason),
+            )
+
+    def set_joined(self, frame_id: str, stack_frame_ids: list[str]) -> None:
+        """The user added this shot to the stack of these shots: it stays there."""
+        self._x(
+            "INSERT INTO frames(id, asset_ids, joined) VALUES(?, '[]', ?) "
+            "ON CONFLICT(id) DO UPDATE SET joined = ?, excluded = NULL, pinned = 0",
+            (frame_id, json.dumps(stack_frame_ids), json.dumps(stack_frame_ids)),
+        )
+
+    def frame_flags(self, frame_ids: Iterable[str]) -> dict[str, FrameFlags]:
+        """Excluded reason and joined stack of these shots (None, None when the store has no row)."""
+        rows = self.frame_rows(frame_ids)
+        return {
+            fid: (r["excluded"], json.loads(r["joined"]) if r["joined"] else None)
+            if (r := rows.get(fid))
+            else (None, None)
+            for fid in frame_ids
+        }
+
+    def set_frame_flags(self, flags: dict[str, FrameFlags]) -> None:
+        """Sets both flags as given (a shot taken out of a stack, or added to one, loses its pin)."""
+        for fid, (excluded, joined) in flags.items():
+            joined_json = json.dumps(joined) if joined else None
+            unpin = ", pinned = 0" if excluded is not None or joined else ""
+            self._x(
+                "INSERT INTO frames(id, asset_ids, excluded, joined) VALUES(?, '[]', ?, ?) "
+                f"ON CONFLICT(id) DO UPDATE SET excluded = ?, joined = ?{unpin}",
+                (fid, excluded, joined_json, excluded, joined_json),
             )
 
     def groups_by_ids(self, group_ids: Iterable[str]) -> dict[str, sqlite3.Row]:
@@ -252,11 +300,50 @@ class Store:
     def set_group_state(self, gid: str, state: str) -> None:
         self._x("UPDATE groups SET state = ?, updated_at = ? WHERE id = ?", (state, utcnow(), gid))
 
+    def group_rows(self, group_ids: Iterable[str]) -> dict[str, dict | None]:
+        """The groups as stored (None: not stored yet), for the undo snapshot."""
+        ids = list(group_ids)
+        rows = self.groups_by_ids(ids)
+        return {gid: {k: rows[gid][k] for k in GROUP_COLUMNS} if gid in rows else None for gid in ids}
+
+    def restore_groups(self, groups: dict[str, dict | None]) -> None:
+        """Puts back groups from `group_rows`; one that wasn't stored before is undone."""
+        for gid, g in groups.items():
+            if g is None:
+                self.set_group_state(gid, "undone")
+                continue
+            self._x(
+                "INSERT OR REPLACE INTO groups"
+                "(id, frame_ids, best_frame, primary_id, stacked, state, run_id, updated_at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (gid, *(g[k] for k in GROUP_COLUMNS), utcnow()),
+            )
+
     # --- snapshots (undo) -------------------------------------------------------------------------------
-    def save_snapshot(self, run_id: str, before: dict, after: dict, group_primary: dict, asset_ids: list[str]) -> None:
+    def save_snapshot(
+        self,
+        run_id: str,
+        before: dict,
+        after: dict,
+        group_primary: dict,
+        asset_ids: list[str],
+        frames: dict[str, FrameFlags] | None = None,
+        groups: dict[str, dict | None] | None = None,
+    ) -> None:
+        """`frames`: the shots' flags before the run changed them (excluded, joined). `groups`: the
+        groups it changed, as they were (`group_rows`)."""
         self._x(
-            "INSERT OR REPLACE INTO snapshots(run_id, before, after, group_primary, asset_ids) VALUES(?, ?, ?, ?, ?)",
-            (run_id, json.dumps(before), json.dumps(after), json.dumps(group_primary), json.dumps(sorted(asset_ids))),
+            "INSERT OR REPLACE INTO snapshots(run_id, before, after, group_primary, asset_ids, frames, groups) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                json.dumps(before),
+                json.dumps(after),
+                json.dumps(group_primary),
+                json.dumps(sorted(asset_ids)),
+                json.dumps(frames) if frames else None,
+                json.dumps(groups) if groups is not None else None,
+            ),
         )
 
     def snapshot(self, run_id: str) -> dict | None:
@@ -269,6 +356,8 @@ class Store:
             "after": json.loads(r["after"]),
             "group_primary": json.loads(r["group_primary"]),
             "asset_ids": json.loads(r["asset_ids"]),
+            "frames": {fid: (v[0], v[1]) for fid, v in json.loads(r["frames"]).items()} if r["frames"] else {},
+            "groups": json.loads(r["groups"]) if r["groups"] is not None else None,  # None: an older snapshot
         }
 
     def later_runs_touching(self, run_id: str, asset_ids: set[str]) -> list[str]:
@@ -293,6 +382,7 @@ def _run_row(r: sqlite3.Row, with_report: bool = True) -> dict:
         "options": json.loads(r["options"]) if r["options"] else None,
         "dryRun": bool(r["dry_run"]),
         "force": bool(r["force"]),
+        "edits": json.loads(r["edits"]) if r["edits"] else None,
         "status": r["status"],
         "phase": r["phase"],
         "done": r["done"],

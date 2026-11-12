@@ -89,15 +89,16 @@ describe('culler client', () => {
     expect((init.headers as Record<string, string>)['X-Raw-Editor']).toBe('1');
   });
 
-  it('asks for force only when wanted', async () => {
+  it('asks for force and sends edits only when wanted', async () => {
     const f = vi.fn(async () => json(202, { runId: 'r4' }));
     setCullerFetch(f);
     const scope = { kind: 'assets' as const, ids: ['a', 'b'] };
-    await startRun(scope, true, undefined, true);
-    await startRun(scope, true);
+    const edits = { remove: ['a'], join: { c: ['b'] } };
+    await startRun(scope, true, { force: true, edits });
+    await startRun(scope, true, { edits: { remove: [], join: {} } });
     const bodies = f.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)));
     expect(bodies).toEqual([
-      { scope, dryRun: true, force: true },
+      { scope, dryRun: true, force: true, edits },
       { scope, dryRun: true },
     ]);
   });
@@ -105,7 +106,7 @@ describe('culler client', () => {
   it("sends the Auto-stack options as the service's settings sections", async () => {
     const f = vi.fn(async () => json(202, { runId: 'r3' }));
     setCullerFetch(f);
-    await startRun({ kind: 'day', date: '2024-05-01' }, true, { ...DEFAULT_CULL_OPTIONS, smiles: false, people: false });
+    await startRun({ kind: 'day', date: '2024-05-01' }, true, { options: { ...DEFAULT_CULL_OPTIONS, smiles: false, people: false } });
     const [, init] = f.mock.calls[0]! as unknown as [string, RequestInit];
     expect(JSON.parse(String(init.body)).options).toEqual({
       lighting: { people_first: true },

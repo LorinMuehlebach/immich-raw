@@ -2,7 +2,7 @@
 // - A stack's photos sit together where its first photo was taken, best first, then
 //   runner-ups, then rejected ones (as the service ranked them).
 // - A collapsed stack shows only its best photo (or the photo being edited) plus a "+N" count.
-import type { CullInfo, CullMetrics, CullReason, CullRun, ReportGroup, RunCounts } from './culler.ts';
+import type { CullInfo, CullMetrics, CullReason, CullRun, ReportFrame, ReportGroup, ReportSingle, RunCounts, RunEdits, RunReport } from './culler.ts';
 
 export interface StripGroup {
   id: string;
@@ -205,49 +205,95 @@ export function runPhase(r: CullRun | null): string {
   return `${r.phase ?? 'working'}${r.total ? ` ${r.done}/${r.total}` : '…'}`;
 }
 
-/** One stack on the auto-stack page. */
-export interface StackCard {
+/** A stack on the auto-stack page: its preferred shot, and all its shots in the order taken. */
+export interface StackRow {
+  kind: 'stack';
   groupId: string;
-  /** The preferred shot: the file to show, and its name. */
-  faceId: string;
-  name: string;
-  /** The user's pick rather than the culler's. */
-  pinned: boolean;
-  shots: number;
+  best: ReportFrame;
+  shots: ReportFrame[];
   runnerUps: number;
   rejected: Record<CullReason, number>;
-  /** Every file of the stack's shots. */
+  /** When its first shot was taken. */
+  taken: string;
+  frameIds: string[];
   assetIds: string[];
 }
 
-/**
- * The stacks of a run's report, as they are now: `live` has the culler's current state of
- * photos asked again since (a shot made the preferred one in the stack window), `trashed` the
- * photos moved to the trash since. A stack left with one shot is no stack any more.
- */
-export function stackCards(groups: readonly ReportGroup[], live: Record<string, CullInfo> = {}, trashed: ReadonlySet<string> = new Set()): StackCard[] {
-  const out: StackCard[] = [];
-  for (const g of groups) {
-    const frames = g.frames
-      .filter((f) => f.assetIds.some((id) => !trashed.has(id)))
-      .map((f) => {
-        const now = f.assetIds.map((id) => live[id]).find((i) => i?.frameId === f.frameId && i.role);
-        return now ? { ...f, role: now.role!, reason: now.reason, rank: now.rank ?? f.rank, pinned: now.pinned } : f;
-      });
-    if (frames.length < 2) continue;
-    const best = frames.find((f) => f.role === 'best') ?? frames.reduce((a, b) => (b.rank < a.rank ? b : a));
-    const rejected: Record<CullReason, number> = { lighting: 0, blur: 0, eyes: 0 };
-    for (const f of frames) if (f.role === 'rejected' && f.reason) rejected[f.reason]++;
-    out.push({
-      groupId: g.id,
-      faceId: best.faceId,
-      name: best.name,
-      pinned: best.pinned,
-      shots: frames.length,
-      runnerUps: frames.filter((f) => f.role === 'runner-up').length,
-      rejected,
-      assetIds: frames.flatMap((f) => f.assetIds),
-    });
-  }
-  return out;
+/** Shots in no stack, taken one after the other between two stacks. */
+export interface SinglesRow {
+  kind: 'singles';
+  singles: ReportSingle[];
+  taken: string;
 }
+
+export type ResultRow = StackRow | SinglesRow;
+
+const byTime = <T extends { taken: string | null; name: string }>(a: T, b: T) => (a.taken ?? '').localeCompare(b.taken ?? '') || a.name.localeCompare(b.name);
+
+function stackRow(g: ReportGroup): StackRow {
+  const shots = [...g.frames].sort(byTime);
+  const best = g.frames.find((f) => f.role === 'best') ?? [...g.frames].sort((a, b) => a.rank - b.rank)[0]!;
+  const rejected: Record<CullReason, number> = { lighting: 0, blur: 0, eyes: 0 };
+  for (const f of shots) if (f.role === 'rejected' && f.reason) rejected[f.reason]++;
+  return {
+    kind: 'stack',
+    groupId: g.id,
+    best,
+    shots,
+    runnerUps: shots.filter((f) => f.role === 'runner-up').length,
+    rejected,
+    taken: shots[0]?.taken ?? '',
+    frameIds: shots.map((f) => f.frameId),
+    assetIds: shots.flatMap((f) => f.assetIds),
+  };
+}
+
+/** The run's stacks and single shots in the order taken; single shots next to each other share a row. */
+export function layoutRows(report: RunReport | null | undefined): ResultRow[] {
+  const items: (StackRow | ReportSingle)[] = [...(report?.groups ?? []).map(stackRow), ...(report?.singles ?? [])];
+  const key = (x: StackRow | ReportSingle) => ({ taken: x.taken ?? '', name: 'kind' in x ? x.best.name : x.name });
+  items.sort((a, b) => byTime(key(a), key(b)));
+  const rows: ResultRow[] = [];
+  for (const x of items) {
+    if ('kind' in x) {
+      rows.push(x);
+      continue;
+    }
+    const last = rows.at(-1);
+    if (last?.kind === 'singles') last.singles.push(x);
+    else rows.push({ kind: 'singles', singles: [x], taken: x.taken ?? '' });
+  }
+  return rows;
+}
+
+/** The stacks right before and right after a single shot, to add it to. */
+export function stackChoices(rows: ResultRow[], frameId: string): { before: StackRow | null; after: StackRow | null } {
+  const i = rows.findIndex((r) => r.kind === 'singles' && r.singles.some((s) => s.frameId === frameId));
+  const at = (j: number) => {
+    const r = rows[j];
+    return r?.kind === 'stack' ? r : null;
+  };
+  return i < 0 ? { before: null, after: null } : { before: at(i - 1), after: at(i + 1) };
+}
+
+export const NO_EDITS: RunEdits = { remove: [], join: {} };
+
+/** The edits with this shot taken out of its stack (and no longer added to one). */
+export function withRemove(e: RunEdits, frameId: string): RunEdits {
+  const { [frameId]: _, ...join } = e.join;
+  return { remove: e.remove.includes(frameId) ? e.remove : [...e.remove, frameId], join };
+}
+
+/** The edits with this shot added to the stack of those shots (and no longer taken out). */
+export function withJoin(e: RunEdits, frameId: string, stackFrameIds: string[]): RunEdits {
+  return { remove: e.remove.filter((f) => f !== frameId), join: { ...e.join, [frameId]: stackFrameIds.filter((f) => f !== frameId) } };
+}
+
+export const sameEdits = (a: RunEdits | null | undefined, b: RunEdits | null | undefined): boolean => {
+  const norm = (e: RunEdits | null | undefined) =>
+    JSON.stringify({
+      remove: [...(e?.remove ?? [])].sort(),
+      join: Object.fromEntries(Object.entries(e?.join ?? {}).sort(([x], [y]) => x.localeCompare(y))),
+    });
+  return norm(a) === norm(b);
+};

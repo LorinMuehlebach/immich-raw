@@ -329,11 +329,19 @@ try {
   await cullPage.getByRole('button', { name: 'Preview', exact: true }).click();
   await result.or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
   const previewText = await resultText();
-  const previewCards = await result.locator('.stack').count();
+  const stackRows = result.locator('.stack-row');
+  const previewShots = await stackRows.first().locator('.shot').count();
+  const previewSingles = await result.locator('.singles-row .single img').evaluateAll((imgs) => imgs.map((i) => i.getAttribute('alt')));
   check(
-    'Preview: one stack of the burst, nothing changed yet',
-    /Preview: 1 stack from 4 photos/.test(previewText) && /Best of 3/.test(previewText) && previewCards === 1 && !(await info(id.d0)).stack,
-    { previewText, previewCards },
+    'Preview: one stack row with all 3 shots, the single photo in its own row, nothing changed yet',
+    /Preview: 1 stack from 4 photos/.test(previewText) &&
+      /Best of 3/.test(previewText) &&
+      (await stackRows.count()) === 1 &&
+      previewShots === 3 &&
+      previewSingles.length === 1 &&
+      /c0/.test(previewSingles[0] ?? '') &&
+      !(await info(id.d0)).stack,
+    { previewText, previewShots, previewSingles },
   );
   await cullPage.screenshot({ path: join(outDir, 'auto-stack-preview.png') });
   const peopleFirst = cullPage.getByLabel("People's exposure counts most");
@@ -341,8 +349,9 @@ try {
   check('a changed option drops the preview made with the other one', (await result.count()) === 0);
   await peopleFirst.check();
 
+  const stackedLead = result.locator('.lead-pic:not([disabled])');
   await cullPage.getByRole('button', { name: 'Stack and pick the best' }).click();
-  await result.locator('button.stack').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  await stackedLead.or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
   const pageRun = ((await culler('GET', '/runs?limit=5')).body?.runs ?? []).find((r) => !r.dryRun && r.origin === 'ui');
   if (pageRun) cleanup.runs.push(pageRun.id);
   const doneText = await resultText();
@@ -353,14 +362,61 @@ try {
     { doneText, files: dStack?.assets?.length },
   );
   await cullPage.screenshot({ path: join(outDir, 'auto-stack-done.png') });
-  await result.locator('button.stack').first().click();
+  await stackedLead.first().click();
   const pageStack = cullPage.locator('.window[role="dialog"]');
   await pageStack.locator('.pos').waitFor({ timeout: 60000 });
   const pageStackTitle = (await pageStack.locator('h2').textContent())?.trim();
   check('a stack opens in the stack window', pageStackTitle === 'Stack · 3 shots', { pageStackTitle });
   await cullPage.keyboard.press('Escape');
   await pageStack.waitFor({ state: 'detached', timeout: 5000 });
-  await cullPage.getByRole('button', { name: 'Undo' }).click();
+
+  // Edit the stack: take a shot out (−), add the single photo to it (click it, pick the stack).
+  const settled = () => cullPage.locator('.progress').waitFor({ state: 'detached', timeout: 180000 });
+  const keyOf = (name) => /burst_([a-z]\d)/.exec(name ?? '')?.[1];
+  const outShot = stackRows.first().locator('.shot:not(.best)').first();
+  const outKey = keyOf(await outShot.locator('img').getAttribute('alt'));
+  await outShot.locator('.minus').click();
+  await cullPage.locator('.stack-row .shot').nth(2).waitFor({ state: 'detached', timeout: 180000 });
+  await settled();
+  const keptD = ['d0', 'd1', 'd2'].filter((k) => k !== outKey);
+  const afterOut = await stackOf(keptD[0]);
+  check(
+    '− takes a shot out of the stack in Immich, and it shows as a single photo',
+    !!outKey && afterOut?.assets?.length === 2 && !(await info(id[outKey])).stack && (await result.locator(`.singles-row img[alt*="${outKey}"]`).count()) === 1,
+    { outKey, files: afterOut?.assets?.length },
+  );
+  await result.locator('.singles-row .single .pic', { has: cullPage.locator('img[alt*="c0"]') }).click();
+  const choose = result.locator('.choose');
+  await choose.waitFor({ timeout: 5000 });
+  await cullPage.screenshot({ path: join(outDir, 'auto-stack-choose.png') });
+  const choiceCount = await choose.locator('button').count();
+  await choose.locator('button').first().click();
+  await cullPage.locator('.stack-row .shot img[alt*="c0"]').waitFor({ timeout: 180000 });
+  await settled();
+  const afterAdd = await stackOf(keptD[0]);
+  check(
+    'clicking a single photo offers the stack next to it, and adds it to that stack in Immich',
+    choiceCount >= 1 && afterAdd?.assets?.length === 3 && afterAdd.assets.some((a) => a.id === id.c0),
+    { choiceCount, files: afterAdd?.assets?.map((a) => nameOf[a.id]) },
+  );
+  await cullPage.screenshot({ path: join(outDir, 'auto-stack-edited.png') });
+  const remembered = await startRun({ scope: { kind: 'assets', ids: ['c0', 'd0', 'd1', 'd2'].map((k) => id[k]) }, dryRun: true });
+  const againGroups = (remembered.report?.groups ?? []).map((g) => g.frames.map((f) => nameOf[f.frameId] ?? f.frameId).sort());
+  const againOut = remembered.report?.singles?.find((x) => nameOf[x.frameId] === outKey);
+  check(
+    'the culler remembers both edits for later runs',
+    againGroups.length === 1 && againGroups[0].join() === ['c0', ...keptD].sort().join() && againOut?.leftAlone === 'removed from the stack',
+    { againGroups, out: againOut },
+  );
+
+  // Undo, newest first: the addition, the removal, then the stacking.
+  const undoRuns = async () => ((await culler('GET', '/runs?limit=50')).body?.runs ?? []).filter((r) => r.origin === 'undo' && r.status === 'done').length;
+  for (let i = 0; i < 3; i++) {
+    const before = await undoRuns();
+    await cullPage.getByRole('button', { name: 'Undo' }).click();
+    for (let t = 0; t < 240 && (await undoRuns()) === before; t++) await sleep(500);
+    await settled();
+  }
   await cullPage.locator('p.ok', { hasText: 'Undone' }).or(cullPage.locator('.err')).first().waitFor({ timeout: 120000 });
   const afterUndo = await Promise.all(['c0', 'd0', 'd1', 'd2'].map((k) => info(id[k])));
   check(
@@ -387,7 +443,7 @@ try {
   });
   await cullPage.screenshot({ path: join(outDir, 'auto-stack-taken-apart.png') });
   await note.getByRole('button', { name: 'Include them' }).click();
-  await result.locator('.stack').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  await result.locator('.stack-row').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
   const included = await resultText();
   check(
     'Include them: the preview stacks them again, nothing changed yet',
@@ -395,7 +451,7 @@ try {
     { included },
   );
   await cullPage.getByRole('button', { name: 'Stack and pick the best' }).click();
-  await result.locator('button.stack').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  await stackedLead.or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
   const forcedRun = ((await culler('GET', '/runs?limit=5')).body?.runs ?? []).find((r) => !r.dryRun && r.origin === 'apply');
   if (forcedRun) cleanup.runs.push(forcedRun.id);
   check('applying that preview stacks them', (await stackOf('d0'))?.assets?.length === 3 && forcedRun?.force === true, { force: forcedRun?.force });
