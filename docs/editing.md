@@ -82,6 +82,21 @@ Vertical and horizontal perspective, rotate, aspect, scale, offsets and Constrai
 
 ![Transform: a vertical perspective correction; without Constrain Crop the uncovered edges show white](images/editing/transform.jpg)
 
+**Guided Upright** (Shift+T, or **Draw guides** in the Transform panel): drag along edges that
+should be vertical or horizontal, such as the sides of a building, up to four guides. The photo
+straightens when you let go:
+- one guide turns it like Straighten;
+- two along converging edges make them parallel and upright;
+- a third and fourth across fix the other direction as well.
+
+Drag a guide's ends to adjust it; click it and press Delete to remove it; Enter or **Done** when
+finished. The sliders apply on top, Constrain Crop keeps the crop inside the straightened photo, and
+the guides stay on the photo when it is cropped or turned. The correction assumes the lens's focal
+length (from the photo, 35 mm-equivalent); with two guides each way it is measured from the guides
+instead. If the result looks squashed or stretched, Aspect corrects it.
+
+![Guided Upright: guides along the downpipe and the gable's edge](images/editing/upright.jpg)
+
 ## Effects
 
 Post-crop vignetting (three styles) and grain.

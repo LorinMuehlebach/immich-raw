@@ -90,6 +90,9 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
 
   To compare builds side by side, run the editor's dev server from each checkout on its own port
   and point `IMMICH_URL` at it, e.g. `IMMICH_URL=http://localhost:5174`.
+- Guided Upright: `node e2e/probe-upright.mjs <out-dir> [file name part]` draws guides on one seeded
+  RAW (`nikon-z7` by default) and checks that they end up vertical, through moving, adding and
+  deleting guides, guides that ask too much, undo and Constrain Crop. Nothing is saved.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;
