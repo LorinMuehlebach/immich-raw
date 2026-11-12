@@ -4,7 +4,7 @@
 import { canonicalJson, type Recipe } from '@immich-raw/recipe';
 
 /** The recipe fields the user edits (everything except bookkeeping like render/pending). */
-export const EDITABLE_KEYS = ['profile', 'wb', 'basic', 'toneCurve', 'colorMixer', 'bwMix', 'colorGrading', 'detail', 'lens', 'transform', 'effects', 'calibration', 'crop', 'masks'] as const;
+export const EDITABLE_KEYS = ['profile', 'profileAmount', 'wb', 'basic', 'toneCurve', 'colorMixer', 'bwMix', 'colorGrading', 'detail', 'lens', 'transform', 'effects', 'calibration', 'crop', 'masks'] as const;
 
 export type Editable = Pick<Recipe, (typeof EDITABLE_KEYS)[number]>;
 

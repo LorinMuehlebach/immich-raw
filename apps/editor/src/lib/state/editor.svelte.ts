@@ -11,7 +11,7 @@ import {
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
-import { RawSession, setLibRawUrl, type LinearImage } from '@immich-raw/decoder';
+import { RawSession, readFujiFilmSim, setLibRawUrl, type FujiFilmSim, type LinearImage } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
@@ -32,7 +32,6 @@ import {
   cropToView,
   fitViewRect,
   isTransformActive,
-  profileWhitePoint,
   maxViewRect,
   quarterTurnsFromFlip,
   sampleSource,
@@ -48,6 +47,7 @@ import {
   type Histogram,
   type LensData,
   type MaskView,
+  type ProfileLooks,
   type ViewRect,
 } from '@immich-raw/pipeline';
 import {
@@ -108,6 +108,7 @@ import {
   type MixerChannel,
   type ParamSpec,
   type ProfileId,
+  profileInfo,
   type Recipe,
   type SettingsPatch,
   type Wheel,
@@ -139,6 +140,8 @@ import { CANCELLED, tileSide, upscaler, type Progress, type UpscaleScale, type U
 import { saveUpscaled, type UpscaleSaveStep } from '../immich/save-upscaled.ts';
 import { PATCH, UpscaleState } from './upscale.svelte.ts';
 import { UPSCALE_QUALITY, checkUpscale, formatDuration, upscaledDownloadName, type UpscaleCheck } from './upscale.ts';
+import { FUJI_DECLINED, fujiLooks } from '../fuji-looks.svelte.ts';
+import { photoDefaults, type PhotoDefaults } from '../photo-defaults.ts';
 
 export type Status = 'loading' | 'auth' | 'error' | 'ready';
 /**
@@ -294,6 +297,7 @@ const CHANNEL_LABEL: Record<MixerChannel, string> = { hue: 'Hue', saturation: 'S
 function historyLabel(spec: ParamSpec, value: number): string {
   const v = formatParam(spec, value);
   const parts = spec.path.split('.');
+  if (parts[0] === 'profileAmount') return `Profile Amount ${v}`;
   if (parts[0] === 'toneCurve') return `Tone Curve: ${spec.label} ${v}`;
   if (parts[0] === 'colorMixer') return `${CHANNEL_LABEL[parts[1] as MixerChannel]}: ${spec.label} ${v}`;
   if (parts[0] === 'bwMix') return `B&W: ${spec.label} ${v}`;
@@ -314,6 +318,7 @@ function historyLabel(spec: ParamSpec, value: number): string {
 }
 
 const CLIPBOARD_KEY = 'raw-editor.clipboard';
+const COLOR_FALLBACK = "The Fujifilm film look isn't downloaded in this browser, so it was rendered with Color.";
 const PREVIOUS_KEY = 'raw-editor.previous';
 const AUTO_PARAMS_KEY = 'raw-editor.autoParams';
 const EXPORT_KEY = 'raw-editor.export';
@@ -379,6 +384,11 @@ export class Editor {
   hasClipboard = $state(false);
   hasPrevious = $state(false);
   sidecarOffer = $state<SidecarOffer | null>(null);
+  /**
+   * Offer to download the Fujifilm film looks: 'camera' to start from the film simulation set
+   * in the camera, 'edit' because the saved edit uses one. label: the look's name.
+   */
+  fujiOffer = $state<{ reason: 'camera' | 'edit'; label: string } | null>(null);
   /** Size of the last fitted frame, for laying out the canvas. */
   frame = $state<{ width: number; height: number }>({ width: 3, height: 2 });
   zoom = $state<ZoomState>({ on: false, cx: 0.5, cy: 0.5, scale: 1 });
@@ -441,6 +451,11 @@ export class Editor {
   private dngBuilt: BuiltDng | null = null;
   returnPath: string | null = null;
   ctx: string | null = null;
+  /** The photo's starting settings (its in-camera film look for a Fujifilm RAW). */
+  private defaults: PhotoDefaults = { recipe: defaultRecipe(), wanted: null, simLabel: null };
+  private fujiSim: FujiFilmSim | null = null;
+  /** The RAW had a saved edit when it was opened. */
+  private storedEdit = false;
   /** Renders this RAW had before (the page Immich returns to may show one of them). */
   private pastRenders = new Set<string>();
   /** The render made by a save in this session (Immich may still be making its preview). */
@@ -482,6 +497,9 @@ export class Editor {
 
       const [stored, snapshots] = await Promise.all([loadRecipe(asset.id).catch(() => null), this.loadSnapshots(asset.id)]);
       this.snapshots = snapshots;
+      this.storedEdit = !!stored;
+      // Film looks kept in this browser (never downloads here).
+      const looksP = fujiLooks.load();
       if (stored) {
         this.recipe = stored;
         this.savedJson = editableJson(stored);
@@ -492,13 +510,23 @@ export class Editor {
       const bytes = await downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => (this.loadingProgress = f));
       this.loadingProgress = null;
       this.loadingText = 'Decoding RAW…';
+      // The film simulation set in the camera (Fujifilm maker note); null for other files.
+      this.fujiSim = readFujiFilmSim(bytes);
       const session = await RawSession.open(bytes);
       this.session = session;
       this.camera = cameraInfo(session.meta);
+      const looks = await looksP;
+      this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
+      if (!stored) {
+        this.recipe = cloneRecipe(this.defaults.recipe);
+        this.savedJson = editableJson(this.recipe);
+      }
 
       this.renderer = new Renderer(canvas);
       this.renderer.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
       this.renderer.setSource(session.half, this.camera);
+      this.renderer.setProfileLooks(looks ?? {});
+      this.renderer.setPhotoDefaults(this.defaults.recipe);
       this.ai.reset();
       this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
       this.loadLens(bytes);
@@ -508,9 +536,68 @@ export class Editor {
       // Full resolution is needed for saving and 1:1 zoom; start it in the background.
       this.startFullDecode();
       if (!stored) this.checkSidecar(asset.id);
+      this.offerFujiLooks();
     } catch (e) {
       this.fail(e);
     }
+  }
+
+  /** Offers the Fujifilm film looks when the photo or its saved edit would use them. */
+  private offerFujiLooks(): void {
+    const recipe = $state.snapshot(this.recipe) as Recipe;
+    if (this.renderer?.profileMissing(recipe)) {
+      this.fujiOffer = { reason: 'edit', label: profileInfo(recipe.profile).label };
+      return;
+    }
+    const wanted = this.defaults.wanted;
+    if (!wanted || this.storedEdit || this.readOnly) return;
+    // Agreed to before (the browser dropped them since): fetch them again without asking.
+    if (fujiLooks.consent === 'yes') void this.acceptFujiOffer();
+    else if (fujiLooks.consent === 'ask') this.fujiOffer = { reason: 'camera', label: this.defaults.simLabel ?? profileInfo(wanted).label };
+  }
+
+  /** Downloads the Fujifilm film looks (the user agreed) and starts from the in-camera one. */
+  async acceptFujiOffer(): Promise<void> {
+    this.fujiOffer = null;
+    const busy = 'Downloading the Fujifilm film looks…';
+    this.notice = busy;
+    try {
+      this.looksArrived(await fujiLooks.download());
+      if (this.notice === busy) this.notice = null;
+    } catch {
+      this.notice = fujiLooks.error;
+    }
+  }
+
+  /** The Download button next to a film look that isn't here (asks first, like picking one). */
+  async downloadFujiLooks(): Promise<void> {
+    const looks = await fujiLooks.request();
+    if (looks) this.looksArrived(looks);
+    else this.notice = fujiLooks.error ?? FUJI_DECLINED;
+  }
+
+  dismissFujiOffer(never = false): void {
+    this.fujiOffer = null;
+    if (never) fujiLooks.never();
+  }
+
+  /** The film looks are here: render with them, and start an untouched photo from its in-camera look. */
+  private looksArrived(looks: ProfileLooks): void {
+    if (!this.renderer || !this.session) return;
+    this.renderer.setProfileLooks(looks);
+    this.fujiOffer = null;
+    const wanted = this.defaults.wanted;
+    this.defaults = photoDefaults({ make: this.session.meta.make, sim: this.fujiSim, looksReady: true });
+    this.renderer.setPhotoDefaults(this.defaults.recipe);
+    const untouched = !this.storedEdit && !this.dirty && this.historySteps.length <= 1;
+    if (wanted && untouched && !this.readOnly) {
+      this.recipe = cloneRecipe(this.defaults.recipe);
+      this.savedJson = editableJson(this.recipe);
+      this.history.reset($state.snapshot(this.recipe) as Recipe, 'Open');
+      this.syncHistory();
+    }
+    this.autoSamples = null;
+    this.requestRender();
   }
 
   private showServerPreview(id: string): void {
@@ -729,7 +816,7 @@ export class Editor {
     if (this.readOnlyGuard() || !this.renderer || this.status !== 'ready') return;
     const recipe = $state.snapshot(this.recipe) as Recipe;
     const auto = autoTone(this.toneSamples(recipe), {
-      whitePoint: profileWhitePoint(recipe.profile),
+      whitePoint: this.renderer.profileWhitePoint(recipe),
       params: $state.snapshot(this.autoParams) as AutoParams,
     });
     const specs = only ? [only] : Editor.AUTO_SPECS;
@@ -752,7 +839,7 @@ export class Editor {
 
   /** What Auto measures. Cached: only white balance, crop, profile and calibration change it. */
   private toneSamples(recipe: Recipe): Float32Array {
-    const key = canonicalJson({ ...editable(recipe), basic: undefined, toneCurve: undefined, detail: undefined });
+    const key = canonicalJson({ ...editable(recipe), basic: undefined, toneCurve: undefined, detail: undefined, looks: fujiLooks.version });
     if (this.autoSamples?.key !== key) this.autoSamples = { key, samples: this.renderer!.toneSamples(recipe) };
     return this.autoSamples.samples;
   }
@@ -857,10 +944,20 @@ export class Editor {
     this.setParam(spec, spec.default, true);
   }
 
-  setProfile(id: ProfileId): void {
+  async setProfile(id: ProfileId): Promise<void> {
     if (this.readOnlyGuard()) return;
+    if (profileInfo(id).download && !fujiLooks.looks) {
+      const looks = await fujiLooks.request();
+      if (!looks) {
+        this.notice = fujiLooks.error ?? FUJI_DECLINED;
+        return;
+      }
+      this.looksArrived(looks);
+    }
     this.recipe.profile = id;
-    this.changed(true, `Profile: ${id[0]!.toUpperCase()}${id.slice(1)}`);
+    // The offer was about the edit's film look, which is gone now.
+    if (this.fujiOffer?.reason === 'edit' && !profileInfo(id).download) this.fujiOffer = null;
+    this.changed(true, `Profile: ${profileInfo(id).label}`);
   }
 
   setWbMode(mode: 'asShot' | 'custom'): void {
@@ -902,7 +999,7 @@ export class Editor {
 
   resetAll(): void {
     if (this.readOnlyGuard()) return;
-    const fresh = defaultRecipe();
+    const fresh = cloneRecipe(this.defaults.recipe);
     Object.assign(this.recipe, editable(fresh));
     this.cropAuto = true;
     this.changed(true, 'Reset');
@@ -1769,7 +1866,7 @@ export class Editor {
     try {
       // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
-      const { recipe, file } = await this.renderExport(asset, session, renderer, preset, step, true);
+      const { recipe, file, fallback } = await this.renderExport(asset, session, renderer, preset, step, true);
       const saved = await saveRender({
         raw: asset,
         recipe,
@@ -1785,7 +1882,7 @@ export class Editor {
       this.savedJson = editableJson(saved);
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
-      this.notice = 'Saved to Immich, stacked on top of the RAW.';
+      this.notice = `Saved to Immich, stacked on top of the RAW.${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
       this.asset = await getAssetInfo({ id: asset.id }).catch(() => asset);
       this.requestRender();
       return true;
@@ -1807,25 +1904,38 @@ export class Editor {
     preset: ExportPreset,
     step: (s: RenderStep, fraction?: number) => void,
     forImmich = false,
-  ): Promise<{ recipe: Recipe; file: ExportFile }> {
-    const { recipe, image } = await this.renderFull(session, renderer, step);
+  ): Promise<{ recipe: Recipe; file: ExportFile; fallback: boolean }> {
+    const { recipe, image, fallback } = await this.renderFull(session, renderer, step);
     const file = await this.finish(image, asset, preset, step, forImmich);
-    return { recipe, file };
+    return { recipe, file, fallback };
   }
 
-  /** The current edit rendered at full resolution, and the recipe it was rendered from. */
-  private async renderFull(session: RawSession, renderer: Renderer, step: (s: RenderStep, fraction?: number) => void): Promise<{ recipe: Recipe; image: ImageData }> {
+  /**
+   * The current edit rendered at full resolution, and the recipe it was rendered from.
+   * fallback: the recipe's film look isn't in this browser, so it rendered with Color.
+   */
+  private async renderFull(
+    session: RawSession,
+    renderer: Renderer,
+    step: (s: RenderStep, fraction?: number) => void,
+  ): Promise<{ recipe: Recipe; image: ImageData; fallback: boolean }> {
     step('decode');
     this.startFullDecode();
     const full = await session.full();
     const recipe = cloneRecipe($state.snapshot(this.recipe) as Recipe);
+    if (renderer.profileMissing(recipe)) {
+      // A Fujifilm film look that isn't in this browser: ask, else it renders as Color.
+      const looks = await fujiLooks.request();
+      if (looks) this.looksArrived(looks);
+    }
+    const fallback = renderer.profileMissing(recipe);
     // AI masks are computed in the background: the export needs every one of them.
     await this.ai.ready(recipe);
     recipe.app = APP_ID;
     recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
     step('render');
     const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
-    return { recipe, image };
+    return { recipe, image, fallback };
   }
 
   /** A rendered image made into the file `preset` describes. */
@@ -1871,7 +1981,7 @@ export class Editor {
     const step = (s: RenderStep, fraction = 0) => (this.saving = { label: `${what}: ${STEP_LABEL[s]}`, fraction });
     try {
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[id]) as ExportPreset);
-      const { file } = await this.renderExport(asset, session, renderer, preset, step);
+      const { file, fallback } = await this.renderExport(asset, session, renderer, preset, step);
       const name = exportFilename(preset, {
         originalFileName: asset.originalFileName,
         preset: id,
@@ -1881,7 +1991,7 @@ export class Editor {
       });
       downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
       this.error = null;
-      this.notice = `Exported ${name} (${file.width} × ${file.height}).`;
+      this.notice = `Exported ${name} (${file.width} × ${file.height}).${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
       return true;
     } catch (e) {
       console.error(e);
@@ -2201,7 +2311,7 @@ export class Editor {
 
   /** The default look in sensor orientation (DNG previews are stored like the raw data). */
   private renderDngPreview(): Promise<ImageData> {
-    const recipe = defaultRecipe();
+    const recipe = cloneRecipe(this.defaults.recipe);
     recipe.crop.rotate90 = ((4 - quarterTurnsFromFlip(this.camera!.flip)) % 4) as Recipe['crop']['rotate90'];
     return this.renderer!.exportImage(recipe, this.session!.half);
   }

@@ -46,6 +46,21 @@ needed (after asking) and keep them in the browser. They are not part of immich-
 | Real-ESRGAN general x4v3 (SRVGGNetCompact) | AI Upscale, Sharp | BSD-3-Clause | https://huggingface.co/jonathanst29/tinier-upscale-models (ONNX export of https://github.com/xinntao/Real-ESRGAN) |
 | RealPLKSR 2x and 4x, MSSIM pretrain | AI Upscale, Natural | MIT (weights); ONNX packaging GPL-3.0-or-later | https://huggingface.co/darktable-org/upscale-realplksr-onnx (weights from https://github.com/dslisleedh/PLKSR) |
 
+## Fujifilm film looks (downloaded at run time, not shipped)
+
+The Fujifilm film looks in the profile list (Provia, Velvia, Astia, Classic Chrome, Reala Ace,
+Pro Neg. Hi and Std, Classic Neg., Nostalgic Neg., Eterna and Eterna Bleach Bypass) use community
+look tables. The editor downloads them from GitHub, at the commit below, the first time they are
+needed (after asking), converts them to its own format without changing their values, and keeps
+them in the browser. They are not part of immich-raw or its image.
+
+| Data | Used for | Licence | Source |
+|---|---|---|---|
+| FujifilmCameraProfiles by abpy: the eight DCP look tables and tone curves (`xml tables/`) and the three Provia conversion LUTs (`provia conversion luts/*sRGB.cube`) | Fujifilm film looks | CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/) | https://github.com/abpy/FujifilmCameraProfiles/tree/b5a1f16abfb2759b337c83d69d9dc49470e7e518 |
+
+Fujifilm, Provia, Velvia, Astia, Classic Chrome, Eterna and Reala Ace are trademarks of FUJIFILM
+Corporation, used here only to name the looks. immich-raw is not affiliated with Fujifilm.
+
 ## Code adapted from other projects
 
 - **Lensfun library** (`packages/lens/src/lensfun.ts`): lens matching, coefficient interpolation and
@@ -55,8 +70,10 @@ needed (after asking) and keep them in the browser. They are not part of immich-
   it to be combined with AGPL-3.0 code (GPL-3.0 §13). See [LGPL-3.0.txt](licenses/LGPL-3.0.txt) and
   [GPL-3.0.txt](licenses/GPL-3.0.txt).
 - **Adobe DNG SDK** (`packages/pipeline/src/color/temperature.ts`): the temperature/tint conversion
-  follows `dng_temperature.cpp`. Copyright 2006 Adobe Systems Incorporated, used under the DNG SDK
-  License Agreement ([dng-sdk.txt](licenses/dng-sdk.txt)).
+  follows `dng_temperature.cpp`. The profile look tables (`packages/pipeline/src/color/dcp.ts` and
+  `applyLook` in `packages/pipeline/src/shaders.ts`) follow `RefBaselineHueSatMap` in
+  `dng_reference.cpp` and the HSV conversion in `dng_utils.h`. Copyright 2006 Adobe Systems
+  Incorporated, used under the DNG SDK License Agreement ([dng-sdk.txt](licenses/dng-sdk.txt)).
 - **LibRaw** (`packages/dng/src/lossy.test.ts`, test code only): `librawCurves` re-implements how
   LibRaw 0.22.1 reads the lossy-DNG opcode list, as a reference for the tests. Copyright (C) 2008-2026
   LibRaw LLC, LGPL-2.1 ([LGPL-2.1.txt](licenses/LGPL-2.1.txt)).

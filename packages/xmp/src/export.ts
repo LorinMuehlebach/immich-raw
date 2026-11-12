@@ -76,6 +76,8 @@ export function patchToXmp(patch: SettingsPatch, opts: ExportOptions = {}): stri
     add('Treatment', profile === 'monochrome' ? 'Black & White' : 'Color');
     attrs.push(['ire:Profile', profile]);
   }
+  const profileAmount = getPath(patch, 'profileAmount');
+  if (typeof profileAmount === 'number') attrs.push(['ire:ProfileAmount', String(Math.round(profileAmount))]);
 
   const wb = getPath(patch, 'wb') as Recipe['wb'] | undefined;
   if (wb) {

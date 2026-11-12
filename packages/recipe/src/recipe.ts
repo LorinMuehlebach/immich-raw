@@ -3,19 +3,12 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { normalizeMasks, type Mask } from './masks.ts';
 import { ALL_PARAMS, PARAMS, clampParam, getPath, setPath, type Band, type Wheel } from './params.ts';
+import { isProfileId, type ProfileId } from './profiles.ts';
 
 export const RECIPE_SCHEMA = 1;
 export const RECIPE_KEY = 'raw-editor.recipe';
 export const RENDER_KEY = 'raw-editor.render';
 export const HISTORY_KEY = 'raw-editor.history';
-
-export type ProfileId = 'color' | 'neutral' | 'linear' | 'monochrome';
-export const PROFILES: { id: ProfileId; label: string }[] = [
-  { id: 'color', label: 'Color' },
-  { id: 'neutral', label: 'Neutral' },
-  { id: 'linear', label: 'Linear' },
-  { id: 'monochrome', label: 'Monochrome' },
-];
 
 /** Crop aspect presets. 'original' = the photo's own aspect; 'free' = unconstrained. */
 export const ASPECTS = ['original', 'free', '1:1', '4:5', '5:7', '2:3', '3:4', '9:16'] as const;
@@ -222,6 +215,8 @@ export interface Recipe {
   app: string;
   decoder?: { name: string; version: string; demosaic: string };
   profile: ProfileId;
+  /** Profile Amount in % (0..200): how strongly a look-based profile applies. */
+  profileAmount: number;
   wb: WhiteBalance;
   basic: BasicParams;
   toneCurve: ToneCurveParams;
@@ -280,7 +275,7 @@ export function normalizeRecipe(input: unknown): Recipe {
     if (typeof v === 'number') setPath(r, spec.path, clampParam(spec, v));
   }
 
-  if (typeof src.profile === 'string' && PROFILES.some((p) => p.id === src.profile)) r.profile = src.profile as ProfileId;
+  if (isProfileId(src.profile)) r.profile = src.profile;
   const wb = isObject(src.wb) ? src.wb : {};
   if (wb.mode === 'custom' || wb.mode === 'asShot') r.wb.mode = wb.mode;
 

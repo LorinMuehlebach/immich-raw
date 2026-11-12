@@ -43,4 +43,13 @@ describe('groups', () => {
     expect(DEFAULT_GROUPS).toEqual(expect.arrayContaining(['colorMixer', 'colorGrading', 'calibration']));
     expect(DEFAULT_GROUPS).not.toContain('crop');
   });
+
+  it('copies the profile Amount with the profile', () => {
+    const r = defaultRecipe();
+    r.profile = 'vivid';
+    r.profileAmount = 150;
+    const patch = pickGroups(r, ['profile']);
+    expect(patch).toEqual({ profile: 'vivid', profileAmount: 150 });
+    expect(applyPatch(defaultRecipe(), patch).profileAmount).toBe(150);
+  });
 });

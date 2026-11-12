@@ -13,9 +13,12 @@ import {
   mul3,
   multipliersForTempTint,
   normalizeCamMul,
+  profileExposureEv,
+  resolveProfile,
   tempTintForMultipliers,
   fromRows,
   type Mat3,
+  type ProfileRender,
   type TempTint,
   type Vec3,
 } from './color/index.ts';
@@ -61,10 +64,6 @@ export function cameraInfo(meta: {
   };
 }
 
-/** Per-profile baseline exposure in EV (like Camera Raw's camera baseline). */
-const PROFILE_BASELINE: Record<Recipe['profile'], number> = { color: 0.35, neutral: 0.35, linear: 0, monochrome: 0.35 };
-const PROFILE_INDEX: Record<Recipe['profile'], number> = { color: 0, neutral: 1, linear: 2, monochrome: 3 };
-
 export interface DevelopUniforms {
   uWb: number[];
   uClip: number[];
@@ -82,7 +81,12 @@ export function recipeMultipliers(recipe: Recipe, cam: CameraInfo): Vec3 {
   return multipliersForTempTint(cam.camXyz, recipe.wb.temp, recipe.wb.tint);
 }
 
-export function developUniforms(recipe: Recipe, cam: CameraInfo): DevelopUniforms {
+/**
+ * Develop-stage uniforms. `profile` is what renders for recipe.profile (see resolveProfile:
+ * a Fujifilm look that isn't downloaded renders as Color); its baseline exposure is like
+ * Camera Raw's camera baseline.
+ */
+export function developUniforms(recipe: Recipe, cam: CameraInfo, profile: ProfileRender = resolveProfile(recipe.profile)): DevelopUniforms {
   const mul = cam.camMul;
   const mx = Math.max(...mul);
   const mn = Math.min(...mul);
@@ -97,11 +101,11 @@ export function developUniforms(recipe: Recipe, cam: CameraInfo): DevelopUniform
     uClip: [0, 1, 2].map((c) => (mul[c]! / mx) * comp * ratio[c]!),
     // Calibration re-interprets the primaries, so it belongs to the camera -> working matrix.
     uCamToWork: mul3(calibrationMatrix(recipe.calibration), cam.camToWork),
-    uExposure: 2 ** (b.exposure + cam.baselineExposure + PROFILE_BASELINE[recipe.profile]),
+    uExposure: 2 ** (b.exposure + cam.baselineExposure + profileExposureEv(profile, recipe.profileAmount)),
     uTone: [b.shadows / 100, b.highlights / 100, b.whites / 100, b.blacks / 100],
     uContrast: b.contrast / 100,
     uPresence: [b.vibrance / 100, b.saturation / 100],
-    uProfile: PROFILE_INDEX[recipe.profile],
+    uProfile: profile.base,
   };
 }
 

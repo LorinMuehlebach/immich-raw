@@ -14,8 +14,10 @@ import {
   PARAMS,
   TRANSFORM_PARAMS,
   clampParam,
+  isProfileId,
   normalizeCurve,
   patchGroups,
+  profileInfo,
   setPath,
   type CurveChannel,
   type GroupId,
@@ -257,11 +259,40 @@ export function parseCurve(items: string[]): [number, number][] {
     .map((p) => [p[0]!, p[1]!] as [number, number]);
 }
 
-export function profileFromName(name: string): ProfileId {
-  if (/monochrome|b&w|black\s*&?\s*white/i.test(name)) return 'monochrome';
-  if (/neutral|flat/i.test(name)) return 'neutral';
-  if (/linear/i.test(name)) return 'linear';
-  return 'color';
+/** Lightroom profile names with a counterpart here, in match order. */
+const PROFILE_NAMES: [RegExp, ProfileId][] = [
+  [/^Adobe Color$/i, 'color'],
+  [/^Adobe Vivid$/i, 'vivid'],
+  [/^Adobe Portrait$/i, 'portrait'],
+  [/^Adobe Landscape$/i, 'landscape'],
+  [/^Adobe Neutral$/i, 'neutral'],
+  [/^Adobe Monochrome$/i, 'monochrome'],
+  // Fujifilm camera-matching profiles ("Camera PROVIA/Standard", "Camera CLASSIC Neg.", ...).
+  [/^Camera PROVIA/i, 'fuji-provia'],
+  [/^Camera Velvia/i, 'fuji-velvia'],
+  [/^Camera ASTIA/i, 'fuji-astia'],
+  [/^Camera CLASSIC CHROME/i, 'fuji-classic-chrome'],
+  [/^Camera PRO ?Neg\.? ?Hi/i, 'fuji-pro-neg-hi'],
+  [/^Camera PRO ?Neg\.? ?Std/i, 'fuji-pro-neg-std'],
+  [/^Camera ETERNA BLEACH BYPASS/i, 'fuji-bleach-bypass'],
+  [/^Camera ETERNA/i, 'fuji-eterna'],
+  [/^Camera CLASSIC Neg/i, 'fuji-classic-neg'],
+  [/^Camera NOSTALGIC Neg/i, 'fuji-nostalgic-neg'],
+  [/^Camera REALA ACE/i, 'fuji-reala-ace'],
+];
+
+/** The profile for a Lightroom profile name; `exact` when it is the same look, not an approximation. */
+export function profileFromName(name: string): { id: ProfileId; exact: boolean } {
+  const n = name.trim();
+  for (const [re, id] of PROFILE_NAMES) if (re.test(n)) return { id, exact: true };
+  const near = (id: ProfileId) => ({ id, exact: false });
+  if (/monochrome|acros|sepia|b&w|black\s*&?\s*white/i.test(n)) return near('monochrome');
+  if (/neutral|flat/i.test(n)) return near('neutral');
+  if (/linear/i.test(n)) return near('linear');
+  if (/vivid/i.test(n)) return near('vivid');
+  if (/portrait/i.test(n)) return near('portrait');
+  if (/landscape/i.test(n)) return near('landscape');
+  return near('color');
 }
 
 /**
@@ -341,22 +372,35 @@ export function crsToPatch(crs: CrsSettings, ctx?: CropContext): ImportResult {
     apply(key, `toneCurve.point.${ch}`, normalizeCurve(pts), list.join(' | '));
   }
 
-  // Profile
+  // Profile: our own id, else B&W, else the profile Lightroom names (a Look such as "Adobe
+  // Color", or a camera profile such as "Camera CLASSIC CHROME").
   const lookName = v['Look.Name'];
-  const profileName = lookName ?? v.CameraProfile;
   let profile: ProfileId | null = null;
-  if (crs.extra.Profile && ['color', 'neutral', 'linear', 'monochrome'].includes(crs.extra.Profile)) {
-    profile = crs.extra.Profile as ProfileId;
+  let fromLook = false;
+  if (isProfileId(crs.extra.Profile)) {
+    profile = crs.extra.Profile;
   } else if (v.Treatment === 'Black & White' || v.ConvertToGrayscale === 'True') {
     profile = 'monochrome';
-  } else if (profileName) {
-    profile = profileFromName(profileName);
-    const label = { color: 'Color', neutral: 'Neutral', linear: 'Linear', monochrome: 'Monochrome' }[profile];
-    warnings.push(`Profile "${profileName}" approximated by ${label}`);
-  } else if (v.Treatment === 'Color') {
-    profile = 'color';
+  } else {
+    const named = [lookName, v.CameraProfile].filter((n): n is string => !!n).map((n) => ({ n, ...profileFromName(n) }));
+    const hit = named.find((x) => x.exact) ?? named[0];
+    if (hit) {
+      profile = hit.id;
+      fromLook = hit.n === lookName;
+      if (!hit.exact) warnings.push(`Profile "${hit.n}" approximated by ${profileInfo(hit.id).label}`);
+      else if (lookName && !fromLook) warnings.push(`Profile "${lookName}" not supported; using ${profileInfo(hit.id).label}`);
+    } else if (v.Treatment === 'Color') {
+      profile = 'color';
+    }
   }
   if (profile) apply(crs.extra.Profile ? 'Profile' : v.Treatment !== undefined ? 'Treatment' : 'CameraProfile', 'profile', profile, profile);
+  if (profile && profileInfo(profile).amount) {
+    // Our own value, else the Look's Amount (Lightroom writes a fraction, 1 = 100 %).
+    const own = crs.extra.ProfileAmount !== undefined ? parseNumber(crs.extra.ProfileAmount) : NaN;
+    const look = fromLook && v['Look.Amount'] !== undefined ? parseNumber(v['Look.Amount']) * 100 : NaN;
+    const amount = Number.isFinite(own) ? own : look;
+    if (Number.isFinite(amount)) apply(Number.isFinite(own) ? 'ProfileAmount' : 'Look.Amount', 'profileAmount', clampParam(PARAMS.profileAmount, Math.round(amount)), String(amount));
+  }
 
   // Crop
   if (v.HasCrop === 'True') {

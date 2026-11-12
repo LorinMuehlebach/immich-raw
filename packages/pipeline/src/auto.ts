@@ -4,7 +4,7 @@
 // Input: log2 luminance samples of the (cropped) frame with the current white balance at
 // Exposure 0, as the tone stage sees them. All maths is in stops relative to middle grey.
 // The slider effects mirror toneBase() in shaders.ts.
-import type { BasicParams, ParamSpec, ProfileId } from '@immich-raw/recipe';
+import type { BasicParams, ParamSpec } from '@immich-raw/recipe';
 
 const MID = Math.log2(0.18);
 
@@ -60,11 +60,6 @@ export function normalizeAutoParams(input: unknown): AutoParams {
     if (typeof v === 'number' && Number.isFinite(v)) out[spec.key] = Math.min(spec.max, Math.max(spec.min, v));
   }
   return out;
-}
-
-/** Scene value that renders as display white, per profile (the shoulder's white point). */
-export function profileWhitePoint(profile: ProfileId): number {
-  return profile === 'neutral' ? 1.8 : profile === 'linear' ? 1 : 1.5;
 }
 
 const smooth = (a: number, b: number, x: number) => {

@@ -2,6 +2,7 @@
 // that isn't listed there fails here.
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { FUJI_LOOKS_SOURCE } from './packages/pipeline/src/color/fuji-looks.ts';
 
 const root = new URL('./', import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, root), 'utf8');
@@ -38,5 +39,12 @@ describe('third-party notices', () => {
   it('carry the notices the DNG patent licence and the IJG licence require', () => {
     expect(notices).toContain('This product includes DNG technology under license by Adobe.');
     expect(notices).toContain('This software is based in part on the work of the Independent JPEG Group.');
+  });
+
+  it('name the film looks downloaded at run time, at the commit the editor fetches', () => {
+    expect(notices).toContain('Fujifilm film looks (downloaded at run time, not shipped)');
+    expect(notices).toContain(`${FUJI_LOOKS_SOURCE.repo}/tree/${FUJI_LOOKS_SOURCE.commit}`);
+    expect(notices).toContain(FUJI_LOOKS_SOURCE.licence);
+    expect(notices).toContain(FUJI_LOOKS_SOURCE.licenceUrl);
   });
 });

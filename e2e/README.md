@@ -75,6 +75,17 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   Object and People mask on one photo (`leica-q2.DNG` has sky, water and a ferry), then exports it.
   It needs internet: the models (about 316 MB) download on first use and stay in the browser
   profile it keeps in `<out-dir>/profile`.
+- Profiles: `node e2e/probe-profiles.mjs <out-dir> <asset-id>[,<asset-id>...]` renders seeded RAWs
+  with the profiles, in memory only (nothing is saved):
+  - `WRITE_BASELINE=<file>` with one build, then `BASELINE=<file>` with another, checks that Color,
+    Neutral, Linear and Monochrome render the same pixels in both;
+  - `FUJI=<asset-id> RAF=<path to that RAF>` compares the Provia film look with the camera's own
+    JPEG inside the RAF over an exposure sweep (lightness percentiles, colourfulness, ΔE), which is
+    how `FUJI_BASELINE_EV` was set; it downloads the film looks (about 15 MB) from GitHub;
+  - `SHEETS=1` writes a contact sheet of every profile per photo.
+
+  To compare builds side by side, run the editor's dev server from each checkout on its own port
+  and point `IMMICH_URL` at it, e.g. `IMMICH_URL=http://localhost:5174`.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

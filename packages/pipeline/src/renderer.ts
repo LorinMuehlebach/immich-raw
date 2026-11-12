@@ -1,9 +1,9 @@
 // WebGL2 renderer: fitted preview from a <= 2560 px proxy, 1:1 zoom regions and
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
-import { canonicalJson, defaultRecipe, type BrushComponent, type Recipe } from '@immich-raw/recipe';
+import { canonicalJson, defaultRecipe, type BrushComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
 import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
-import { toGlMat3 } from './color/index.ts';
+import { cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type ProfileLooks, type ProfileRender } from './color/index.ts';
 import { buildCurveLut, isCurveNeutral, LUT_SIZE } from './curves.ts';
 import { estimateDehaze } from './dehaze.ts';
 import { Denoiser, effectsUniforms, nrPlan } from './effects.ts';
@@ -158,6 +158,13 @@ export class Renderer {
   private lutTex: WebGLTexture | null = null;
   private lutKey = '';
   private dummy: WebGLTexture;
+  private dummy3d: WebGLTexture;
+  /** Downloaded profile data (Fujifilm film looks); see setProfileLooks. */
+  private looks: ProfileLooks = {};
+  /** Uploaded profile textures by profile (look table, tone curve, film LUT). */
+  private profileTex = new Map<ProfileId, { look?: WebGLTexture; curve?: WebGLTexture; film?: WebGLTexture }>();
+  /** The photo's own starting settings (e.g. its in-camera film look): what "before" shows. */
+  private photoDefaults: Recipe | null = null;
   /** Zoom source cache: a region of a source image uploaded as RGBA16F. */
   private zoomSrc: { image: SourceImage; x: number; y: number; w: number; h: number; target: Target; int: WebGLTexture } | null = null;
   /** Maps a point of the last presented view (0..1) to frame t and back. */
@@ -206,6 +213,7 @@ export class Renderer {
     };
     this.denoiser = new Denoiser(c);
     this.dummy = c.texture(1, 1, gl.RGBA16F);
+    this.dummy3d = c.texture3d(1, 1, 1, new Float32Array([0, 1, 1, 1]));
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
       this.lost = true;
@@ -282,6 +290,64 @@ export class Renderer {
     this.analysisCache = null;
   }
 
+  /** Profile data that is downloaded rather than built in (the Fujifilm film looks). */
+  setProfileLooks(looks: ProfileLooks): void {
+    this.looks = looks;
+    this.freeProfileTextures();
+    this.analysisCache = null;
+  }
+
+  /** What renders for the recipe's profile (Color when a downloaded look is missing). */
+  profileFor(recipe: Recipe): ProfileRender {
+    return resolveProfile(recipe.profile, this.looks);
+  }
+
+  /** The recipe names a profile whose data isn't loaded, so Color renders instead. */
+  profileMissing(recipe: Recipe): boolean {
+    return this.profileFor(recipe).missing;
+  }
+
+  /** Scene value that renders as white with the recipe's profile and Amount (for Auto). */
+  profileWhitePoint(recipe: Recipe): number {
+    return profileWhitePoint(this.profileFor(recipe), recipe.profileAmount);
+  }
+
+  /** The photo's own starting settings, used as the base of the before view (null = defaults). */
+  setPhotoDefaults(recipe: Recipe | null): void {
+    this.photoDefaults = recipe;
+  }
+
+  private freeProfileTextures(): void {
+    for (const t of this.profileTex.values()) for (const tex of Object.values(t)) if (tex) this.gl.deleteTexture(tex);
+    this.profileTex.clear();
+  }
+
+  /** The profile's textures, uploaded once per profile. */
+  private profileTextures(p: ProfileRender): { look?: WebGLTexture; curve?: WebGLTexture; film?: WebGLTexture } {
+    if (!p.look) return {};
+    let t = this.profileTex.get(p.id);
+    if (t) return t;
+    const gl = this.gl;
+    const { lookTable, toneLut, filmLut } = p.look;
+    t = {};
+    if (lookTable) {
+      // x = saturation, y = hue (wraps), z = value: the DNG storage order.
+      t.look = this.ctx.texture3d(lookTable.satDivisions, lookTable.hueDivisions, lookTable.valDivisions, hueSatTexels(lookTable), { repeatY: true });
+    }
+    if (toneLut) {
+      t.curve = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, t.curve);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, toneLut.lut.length, 1, 0, gl.RED, gl.FLOAT, toneLut.lut);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    if (filmLut) t.film = this.ctx.texture3d(filmLut.size, filmLut.size, filmLut.size, cubeTexels(filmLut));
+    this.profileTex.set(p.id, t);
+    return t;
+  }
+
   /** The lens corrections the recipe asks for (cached). */
   lensFor(recipe: Recipe): LensModel {
     const { camera } = this.requireSource();
@@ -329,7 +395,7 @@ export class Renderer {
   }
 
   private baseUniforms(recipe: Recipe, camera: CameraInfo, frame: FrameInfo, an: Analysis['dehaze'] | null) {
-    const u = developUniforms(recipe, camera);
+    const u = developUniforms(recipe, camera, this.profileFor(recipe));
     return {
       ...u,
       uCamToWork: toGlMat3(u.uCamToWork),
@@ -425,7 +491,7 @@ export class Renderer {
     const colors = new Map<string, [number, number][]>();
     const src = this.cpuSource;
     if (src) {
-      const dev = developUniforms(recipe, camera);
+      const dev = developUniforms(recipe, camera, this.profileFor(recipe));
       const M = dev.uCamToWork;
       const lens = this.lensFor(recipe);
       const size = Math.max(src.width, src.height);
@@ -518,7 +584,8 @@ export class Renderer {
       exposure: recipe.basic.exposure,
       dehaze: recipe.basic.dehaze,
       haze: needHaze,
-      profile: recipe.profile,
+      // Only the profile's exposure reaches the analysis; its look and tone come later.
+      profileEv: profileExposureEv(this.profileFor(recipe), recipe.profileAmount),
       // The primaries change the luminance the local-tone analysis sees.
       calibration: [recipe.calibration.redHue, recipe.calibration.redSaturation, recipe.calibration.greenHue, recipe.calibration.greenSaturation, recipe.calibration.blueHue, recipe.calibration.blueSaturation],
       frame: [frame.width, frame.height, ...frame.tToS.map((v) => Math.round(v * 1e6))],
@@ -669,11 +736,32 @@ export class Renderer {
       this.ctx.draw(this.p.blurL, T.bl2, { uTex: T.bl1.tex }, { uDir: new Int32Array([0, 1]), uSigma: sigma, uChannel: 0 });
     }
     const lut = this.curveLut(recipe);
+    const prof = this.profileFor(recipe);
+    const pt = this.profileTextures(prof);
     this.ctx.draw(
       this.p.tone,
       T.dev,
-      { uLin: lin.tex, uBlurL: useBlurL ? T.bl2.tex : this.dummy, uABLow: an.abLow.tex, uABMid: an.abMid.tex, uLut: lut ?? this.dummy },
-      { ...u, ...lookUniforms(recipe), ...defringeUniforms(recipe), uUseBlurL: useBlurL ? 1 : 0, uCurve: lut ? 1 : 0, uDetailBands: [b.clarity / 100, b.texture / 100], uOverlayColor: [0.95, 0.15, 0.2] },
+      {
+        uLin: lin.tex,
+        uBlurL: useBlurL ? T.bl2.tex : this.dummy,
+        uABLow: an.abLow.tex,
+        uABMid: an.abMid.tex,
+        uLut: lut ?? this.dummy,
+        // Always bound: an unbound sampler3D would share unit 0 with a 2D texture.
+        uLookTable: pt.look ?? this.dummy3d,
+        uProfileCurveTex: pt.curve ?? this.dummy,
+        uFilmLutTex: pt.film ?? this.dummy3d,
+      },
+      {
+        ...u,
+        ...lookUniforms(recipe),
+        ...defringeUniforms(recipe),
+        ...profileUniforms(prof, recipe.profileAmount),
+        uUseBlurL: useBlurL ? 1 : 0,
+        uCurve: lut ? 1 : 0,
+        uDetailBands: [b.clarity / 100, b.texture / 100],
+        uOverlayColor: [0.95, 0.15, 0.2],
+      },
     );
 
     const fu = finishUniforms(recipe, scale);
@@ -716,7 +804,7 @@ export class Renderer {
   render(recipe: Recipe, opts: RenderOptions): FrameInfo {
     if (this.isLost) throw new Error('Graphics context lost');
     const { camera, proxy } = this.requireSource();
-    const r = opts.before ? beforeRecipe(recipe) : recipe;
+    const r = opts.before ? beforeRecipe(recipe, this.photoDefaults ?? undefined) : recipe;
     const frame = this.frameFor(r, opts.mode);
     const an = this.analyze(r, frame);
     const T = this.chainTargets('fit', frame.width, frame.height);
@@ -740,7 +828,7 @@ export class Renderer {
   renderZoom(recipe: Recipe, source: SourceImage, view: ZoomView, opts: Omit<RenderOptions, 'mode'>): FrameInfo {
     if (this.isLost) throw new Error('Graphics context lost');
     const { camera, proxy } = this.requireSource();
-    const r = opts.before ? beforeRecipe(recipe) : recipe;
+    const r = opts.before ? beforeRecipe(recipe, this.photoDefaults ?? undefined) : recipe;
     const an = this.analyze(r, this.frameFor(r, 'edit'));
     // Frame in screen pixels at this zoom: the full-resolution frame scaled by view.scale.
     const fullFrame = this.frameFor(r, 'edit', camera.fullWidth, camera.fullHeight);
@@ -1065,12 +1153,13 @@ export class Renderer {
     this.t = {};
     this.proxy = null;
     this.analysisCache = null;
+    this.freeProfileTextures();
   }
 }
 
-/** Default settings with the current crop: what "before" shows. */
-export function beforeRecipe(recipe: Recipe): Recipe {
-  const r = defaultRecipe();
+/** Default settings (or the photo's own starting settings) with the current crop: what "before" shows. */
+export function beforeRecipe(recipe: Recipe, base: Recipe = defaultRecipe()): Recipe {
+  const r = structuredClone(base);
   r.crop = { ...recipe.crop };
   r.transform = { ...recipe.transform };
   return r;
