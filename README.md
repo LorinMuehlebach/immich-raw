@@ -3,7 +3,7 @@
 Lightroom-style RAW editing for [Immich](https://immich.app), right in your browser.
 
 immich-raw adds an **Edit RAW** button to Immich's photo viewer. It opens the RAW file in a full photo
-editor: white balance, tone, colour, curves, masks, lens corrections, noise reduction and more. When
+editor: white balance, tone, colour, curves, masks, lens corrections, noise reduction, AI upscaling and more. When
 you save, the edited photo goes back into Immich as a JPEG, stacked on top of the original. The RAW file itself is never changed, and the edit settings are stored with it, so you can
 reopen the photo later and carry on where you left off.
 
@@ -54,6 +54,24 @@ and your edit all move to the DNG; then the original is deleted (to the trash, o
 
 ![The Convert to DNG dialog after checking a lossy DNG](docs/images/4-dng.jpg)
 
+**6. Optional: make the photo larger with AI Upscale.** The AI Upscale section of the left panel
+makes your edit 2× or 4× larger with an AI model that runs in the browser, for big prints or tight
+crops.
+- **Preview a detail** puts a square on the photo. Drag it to a spot you care about, and the loupe
+  shows that spot plainly enlarged on the left and AI-upscaled on the right. Drag across the loupe
+  to move the divider.
+- Pick **Sharp** (crisp edges, fast) or **Natural** (keeps fine texture, about 5× slower).
+- **Download** gives a JPEG or TIFF. **Save to Immich** adds a JPEG to the RAW's stack, behind the
+  photo in front; Immich's Edit button on that copy opens the RAW again. The RAW and your saved edit
+  stay as they are.
+- The panel shows the size of the result and roughly how long it will take. A running upscale can
+  be cancelled.
+
+Whole photos need a graphics card the browser can use (WebGPU), so open the editor over HTTPS or on
+`localhost` (see [Requirements](#requirements)).
+
+![AI Upscale: the square on the roof window, and the loupe with plain and AI enlargement](docs/images/6-upscale.jpg)
+
 ### Under the hood
 
 - **Same address as Immich.** The editor is a static web app served under `/immich-raw/` on your
@@ -76,6 +94,15 @@ and your edit all move to the DNG; then the original is deleted (to the trash, o
   browser. The photo is not uploaded anywhere. Like Lightroom, an edit stores what an AI mask selects
   (Subject, Sky, which People parts), not its pixels: the mask is found again when the photo is
   opened, and on another photo when it is copied or saved in a preset.
+- **AI Upscale:** the same ONNX Runtime worker runs one of two super-resolution models:
+  - Real-ESRGAN general x4v3 (5 MB, BSD-3-Clause) for Sharp;
+  - RealPLKSR (30 MB, MIT), darktable's upscaler, for Natural.
+
+  The full-resolution render is cut into overlapping tiles. Each tile carries extra context that is
+  cut off again, and tiles blend into their neighbours, so no seams show. 2× from the 4×-only Sharp
+  model averages 2×2 blocks. The model is downloaded once, after asking, and the photo never leaves
+  the browser. Speeds and the model comparison are in
+  [docs/spike-results.md](docs/spike-results.md#ai-upscale-model-choice-2026-11-12).
 - **Culler (optional):** a separate small service that groups bursts of similar shots into stacks,
   puts the best one on top and tags why the others lost (lighting, blur, closed eyes). For RAW files
   it measures exposure on the RAW file itself, because Immich's RAW previews are auto-brightened. See
@@ -150,21 +177,19 @@ and your edit all move to the DNG; then the original is deleted (to the trash, o
   laptop, 4 at once was 2.7 to 3.9 times faster than one at a time, and 8 up to 3.5 times faster for
   40 to 65 MP files ([Export speed](docs/export-speed.md), which also covers what HTTPS adds). Wider
   colour spaces, 16-bit files and Content Credentials are [feature requests](docs/feature-requests.md).
-- **AI Upscale** (left panel): makes the edit 2× or 4× larger with an AI model running in the browser.
-  The result can be downloaded (JPEG or TIFF) or saved to Immich as a JPEG in the RAW's stack. The
-  copy sits behind the photo in front, and Immich's Edit button on it opens the RAW. The RAW and the
-  saved edit stay as they are.
-  - **Sharp** (Real-ESRGAN) gives crisp edges and smooths fine texture. **Natural** (RealPLKSR,
-    darktable's upscaler) keeps texture but is about 5× slower.
-  - **Preview a detail** puts a square on the photo: drag it, and a loupe shows that spot plainly
-    enlarged and AI-upscaled side by side.
-  - It needs WebGPU for whole photos, so open the editor over HTTPS or on localhost. With an
-    integrated laptop GPU (Radeon 780M), 2× of a 45 MP photo took 5 minutes with Sharp. On plain HTTP
-    the model gets one CPU thread (about 80 seconds per megapixel), so only the preview and crops
-    that take under 10 minutes are allowed.
-  - Results go up to 200 MP (50 MP on phones and tablets), which covers 2× of photos up to 50 MP.
-  - The panel shows the result size and the expected time; a running upscale can be cancelled.
-  - Model choice and speeds: [AI Upscale in the spike results](docs/spike-results.md#ai-upscale-model-choice-2026-11-12).
+- **AI Upscale** (left panel, [step 6](#how-it-works) above): 2× or 4× of the edit, saved or not,
+  with a before/after preview of a detail. It makes a JPEG or TIFF download, or a JPEG in the RAW's
+  stack in Immich.
+  - **Models:** **Sharp** is Real-ESRGAN, crisp edges with fine texture smoothed. **Natural** is
+    RealPLKSR, darktable's upscaler: it keeps texture but is about 5× slower.
+  - **Speed:** with an integrated laptop GPU (Radeon 780M), 2× of a 45 MP photo took 5 minutes with
+    Sharp; a dedicated graphics card is faster.
+  - **Size:** results go up to 200 MP (50 MP on phones and tablets), which covers 2× of photos up to
+    50 MP. Crop larger photos first.
+  - **Plain HTTP:** without WebGPU the model gets one CPU thread, about 2 to 3 minutes per
+    megapixel of photo. The preview works, and so do crops of a few megapixels (under 10 minutes);
+    whole photos are refused with a note saying why.
+  - Model comparison and speeds: [docs/spike-results.md](docs/spike-results.md#ai-upscale-model-choice-2026-11-12).
 - **Lightroom XMP sidecar import** on first open: basic, curves, colour mixer, B&W, colour grading,
   calibration, detail, lens corrections, transform, effects, crop and masks, including AI masks
   (Subject, Sky, Background, People parts, Landscape), which are found again in the photo. AI
@@ -196,8 +221,12 @@ A second container, the culler, is optional in both.
 - **HTTPS or plain HTTP.** Both work, including a plain `http://192.168.x.x:2283` address. On plain
   HTTP the browser keeps no copy of the originals, so the editor downloads the RAW again each time
   you open it. Over HTTPS (or on `localhost`) it keeps recently opened originals.
+
+  AI Upscale also needs HTTPS (or `localhost`) for whole photos. Browsers give a web page the
+  graphics card (WebGPU) only there; on plain HTTP it runs on one CPU thread and handles only crops.
 - **A browser with WebGL2:** tested in Chrome and Edge. Large RAWs (45–60 megapixels) need about
-  2 GB of memory in the browser tab.
+  2 GB of memory in the browser tab. An AI Upscale result needs about 4 bytes per pixel more, up to
+  800 MB at its 200 MP limit; 2× of a 45 MP photo worked in Edge on a 32 GB laptop.
 - **Phones and tablets** work too (see [Features](#features)), but a phone's browser may not give one
   tab enough memory for the largest RAWs.
 

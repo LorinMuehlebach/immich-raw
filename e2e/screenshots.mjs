@@ -1,5 +1,6 @@
 // Takes the README screenshots on the test Immich, using a seeded sample photo: the button in
-// Immich, the editor, a mask, the DNG dialog and the saved result back in Immich.
+// Immich, the editor, a mask, the DNG dialog, AI Upscale's preview and the saved result back in
+// Immich (needs internet once for the upscale model).
 // Usage: node e2e/screenshots.mjs [out-dir] [filename-part]   (default: docs/images fuji-xt5)
 // Resets that photo first (e2e/reset.mjs) and leaves it edited and saved.
 import { execFileSync } from 'node:child_process';
@@ -90,6 +91,11 @@ await page.waitForTimeout(500);
 await shot('4-dng');
 await page.getByRole('button', { name: 'Cancel' }).click();
 
+// 6. AI Upscale: Preview a detail, with the square on the corner of the roof window.
+await upscalePreview(page, 0.678, 0.628);
+await shot('6-upscale');
+await page.getByRole('button', { name: 'Hide preview' }).click();
+
 // 5. Back in Immich: the edited JPEG, stacked on top of the RAW.
 await page.locator('button.back').click();
 await page.waitForURL((u) => !u.pathname.startsWith('/immich-raw/'), { timeout: 60000 });
@@ -98,3 +104,27 @@ await shot('5-immich-result');
 
 if (errors.length) console.log('page errors:', errors);
 await browser.close();
+
+/**
+ * Opens AI Upscale's preview (agreeing to the model download) and drags its square to (fx, fy)
+ * of the photo; waits until the loupe shows the result.
+ */
+async function upscalePreview(page, fx, fy) {
+  await page.getByRole('button', { name: 'Preview a detail' }).click();
+  const square = page.locator('.overlay .square');
+  await square.waitFor({ timeout: 30000 });
+  const s = await square.boundingBox();
+  const f = await page.locator('.frame:not(.hidden) > canvas').boundingBox();
+  await page.mouse.move(s.x + s.width / 2, s.y + s.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 10; i++) await page.mouse.move(s.x + s.width / 2 + ((f.x + f.width * fx - s.x - s.width / 2) * i) / 10, s.y + s.height / 2 + ((f.y + f.height * fy - s.y - s.height / 2) * i) / 10);
+  await page.mouse.up();
+  await page.waitForTimeout(1000);
+  // The model download is asked for once the full-resolution photo is decoded.
+  const consent = page.getByRole('alertdialog');
+  await page.locator('.loupe .tag.r').or(consent).first().waitFor({ timeout: 180000 });
+  if (await consent.isVisible()) await consent.getByRole('button', { name: 'Download' }).click();
+  await page.locator('.loupe .tag.r').waitFor({ timeout: 180000 });
+  await page.locator('.loupe .msg').waitFor({ state: 'detached', timeout: 180000 });
+  await page.waitForTimeout(500);
+}

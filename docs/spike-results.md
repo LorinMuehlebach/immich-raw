@@ -224,9 +224,11 @@ Quality was compared on 200 px crops of the Leica Q2 and Sony A7R V samples, at 
   9× slower on the CPU. Its fixed 512² tile alone takes almost 3 minutes on one thread.
 
 **Decision:** Real-ESRGAN is the default ("Sharp"). RealPLKSR is offered as "Natural" for anyone
-with a GPU and the patience. Without WebGPU (plain HTTP), a 24 MP photo would take about 30 minutes
-even with Real-ESRGAN, so the tool keeps to what fits in about 10 minutes there (crops of up to
-about 8 MP). Real-ESRGAN makes 2× by upscaling 4× and averaging 2×2 blocks.
+with a GPU and the patience. Without WebGPU (plain HTTP), one thread is about 80 s per megapixel of
+model input. The tiles overlap, so a whole photo costs more: a 0.66 MP crop took 107 s from start to
+file in the editor. A 24 MP photo would take about an hour even with Real-ESRGAN, so the tool keeps
+to what fits in about 10 minutes there, crops of a few megapixels. Real-ESRGAN makes 2× by
+upscaling 4× and averaging 2×2 blocks.
 
 ## Still open
 - Lightroom's AI mask codes checked against a real sidecar written with AI masks (the importer
