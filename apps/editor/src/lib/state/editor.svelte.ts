@@ -955,6 +955,8 @@ export class Editor {
       this.looksArrived(looks);
     }
     this.recipe.profile = id;
+    // The offer was about the edit's film look, which is gone now.
+    if (this.fujiOffer?.reason === 'edit' && !profileInfo(id).download) this.fujiOffer = null;
     this.changed(true, `Profile: ${profileInfo(id).label}`);
   }
 

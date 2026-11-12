@@ -44,10 +44,11 @@ const COLOR_S = 0.25;
 const COLOR_WHITE = 1.5;
 
 /**
- * Exposure of the Fujifilm looks relative to the scene (their tone curve has its own
- * midtone). Calibrated with e2e/probe-profiles.mjs against an X-T5's own Provia JPEG.
+ * Exposure of the Fujifilm looks relative to the scene: their tone curve lifts the midtones
+ * more than Color's. Calibrated with e2e/probe-profiles.mjs against an X-T5's own Provia JPEG
+ * (DR100): with this value its lightness percentiles (5 to 95 %) are within 0.02 of the JPEG's.
  */
-export const FUJI_BASELINE_EV = 0.35;
+export const FUJI_BASELINE_EV = -0.05;
 
 type Row = Pick<ProfileRender, 'base' | 'baselineEv' | 'sCurve' | 'whitePoint'>;
 
@@ -125,7 +126,8 @@ export function profileUniforms(p: ProfileRender, amountPct: number): ProfileUni
     uLookAmount: a,
     uLookSrgb: p.look?.lookTable?.srgbValues === false ? 0 : 1,
     uProfileCurve: on(p.look?.toneLut),
-    uProfileCurveAmount: a,
+    // Above 100 % only the colour changes grow: an extrapolated tone curve clips highlights fast.
+    uProfileCurveAmount: Math.min(a, 1),
     uProfileCurveMax: p.look?.toneLut?.max ?? 1,
     uSCurveCustom: p.amount ? 1 : 0,
     uSCurve: p.amount ? Math.max(0, COLOR_S + (p.sCurve - COLOR_S) * a) : COLOR_S,

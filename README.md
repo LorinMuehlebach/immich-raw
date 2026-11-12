@@ -510,6 +510,9 @@ the editor with hot reload on http://localhost:5173/immich-raw/, using the test 
 - `node e2e/smoke.mjs <out-dir>`: end-to-end test (open, edit, save, export, reopen, re-save).
 - `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>`: the AI masks on one photo, then an export
   (needs internet for the models).
+- `node e2e/probe-profiles.mjs <out-dir> <asset-ids>`: the profiles: the tone-only ones against a
+  baseline build, the Fujifilm Provia look against a RAF's own JPEG, contact sheets
+  ([e2e/README.md](e2e/README.md#variants)).
 - `node e2e/export.mjs <out-dir>`: the export options (PNG, TIFF, print size, file names), an album
   export as a ZIP (two photos at once), the export button for photos selected in Immich (including
   select all), and a saved edit exported from its RAW.

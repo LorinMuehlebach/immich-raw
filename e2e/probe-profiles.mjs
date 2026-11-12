@@ -40,6 +40,8 @@ async function open(id) {
   await page.goto(`${BASE}/immich-raw/?asset=${id}&debug`);
   await page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 180000 });
   await page.waitForFunction(() => !globalThis.__editor.lensInfo.searching, null, { timeout: 60000 });
+  // The background full-resolution decode needs a lot of memory: let it finish first.
+  await page.waitForFunction(() => ['ready', 'error'].includes(globalThis.__editor.fullStatus), null, { timeout: 180000 });
   return ed(() => globalThis.__editor.asset.originalFileName);
 }
 
@@ -178,13 +180,36 @@ if (process.env.FUJI && process.env.RAF) {
             mid++;
           }
         }
-        return { meanDE: +(de / px.length).toFixed(4), midDL: +(midDl / Math.max(1, mid)).toFixed(4), dLbyBand: bands.map((v, i) => +(v / Math.max(1, counts[i])).toFixed(4)) };
+        // Alignment-free: lightness percentiles (the camera JPEG is framed a little differently).
+        const pct = (arr) => {
+          const Ls = arr.map((p) => p[0]).sort((x, y) => x - y);
+          return [0.05, 0.25, 0.5, 0.75, 0.95].map((q) => Ls[Math.floor(q * (Ls.length - 1))]);
+        };
+        const dP = pct(px).map((v, i) => +(v - camPct[i]).toFixed(4));
+        const chroma = (arr) => arr.reduce((n, p) => n + Math.hypot(p[1], p[2]), 0) / arr.length;
+        return {
+          meanDE: +(de / px.length).toFixed(4),
+          midDL: +(midDl / Math.max(1, mid)).toFixed(4),
+          dLbyBand: bands.map((v, i) => +(v / Math.max(1, counts[i])).toFixed(4)),
+          dLpercentiles: dP,
+          chromaRatio: +(chroma(px) / chroma(cam)).toFixed(3),
+        };
       };
+      const camPct = (() => {
+        const Ls = cam.map((p) => p[0]).sort((x, y) => x - y);
+        return [0.05, 0.25, 0.5, 0.75, 0.95].map((q) => Ls[Math.floor(q * (Ls.length - 1))]);
+      })();
       e.resetAll();
       const base = JSON.parse(JSON.stringify(e.recipe));
       const render = (profile, exposure) => compare(shrink(toCanvas(e.renderer.renderSmall({ ...base, profile, basic: { ...base.basic, exposure } }, 1024).image)));
       const rows = evs.map((ev) => ({ ev, ...render('fuji-provia', ev) }));
-      return { color: render('color', 0), provia: render('fuji-provia', 0), sweep: rows, best: rows.reduce((a, b) => (Math.abs(b.midDL) < Math.abs(a.midDL) ? b : a)) };
+      return {
+        color: render('color', 0),
+        provia: render('fuji-provia', 0),
+        sweep: rows,
+        // The exposure that puts the median lightness where the camera's is.
+        best: rows.reduce((a, b) => (Math.abs(b.dLpercentiles[2]) < Math.abs(a.dLpercentiles[2]) ? b : a)),
+      };
     },
     [jpeg, sweep],
   );

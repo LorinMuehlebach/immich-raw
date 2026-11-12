@@ -94,6 +94,9 @@ describe('profile Amount', () => {
     const provia = resolveProfile('fuji-provia', fujiLooks());
     expect(profileUniforms(provia, 50).uSCurve).toBeCloseTo(0.125, 9);
     expect(profileUniforms(provia, 200).uSCurve).toBe(0);
+    // The colour look goes on growing; the tone curve stops at the profile's own.
+    expect(profileUniforms(provia, 200)).toMatchObject({ uLookAmount: 2, uProfileCurveAmount: 1 });
+    expect(profileUniforms(provia, 50).uProfileCurveAmount).toBe(0.5);
     // Exposure and white point move from Color's to the profile's, and stop there.
     expect(profileExposureEv(provia, 200)).toBe(profileExposureEv(provia, 100));
   });

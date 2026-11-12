@@ -1063,6 +1063,9 @@
     max-width: 80%;
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
   }
+  .banner button {
+    white-space: nowrap;
+  }
   .saving {
     position: absolute;
     inset: 0;
