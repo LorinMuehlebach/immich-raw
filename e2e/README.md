@@ -90,6 +90,11 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
 
   To compare builds side by side, run the editor's dev server from each checkout on its own port
   and point `IMMICH_URL` at it, e.g. `IMMICH_URL=http://localhost:5174`.
+- Virtual copies: `node e2e/probe-copies.mjs <out-dir> [file name part]` (`canon` by default) makes
+  copies of one seeded RAW (Ctrl+' and the menu), saves one, and checks its key, its JPEG's name and
+  place in the stack, switching (menu, reload, unsaved changes), renaming, Escape and deleting. It
+  saves to Immich, then removes its copies and their JPEGs again (and a stack made only for them);
+  the original edit is not saved. Run it on `fuji` too, whose saved edit must stay in front.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

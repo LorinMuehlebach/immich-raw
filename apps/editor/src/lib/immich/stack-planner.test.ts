@@ -165,3 +165,78 @@ describe('burst stacks made by the culler', () => {
     expect(isSameCapture(raw, at('y', 'DSC1.JPG', '09'), null)).toBe(false);
   });
 });
+
+describe('planStack with virtual copies', () => {
+  const C1 = 'copy-render-1';
+  const C2 = 'copy-render-2';
+
+  it("a copy's first save, with the original's render in front: joins behind it", () => {
+    const plan = planStack({ rawId: RAW, rawStack: { id: 's1', primaryAssetId: R1 }, newRenderId: C1, previousRender: null, uploadWasDuplicate: false, copyId: 'c1' });
+    expect(plan.createStackIds).toEqual([R1, C1]);
+    expect(plan.trashIds).toEqual([]);
+  });
+
+  it("a copy saved before the original was: takes the front from the RAW", () => {
+    expect(planStack({ rawId: RAW, rawStack: null, newRenderId: C1, previousRender: null, uploadWasDuplicate: false, copyId: 'c1' }).createStackIds).toEqual([C1, RAW]);
+  });
+
+  it('a copy whose own render is in front: the new one takes its place, the old one goes', () => {
+    const plan = planStack({
+      rawId: RAW,
+      rawStack: { id: 's1', primaryAssetId: C1 },
+      newRenderId: C2,
+      previousRender: { id: C1, isTrashed: false, sourceAssetId: RAW, copyId: 'c1' },
+      uploadWasDuplicate: false,
+      copyId: 'c1',
+    });
+    expect(plan.createStackIds).toEqual([C2, C1, RAW]);
+    expect(plan.trashIds).toEqual([C1]);
+  });
+
+  it("re-saving a copy behind the original: its old render goes, the original's stays in front", () => {
+    const plan = planStack({
+      rawId: RAW,
+      rawStack: { id: 's1', primaryAssetId: R1 },
+      newRenderId: C2,
+      previousRender: { id: C1, isTrashed: false, sourceAssetId: RAW, copyId: 'c1' },
+      uploadWasDuplicate: false,
+      copyId: 'c1',
+    });
+    expect(plan.createStackIds).toEqual([R1, C2]);
+    expect(plan.trashIds).toEqual([C1]);
+  });
+
+  it("the original's save never trashes a copy's render, nor a copy the original's", () => {
+    const master = planStack({
+      rawId: RAW,
+      rawStack: { id: 's1', primaryAssetId: C1 },
+      newRenderId: R2,
+      previousRender: { id: C1, isTrashed: false, sourceAssetId: RAW, copyId: 'c1' },
+      uploadWasDuplicate: false,
+    });
+    // The original goes in front; the copy's render stays in the stack.
+    expect(master.createStackIds).toEqual([R2, C1, RAW]);
+    expect(master.trashIds).toEqual([]);
+    const copy = planStack({
+      rawId: RAW,
+      rawStack: { id: 's1', primaryAssetId: R1 },
+      newRenderId: C1,
+      previousRender: { id: R1, isTrashed: false, sourceAssetId: RAW, copyId: null },
+      uploadWasDuplicate: false,
+      copyId: 'c1',
+    });
+    expect(copy.trashIds).toEqual([]);
+  });
+
+  it("another copy's render is kept", () => {
+    const plan = planStack({
+      rawId: RAW,
+      rawStack: { id: 's1', primaryAssetId: R1 },
+      newRenderId: C2,
+      previousRender: { id: C1, isTrashed: false, sourceAssetId: RAW, copyId: 'c1' },
+      uploadWasDuplicate: false,
+      copyId: 'c2',
+    });
+    expect(plan.trashIds).toEqual([]);
+  });
+});

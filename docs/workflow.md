@@ -22,6 +22,24 @@ Tools around the edit: seeing it, going back, reusing it and moving between phot
 
 ![History and snapshots in the left panel](images/workflow/history-snapshots.jpg)
 
+## Virtual copies
+
+Several edits of one RAW, like Lightroom's virtual copies: a colour and a black-and-white version,
+say, or two crops.
+- **New virtual copy** (Ctrl+'), in the menu next to the file name, starts a copy from the current
+  settings and opens it. Unsaved changes go with it; the edit it was made from keeps its saved
+  state.
+- Each copy saves its own JPEG into the RAW's stack, called `<name>.copy-2.edit.jpg`. The
+  original's JPEG stays in front; **Show in front in Immich** puts the open edit's JPEG there
+  instead.
+- The menu switches between the original and the copies (asking first about unsaved changes),
+  renames the open copy or deletes it, with its JPEG going to Immich's trash. Each copy has its
+  own history and snapshots.
+- Immich's Edit RAW button on a copy's JPEG opens that copy. An album export includes each copy
+  whose JPEG is in the album, named `<name>-copy-2`.
+
+![The virtual copies menu next to the file name](images/workflow/virtual-copies.jpg)
+
 ## Presets
 
 **+** saves the current settings (or a part of them) as a preset; **Import** reads Lightroom

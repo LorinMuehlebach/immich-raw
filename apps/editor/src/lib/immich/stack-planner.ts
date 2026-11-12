@@ -9,6 +9,8 @@
 // - Uploading bytes that match a trashed asset returns that asset (still trashed).
 // - The culler (services/culler) stacks several captures of one scene with the best in front.
 //   Saving an edit of another capture in such a stack must not move it to the front.
+// - A virtual copy's render (copies.ts) joins the stack behind the front photo: the original's
+//   edit stays in front, unless the front is still the RAW itself or that copy's own render.
 import { captureBaseName, isRawFilename } from '@immich-raw/inject/raw';
 
 export interface StackPlanInput {
@@ -16,8 +18,10 @@ export interface StackPlanInput {
   /** The RAW's current stack, if any. */
   rawStack: { id: string; primaryAssetId: string } | null;
   newRenderId: string;
-  /** The render recorded in the RAW's recipe from the last save, if it still exists. */
-  previousRender: { id: string; isTrashed: boolean; sourceAssetId: string | null } | null;
+  /** The render recorded in the edit's recipe from the last save, if it still exists. */
+  previousRender: { id: string; isTrashed: boolean; sourceAssetId: string | null; copyId?: string | null } | null;
+  /** The virtual copy being saved; null or absent for the original edit. */
+  copyId?: string | null;
   /** The upload returned an existing asset with the same checksum. */
   uploadWasDuplicate: boolean;
   /** For duplicates: the returned asset is in the trash. */
@@ -37,20 +41,25 @@ export interface StackPlan {
 
 export function planStack(input: StackPlanInput): StackPlan {
   const { rawId, rawStack, newRenderId, previousRender, uploadWasDuplicate, newRenderIsTrashed, keepPrimary } = input;
+  const copyId = input.copyId ?? null;
 
   const restoreIds = uploadWasDuplicate && newRenderIsTrashed ? [newRenderId] : [];
 
   const currentPrimary = rawStack?.primaryAssetId ?? rawId;
+  // A copy's render takes the front only from the RAW itself or from its own previous render.
+  const behind = keepPrimary || (!!copyId && currentPrimary !== rawId && currentPrimary !== previousRender?.id);
   // Passing the current primary absorbs the whole stack; only its order decides who is in front.
   const createStackIds =
-    currentPrimary === newRenderId ? [] : keepPrimary ? unique([currentPrimary, newRenderId]) : unique([newRenderId, currentPrimary, rawId]);
+    currentPrimary === newRenderId ? [] : behind ? unique([currentPrimary, newRenderId]) : unique([newRenderId, currentPrimary, rawId]);
 
+  // Only the same edit's previous render: the original's and each copy's are kept apart.
   const trashIds =
     previousRender &&
     previousRender.id !== newRenderId &&
     previousRender.id !== rawId &&
     !previousRender.isTrashed &&
-    previousRender.sourceAssetId === rawId
+    previousRender.sourceAssetId === rawId &&
+    (previousRender.copyId ?? null) === copyId
       ? [previousRender.id]
       : [];
 

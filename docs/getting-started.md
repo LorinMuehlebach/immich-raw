@@ -25,6 +25,8 @@ to DNG; below the photo is the filmstrip.
 **Save to Immich** (Ctrl+S) uploads the edited JPEG and stacks it on top of the RAW.
 - It keeps the RAW's date, location, albums, rating, description and favourite.
 - Saving again replaces the JPEG; the old one goes to Immich's trash.
+- For several versions of one photo, each with its own JPEG, make
+  [virtual copies](workflow.md#virtual-copies).
 - The RAW file itself is never changed. The edit settings are stored with it, so you can reopen
   the photo later and carry on where you left off.
 

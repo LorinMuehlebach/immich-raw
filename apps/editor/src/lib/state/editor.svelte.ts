@@ -2,12 +2,15 @@
 // every change to the recipe goes through here so history and re-rendering stay in sync.
 import {
   AssetFileType,
+  deleteAssetMetadata,
+  deleteAssets,
   downloadAssetFile,
   getAlbumInfo,
   getAssetInfo,
   getAssetMetadata,
   searchAssetFiles,
   updateAssetMetadata,
+  updateStack,
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
@@ -120,7 +123,8 @@ import { apiUrl, authHeaders, getServerVersionInfo, getSession, initApi, serverV
 import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification } from '../dng/convert.ts';
 import { downloadOriginal } from '../immich/download.ts';
 import { cacheDng, convertBlocked, replaceWithDng, type DeleteMode, type ReplaceStep } from '../immich/replace.ts';
-import { canEdit, loadRecipe, saveRender, type SaveStep } from '../immich/save.ts';
+import { canEdit, errorMessage, readMetadata, saveRender, writeMetadata, type SaveStep } from '../immich/save.ts';
+import { copiesIn, copyInfo, copyKey, copyValue, historyKeyFor, newCopy, parseCopy, storedEdit, type CopyInfo, type CopyMeta } from '../immich/copies.ts';
 import { History, editable, editableJson, type HistoryStep } from './history.ts';
 import {
   DEFAULT_EXPORT_SETTINGS,
@@ -326,6 +330,12 @@ const PREVIOUS_KEY = 'raw-editor.previous';
 const AUTO_PARAMS_KEY = 'raw-editor.autoParams';
 const EXPORT_KEY = 'raw-editor.export';
 
+/** Snapshots stored under `key` in a metadata listing. */
+function snapshotsIn(items: readonly { key: string; value: unknown }[], key: string): Snapshot[] {
+  const v = items.find((i) => i.key === key)?.value as { snapshots?: Snapshot[] } | undefined;
+  return Array.isArray(v?.snapshots) ? v.snapshots.filter((s) => s && typeof s.state === 'string') : [];
+}
+
 function storageGet<T>(key: string): T | null {
   try {
     const v = localStorage.getItem(key);
@@ -384,6 +394,10 @@ export class Editor {
   historySteps = $state<HistoryStep[]>([]);
   historyIndex = $state(0);
   snapshots = $state<Snapshot[]>([]);
+  /** The virtual copy being edited; null = the original edit. */
+  copyId = $state<string | null>(null);
+  /** The RAW's virtual copies (Lightroom's), in the order they were made. */
+  copies = $state<CopyInfo[]>([]);
   hasClipboard = $state(false);
   hasPrevious = $state(false);
   sidecarOffer = $state<SidecarOffer | null>(null);
@@ -504,8 +518,18 @@ export class Editor {
       document.title = `${asset.originalFileName} · immich-raw`;
       this.showServerPreview(asset.id);
 
-      const [stored, snapshots] = await Promise.all([loadRecipe(asset.id).catch(() => null), this.loadSnapshots(asset.id)]);
-      this.snapshots = snapshots;
+      // One listing holds the edit, its snapshots and the virtual copies.
+      const items = await getAssetMetadata({ id: asset.id }).catch(() => []);
+      this.copies = copiesIn(items).map(copyInfo);
+      let copyId = params.get('copy');
+      if (copyId && !this.copies.some((c) => c.id === copyId)) {
+        this.notice = 'That virtual copy no longer exists; the original edit is open.';
+        copyId = null;
+        this.setUrlCopy(null);
+      }
+      this.copyId = copyId;
+      const stored = storedEdit(items, copyId);
+      this.snapshots = snapshotsIn(items, historyKeyFor(copyId));
       this.storedEdit = !!stored;
       // Film looks kept in this browser (never downloads here).
       const looksP = fujiLooks.load();
@@ -1063,22 +1087,12 @@ export class Editor {
     if (patch) this.applyPatch(patch, 'Paste from Previous');
   }
 
-  private async loadSnapshots(assetId: string): Promise<Snapshot[]> {
-    try {
-      const items = await getAssetMetadata({ id: assetId });
-      const v = items.find((i) => i.key === HISTORY_KEY)?.value as { snapshots?: Snapshot[] } | undefined;
-      return Array.isArray(v?.snapshots) ? v.snapshots.filter((s) => s && typeof s.state === 'string') : [];
-    } catch {
-      return [];
-    }
-  }
-
   private async storeSnapshots(): Promise<void> {
     if (!this.asset || this.readOnly) return;
     try {
       await updateAssetMetadata({
         id: this.asset.id,
-        assetMetadataUpsertDto: { items: [{ key: HISTORY_KEY, value: { schema: 1, snapshots: $state.snapshot(this.snapshots) } }] },
+        assetMetadataUpsertDto: { items: [{ key: historyKeyFor(this.copyId), value: { schema: 1, snapshots: $state.snapshot(this.snapshots) } }] },
       });
     } catch (e) {
       this.notice = `Couldn't store snapshots: ${e instanceof Error ? e.message : String(e)}`;
@@ -1930,6 +1944,149 @@ export class Editor {
     this.changed(true, 'Reset Transform');
   }
 
+  // ---------------------------------------------------------------- virtual copies
+
+  /** The edit's name: "Original", or the copy's. */
+  get editName(): string {
+    return this.copyId ? (this.copies.find((c) => c.id === this.copyId)?.name ?? 'Copy') : 'Original';
+  }
+
+  private currentCopy(): CopyMeta | null {
+    const c = this.copyId ? this.copies.find((x) => x.id === this.copyId) : null;
+    return c ? { id: c.id, name: c.name, index: c.index, createdAt: c.createdAt } : null;
+  }
+
+  /** Keeps `copy` in the editor's address, so a reload opens the same edit. */
+  private setUrlCopy(copyId: string | null): void {
+    const q = new URLSearchParams(location.search);
+    if (copyId) q.set('copy', copyId);
+    else q.delete('copy');
+    history.replaceState(history.state, '', `${location.pathname}?${q}`);
+  }
+
+  /** Puts the original edit or a virtual copy in the editor; the photo stays decoded. */
+  private enterEdit(copyId: string | null, stored: Recipe | null, snapshots: Snapshot[]): void {
+    this.endTargeted();
+    this.maskDraft = null;
+    this.aiPicker = null;
+    this.maskSel = { mask: null, comp: null };
+    this.previewRecipe = null;
+    this.autoApplied = null;
+    this.copyId = copyId;
+    this.setUrlCopy(copyId);
+    this.recipe = stored ?? cloneRecipe(this.defaults!.recipe);
+    this.savedJson = editableJson(this.recipe);
+    this.storedEdit = !!stored;
+    this.snapshots = snapshots;
+    // "Back" may lead to any of this RAW's JPEGs; it goes to the one of the edit open last.
+    if (stored?.render?.assetId) this.pastRenders.add(stored.render.assetId);
+    this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
+    this.syncHistory();
+    this.syncLens();
+    this.requestRender();
+  }
+
+  /** Opens the original edit (null) or a virtual copy as stored now; unsaved changes are dropped. */
+  async openEdit(copyId: string | null): Promise<void> {
+    const asset = this.asset;
+    if (!asset || this.status !== 'ready' || copyId === this.copyId) return;
+    let items: { key: string; value: unknown }[];
+    try {
+      items = await getAssetMetadata({ id: asset.id });
+    } catch (e) {
+      this.error = `Couldn't open the edit: ${errorMessage(e)}`;
+      return;
+    }
+    this.copies = copiesIn(items).map(copyInfo);
+    if (copyId && !this.copies.some((c) => c.id === copyId)) {
+      this.notice = 'That virtual copy no longer exists.';
+      return;
+    }
+    this.enterEdit(copyId, storedEdit(items, copyId), snapshotsIn(items, historyKeyFor(copyId)));
+  }
+
+  /**
+   * Lightroom's Create Virtual Copy (Ctrl+'): a new copy holding the current settings, opened
+   * right away. Unsaved changes go with it; the edit it was made from keeps its saved state.
+   */
+  async newVirtualCopy(): Promise<void> {
+    const asset = this.asset;
+    if (!asset || this.readOnlyGuard() || this.status !== 'ready' || this.saving) return;
+    this.commit();
+    const from = this.editName;
+    const changed = this.dirty;
+    const c = newCopy(this.copies, $state.snapshot(this.recipe) as Recipe);
+    try {
+      await writeMetadata(asset.id, copyKey(c.id), copyValue(c));
+    } catch (e) {
+      this.error = `Couldn't make the virtual copy: ${errorMessage(e)}`;
+      return;
+    }
+    this.copies = [...this.copies, copyInfo(c)];
+    this.enterEdit(c.id, c.recipe, []);
+    this.notice = `${c.name} made from ${changed ? `the current settings; ${from} keeps its last saved state` : from}. Save it to put its own JPEG in the stack.`;
+  }
+
+  async renameCopy(id: string, name: string): Promise<void> {
+    const asset = this.asset;
+    const n = name.trim().slice(0, 60);
+    if (!asset || !n || this.readOnlyGuard()) return;
+    try {
+      const c = parseCopy(copyKey(id), await readMetadata(asset.id, copyKey(id)));
+      if (!c) throw new Error('it no longer exists');
+      await writeMetadata(asset.id, copyKey(id), copyValue({ ...c, name: n }));
+      this.copies = this.copies.map((x) => (x.id === id ? { ...x, name: n } : x));
+    } catch (e) {
+      this.error = `Couldn't rename the copy: ${errorMessage(e)}`;
+    }
+  }
+
+  /**
+   * Deletes a virtual copy: its settings and snapshots, and its JPEG (to Immich's trash). The
+   * original opens if the copy was open; unsaved changes of the copy are dropped.
+   */
+  async deleteCopy(id: string): Promise<void> {
+    const asset = this.asset;
+    const copy = this.copies.find((c) => c.id === id);
+    if (!asset || !copy || this.readOnlyGuard()) return;
+    try {
+      const items = await getAssetMetadata({ id: asset.id });
+      const renderId = storedEdit(items, id)?.render?.assetId ?? null;
+      if (renderId) await this.leaveFront(asset.id, renderId, storedEdit(items, null)?.render?.assetId ?? null);
+      await deleteAssetMetadata({ id: asset.id, key: copyKey(id) });
+      await deleteAssetMetadata({ id: asset.id, key: historyKeyFor(id) }).catch(() => {});
+      if (renderId) await deleteAssets({ assetBulkDeleteDto: { ids: [renderId] } }).catch((e) => console.warn('Could not move the copy to trash', e));
+      this.copies = this.copies.filter((c) => c.id !== id);
+      if (this.copyId === id) await this.openEdit(null);
+      this.notice = `${copy.name} deleted${renderId ? "; its JPEG is in Immich's trash" : ''}.`;
+    } catch (e) {
+      this.error = `Couldn't delete the copy: ${errorMessage(e)}`;
+    }
+  }
+
+  /** Before a JPEG leaves the stack: if it is in front, the original's JPEG (else the RAW) takes over. */
+  private async leaveFront(rawId: string, renderId: string, originalRenderId: string | null): Promise<void> {
+    const raw = await getAssetInfo({ id: rawId });
+    if (!raw.stack || raw.stack.primaryAssetId !== renderId) return;
+    const next = originalRenderId && originalRenderId !== renderId ? originalRenderId : rawId;
+    await updateStack({ id: raw.stack.id, stackUpdateDto: { primaryAssetId: next } }).catch((e) => console.warn('Could not change the front of the stack', e));
+  }
+
+  /** Puts this edit's JPEG in front of the RAW's stack in Immich. */
+  async showInFront(): Promise<void> {
+    const asset = this.asset;
+    const renderId = this.recipe.render?.assetId;
+    if (!asset || !renderId || this.readOnlyGuard()) return;
+    try {
+      const raw = await getAssetInfo({ id: asset.id });
+      if (!raw.stack) throw new Error('the RAW is not in a stack');
+      if (raw.stack.primaryAssetId !== renderId) await updateStack({ id: raw.stack.id, stackUpdateDto: { primaryAssetId: renderId } });
+      this.notice = `${this.editName} is now in front of the stack in Immich.`;
+    } catch (e) {
+      this.error = `Couldn't change the front of the stack: ${errorMessage(e)}`;
+    }
+  }
+
   // ---------------------------------------------------------------- saving
 
   async save(): Promise<boolean> {
@@ -1944,12 +2101,15 @@ export class Editor {
       // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
       const { recipe, file, fallback } = await this.renderExport(asset, session, renderer, preset, step, true);
+      const copy = this.currentCopy();
       const saved = await saveRender({
         raw: asset,
         recipe,
         jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
+        copy,
         onProgress: (s, f) => step(s, f),
       });
+      if (copy) this.copies = this.copies.map((c) => (c.id === copy.id ? { ...c, renderId: saved.render?.assetId ?? null } : c));
       if (this.recipe.render?.assetId) this.pastRenders.add(this.recipe.render.assetId);
       this.recipe.render = saved.render;
       this.savedRenderId = saved.render?.assetId ?? null;
@@ -1959,7 +2119,7 @@ export class Editor {
       this.savedJson = editableJson(saved);
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
-      this.notice = `Saved to Immich, stacked on top of the RAW.${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
+      this.notice = `${copy ? `Saved ${copy.name} to Immich, stacked with the RAW.` : 'Saved to Immich, stacked on top of the RAW.'}${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
       this.asset = await getAssetInfo({ id: asset.id }).catch(() => asset);
       this.requestRender();
       return true;
@@ -2153,7 +2313,7 @@ export class Editor {
         await saveUpscaled({
           raw: asset,
           jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
-          info: { scale: s.scale, style: s.style, recipeHash: await recipeHash(recipe) },
+          info: { scale: s.scale, style: s.style, recipeHash: await recipeHash(recipe), copyId: this.copyId },
           onProgress: (st, f) => show(UPSCALE_SAVE_LABEL[st], f),
         });
         this.notice = `Saved the ${s.scale}× copy to Immich (${file.width} × ${file.height}), stacked with the RAW.`;
