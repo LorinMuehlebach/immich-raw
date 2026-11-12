@@ -8,6 +8,7 @@
 //   B  camera RAW + JPEG pairs (same name and time): normal, blurred, shifted
 //   C  one JPEG on its own
 //   D  JPEG-only burst: normal, blurred, shifted
+//   E  an exposure bracket (DNG): 0 / -2 / +2 EV by the shutter speed, 0.3 s apart
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -136,14 +137,14 @@ try {
     const taken = T0 + m.seconds * 1000;
     const date = new Date(taken).toISOString();
     const key = m.name.slice(6);
-    if (m.scene === 'a' || m.scene === 'b') {
+    if (m.scene === 'a' || m.scene === 'b' || m.scene === 'e') {
       add(key, upload(await writeDng(burstDir, m, taken, i + 1), `${m.name}.dng`, date));
       if (m.scene === 'b') add(`${key}j`, upload(join(burstDir, m.file), m.file, date));
     } else {
       add(key, upload(join(burstDir, m.file), m.file, date));
     }
   }
-  check('upload 5 DNGs, 3 RAW+JPEG pairs and 4 JPEGs', Object.keys(id).length === 15, id);
+  check('upload 8 DNGs, 3 RAW+JPEG pairs and 4 JPEGs', Object.keys(id).length === 18, id);
   for (let i = 0; i < 180; i++) {
     const all = await Promise.all(Object.values(id).map(info));
     if (all.every((a) => a.thumbhash)) break;
@@ -155,9 +156,15 @@ try {
   const dry = await startRun({ scope, dryRun: true });
   const report = (await culler('GET', `/runs/${dry.id}`)).body.report;
   const groups = report.groups.map((g) => g.frames.map((f) => nameOf[f.frameId]).sort()).sort();
-  const expected = [['a0', 'a1', 'a2', 'a3', 'a4'], ['b0', 'b1', 'b2'], ['d0', 'd1', 'd2']];
-  check('dry run finds the three bursts', JSON.stringify(groups) === JSON.stringify(expected), { groups });
+  const expected = [['a0', 'a1', 'a2', 'a3', 'a4'], ['b0', 'b1', 'b2'], ['d0', 'd1', 'd2'], ['e0', 'e1', 'e2']];
+  check('dry run finds the three bursts and the bracket', JSON.stringify(groups) === JSON.stringify(expected), { groups });
   const role = Object.fromEntries(report.groups.flatMap((g) => g.frames.map((f) => [nameOf[f.frameId], f])));
+  const bracketGroup = report.groups.find((g) => g.frames.some((f) => nameOf[f.frameId] === 'e0'));
+  check(
+    'an exposure bracket is kept whole, the middle exposure in front',
+    bracketGroup?.kind === 'bracket' && ['e0', 'e1', 'e2'].every((n) => role[n]?.role === 'bracket') && role.e0?.rank === 1,
+    { kind: bracketGroup?.kind, roles: ['e0', 'e1', 'e2'].map((n) => [role[n]?.role, role[n]?.rank, role[n]?.metrics?.bracketEv]) },
+  );
   check('RAW frames are measured on the RAW file', ['a0', 'a1', 'a4', 'b0'].every((n) => role[n]?.exposureFrom === 'raw'), {
     a1: role.a1?.exposureFrom,
   });
@@ -199,12 +206,17 @@ try {
     'reason tags',
     tagsOf.a1.join() === 'Culling/Rejected/Lighting' &&
       tagsOf.a2.join() === 'Culling/Rejected/Blur' &&
-      tagsOf[bestA].join() === 'Culling/Best' &&
+      tagsOf[bestA].filter((t) => t !== 'Culling/Close call').join() === 'Culling/Best' && // a0 and a3 may nearly tie
       tagsOf.b1.join() === 'Culling/Rejected/Blur' &&
       tagsOf.b1j.join() === 'Culling/Rejected/Blur' &&
-      tagsOf.c0.length === 0,
+      tagsOf.c0.length === 0 &&
+      ['e0', 'e1', 'e2'].every((n) => tagsOf[n].join() === 'Culling/Bracket'),
     tagsOf,
   );
+  const stackE = await stackOf('e0');
+  check('the bracket: a stack of its own, the middle exposure in front', stackE?.primaryAssetId === id.e0 && stackE.assets.length === 3, {
+    primary: nameOf[stackE?.primaryAssetId],
+  });
   const ratings = Object.fromEntries(await Promise.all(Object.entries(id).map(async ([n, i]) => [n, (await info(i)).exifInfo?.rating ?? null])));
   // Immich 3.4.0 accepts rating -1 but empties it again when it re-reads the photo's metadata
   // (it only accepts 1-5 there), so a missing -1 is reported, not failed.
@@ -543,6 +555,25 @@ try {
   await page.locator('[data-testid="asset-viewer-navbar-actions"]').waitFor({ timeout: 45000 });
   await page.waitForTimeout(3000);
   check('no Compare stack button on a photo outside a stack', (await page.locator('[data-raw-editor-stack]').count()) === 0);
+
+  // An exposure bracket's stack window: its shots belong together, so no "Delete others".
+  const bracketRun = await startRun({ scope: { kind: 'assets', ids: ['e0', 'e1', 'e2'].map((k) => id[k]) }, dryRun: false });
+  check('the bracket stacked on its own', bracketRun.status === 'done' && !!(await info(id.e0)).stack, bracketRun.summary);
+  await page.goto(`${BASE}/photos/${id.e0}`);
+  const bracketButton = page.locator('[data-raw-editor-stack]');
+  await bracketButton.waitFor({ timeout: 45000 });
+  await page.waitForTimeout(800);
+  if (await page.locator('[data-dialog-overlay][data-state="open"]').count()) await page.keyboard.press('Escape');
+  await bracketButton.click();
+  await page.waitForURL(/\/immich-raw\/\?stack=/, { timeout: 15000 });
+  await pageWindow.locator('.pos').waitFor({ timeout: 60000 });
+  const bracketVerdict = (await pageWindow.locator('.info').textContent())?.replace(/\s+/g, ' ');
+  check(
+    'a bracket in the stack window: its exposure steps, no Delete others',
+    /Exposure bracket/.test(bracketVerdict ?? '') && (await pageWindow.getByRole('button', { name: 'Delete others…' }).count()) === 0,
+    { bracketVerdict: bracketVerdict?.slice(0, 200) },
+  );
+  await page.screenshot({ path: join(outDir, 'stack-page-bracket.png') });
   check('no page errors in the stack window', errors.length === 0, { errors });
 } catch (e) {
   check('error', false, { message: String(e?.stack ?? e) });

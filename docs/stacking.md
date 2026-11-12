@@ -1,9 +1,11 @@
 # Stacking and best pick
 
-The optional culler sorts bursts and re-takes. It stacks photos of the same scene taken close
+The optional culler sorts bursts and re-takes. It stacks photos of the same moment taken close
 together, puts the best one in front, and tags the others with why they lost: lighting, blur or
-closed eyes. It works on RAWs, camera JPEGs and RAW + JPEG pairs, sorts new uploads by itself, and
-you can run it on a day, an album or a selection, with a preview first and undo afterwards.
+closed eyes. Exposure brackets get a stack of their own and are kept whole, and near-ties are
+marked as close calls. It works on RAWs, camera JPEGs and RAW + JPEG pairs, sorts new uploads by
+itself, and you can run it on a day, an album or a selection, with a preview first and undo
+afterwards.
 
 Setting it up: [Installation → the culler](installation.md#optional-the-culler-auto-stack-and-best-pick).
 To try it without your own photos, the [demo](../deploy/demo/README.md) has bursts ready. How it
@@ -12,15 +14,17 @@ decides, its settings and the command line: [docs/culler.md](culler.md).
 ## In the editor
 
 The filmstrip groups each stack's RAWs, best first, with a coloured line under them.
-- **Badges:** ★ best, ◐ runner-up, and a red badge for rejected shots: ☀ lighting, ≋ sharpness,
+- **Badges:** ★ best (★≈ when it's a close call: the next shot is nearly as good), ◐ runner-up,
+  ± a shot of an exposure bracket, and a red badge for rejected shots: ☀ lighting, ≋ sharpness,
   ◉ eyes.
-- **Tooltip:** the reason and the measurements, for example "−1.5 EV vs best" or "sharpness 54 % of
-  best".
+- **Tooltip:** the reason and the measurements, for example "−1.5 EV vs best", "sharpness 54 % of
+  best (the bird)" or "bracket −2.0 EV".
 - **Stack controls:** the number on a stack opens the stack window (below). ★ on another photo makes
   that one the best. **Collapse stacks** in the filmstrip's header shows only the best photo of each
   stack.
-- **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6" or
-  "rejected: not sharp". Click it to open the stack window.
+- **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6",
+  "★≈ best of 4 · close call", "± exposure bracket (2 of 3)" or "rejected: not sharp". Click it to
+  open the stack window.
 
 ![Stacks in the filmstrip, with the badges of the shots that lost](images/stacking/filmstrip.jpg)
 
@@ -32,6 +36,15 @@ remembers them.
 - **Find people without a visible face.**
 - **Prefer the most smiles.**
 - **Set aside closed eyes** (also half-blinks).
+- **Keep exposure brackets together:** a stack of their own, none of them set aside.
+- **One stack per moment:** a new pose after a pause gets a stack of its own; a re-take of the same
+  pose stays.
+
+**Your picks** at the bottom of the panel shows up once you chose another best than the culler (★ on
+another photo, or a shot put in front in Immich). It says how often, and suggests settings that would
+have agreed with you. **Preview with this** shows what the suggestion would do to these photos, and
+**Apply** then uses it for this run only. To keep it for every run, **Copy for culler.toml** and add
+the lines to the culler's settings file ([Your picks](culler.md#your-picks)).
 
 ![Auto-stack… with a preview](images/stacking/auto-stack-panel.jpg)
 
@@ -45,6 +58,8 @@ photos with the same checkboxes as **Auto-stack…** in the editor.
 
 - **Preview** shows the result and changes nothing. Every stack is a row, with its preferred shot
   large and all its shots beside it. Single photos come between the stacks, all in the order taken.
+- **Close calls** come first: a box above the rows lists the stacks whose best and next shot nearly
+  tied, and a click on one shows its row.
 - **−** on a shot takes it out of its stack, and it becomes a single photo.
 - A click on a single photo offers the stack taken just before it and the one just after it, and
   adds it to the one you pick.
@@ -70,10 +85,13 @@ It shows the shots of one stack, best first, one at a time and large.
   **Compare stack** in Immich's photo viewer. That button shows on photos in a stack the culler made
   with at least two shots. It opens the window as a page of its own; Esc goes back to Immich.
 - **Switching shots:** ← / →, Home / End, the thumbnails at the bottom, or a swipe on touch screens.
-- **Details:** the verdict and its place in the stack, sharpness and exposure compared with the best
-  shot, the faces' or people's own exposure, blown highlights, crushed shadows, the exposure error,
-  how open the eyes are (in %), smiles, the people found, the camera settings and the files of the
-  shot. The measurement a shot was rejected for is shown in red.
+- **Details:** the verdict and its place in the stack, whether it's a close call, sharpness (and
+  what it was measured on: the eyes, the animal or the sharpest areas) and exposure compared with the
+  best shot, the faces' or people's own exposure, blown highlights, crushed shadows, the exposure
+  error, how open the eyes are (in %), smiles, the people found, the camera settings and the files of
+  the shot. The measurement a shot was rejected for is shown in red.
+- **Exposure brackets** show each shot's exposure step from the one in front, by the camera settings
+  and as measured.
 - **Pictures:** each shot shows its edit if it has one, else the camera JPEG, else the RAW. Immich's
   RAW previews are auto-brightened, so for exposure trust the numbers more than the RAW's picture.
 - **★ Make preferred** (or P) puts the shot in front, the same as ★ in the filmstrip.
@@ -83,6 +101,7 @@ It shows the shots of one stack, best first, one at a time and large.
   - The culler then sorts the group again. With one shot left, it takes the stack apart, puts a RAW
     + JPEG pair back into its own stack and removes the `Culling/` tags.
   - To get the shots back, restore them from Immich's trash and run **Auto-stack…** again.
+  - An exposure bracket has no **Delete others…**: its shots belong together.
 
 ![The stack window: a shot that lost for lighting, with its measurements](images/stacking/stack-window.jpg)
 
@@ -94,5 +113,6 @@ The filmstrip shows only RAWs. Stacks of JPEGs are sorted too, and show in Immic
 
 The results are ordinary Immich stacks and tags, so they show everywhere in Immich and its apps.
 The shots that lost get tags under `Culling/` (for example `Culling/Rejected/Blur`): search for
-those to find them. New uploads are sorted by themselves once an upload batch has been quiet for 5
+those to find them. `Culling/Close call` finds the stacks worth a look, and `Culling/Bracket` the
+exposure brackets. New uploads are sorted by themselves once an upload batch has been quiet for 5
 minutes ([docs/culler.md](culler.md#using-it)).

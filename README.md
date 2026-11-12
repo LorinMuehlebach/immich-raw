@@ -34,8 +34,8 @@ Each feature has a guide with screenshots.
   Immich.
 - **[AI Upscale](docs/upscale.md):** 2× or 4× larger, in the browser, with a preview of a detail.
 - **[Stacking and best pick](docs/stacking.md)** (optional culler): bursts and re-takes stacked
-  with the best shot in front, the others tagged with why they lost; from the editor or from
-  Immich's selection.
+  with the best shot in front, the others tagged with why they lost, exposure brackets kept whole
+  and close calls marked; from the editor or from Immich's selection.
 - **[Convert to DNG](docs/dng.md):** replace a RAW with a lossless or a much smaller lossy DNG.
 - **[Phones and tablets](docs/mobile.md):** a touch layout.
 

@@ -58,7 +58,14 @@ export async function writeDng(dir, entry, takenAt, seed) {
     calibrationIlluminant1: 21,
     asShotNeutral: [1, 1, 1],
     dateTime: when.text,
-    exif: { dateTimeOriginal: when.text, offsetTimeOriginal: '+00:00', subSecTimeOriginal: when.subSec, exposureTime: 1 / 250, fNumber: 4, iso: 100 },
+    exif: {
+      dateTimeOriginal: when.text,
+      offsetTimeOriginal: '+00:00',
+      subSecTimeOriginal: when.subSec,
+      exposureTime: entry.exposureTime ?? 1 / 250, // a bracket's shots step it
+      fNumber: 4,
+      iso: 100,
+    },
   };
   const dng = await buildDng(meta, mosaic(rgb16, entry.width, entry.height, seed));
   const path = `${dir}/${entry.name}.dng`;
