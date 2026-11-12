@@ -1,13 +1,15 @@
 <script lang="ts">
   // "Auto-stack…" popover above the filmstrip: preview (dry run), apply, undo the last run, and
   // what the run takes into account (remembered in this browser; automatic runs use the culler's
-  // own settings).
+  // own settings). "Your picks": how often the user chose another best than the culler, with
+  // settings that would have agreed, to preview here or keep in culler.toml.
   import type { AssetResponseDto } from '@immich/sdk';
   import { onMount } from 'svelte';
   import { parseContext } from '../immich/context.ts';
   import { describeRun, runPhase } from '../immich/cull-view.ts';
   import {
     applyRun,
+    getPicks,
     lastUndoableRun,
     loadCullOptions,
     saveCullOptions,
@@ -17,6 +19,8 @@
     type CullerStatus,
     type CullOptions,
     type CullRun,
+    type PicksSummary,
+    type PickSuggestion,
     type RunScope,
   } from '../immich/culler.ts';
   import CullOptionsFields from './CullOptionsFields.svelte';
@@ -46,6 +50,10 @@
   let result = $state<string | null>(null);
   let error = $state<string | null>(null);
   let undoable = $state<CullRun | null>(null);
+  let picks = $state<PicksSummary | null>(null);
+  /** The suggestion the preview on show was made with. */
+  let tried = $state<PickSuggestion | null>(null);
+  let copied = $state<string | null>(null);
   const controller = new AbortController();
 
   let options = $state<CullOptions>(loadCullOptions());
@@ -53,13 +61,41 @@
   function setOptions(o: CullOptions) {
     options = o;
     preview = null; // it was made with the other choice
+    tried = null;
     saveCullOptions(o);
   }
 
   onMount(() => {
     void refreshUndoable();
+    void refreshPicks();
     return () => controller.abort();
   });
+
+  async function refreshPicks() {
+    try {
+      picks = await getPicks();
+    } catch {
+      picks = null;
+    }
+  }
+
+  const changeText = (s: PickSuggestion) => s.changes.map((c) => `${c.key} ${c.from} → ${c.to}`).join(', ');
+
+  async function tryPick(s: PickSuggestion) {
+    tried = s;
+    preview = await track(() => startRun(scope, true, { options, settings: s.options }), 'preview');
+    if (!preview) tried = null;
+  }
+
+  async function copyToml(s: PickSuggestion) {
+    try {
+      await navigator.clipboard.writeText(s.toml);
+      copied = s.section;
+    } catch {
+      copied = null;
+      error = `Couldn't copy. Add to culler.toml: ${s.toml.replace(/\n/g, ' ')}`;
+    }
+  }
 
   async function refreshUndoable() {
     try {
@@ -90,6 +126,7 @@
   }
 
   async function doPreview() {
+    tried = null;
     preview = await track(() => startRun(scope, true, { options }), 'preview');
   }
 
@@ -99,8 +136,10 @@
     if (!run) return;
     result = `Done: ${describeRun(run.summary)}.`;
     preview = null;
+    tried = null;
     onChanged();
     await refreshUndoable();
+    await refreshPicks();
   }
 
   async function doUndo() {
@@ -110,8 +149,10 @@
     const notes = run.summary?.notes ?? [];
     result = `Undone.${notes.length ? ` ${notes.join(' ')}` : ''}`;
     preview = null;
+    tried = null;
     onChanged();
     await refreshUndoable();
+    await refreshPicks();
   }
 
 </script>
@@ -131,6 +172,7 @@
   {#if busy}
     <p class="progress">{busy === 'preview' ? 'Checking' : busy === 'apply' ? 'Applying' : 'Undoing'}: {runPhase(progress)}</p>
   {:else if preview}
+    {#if tried}<p class="dim">With {changeText(tried)}: this run only, until it's in culler.toml.</p>{/if}
     <p>{describeRun(preview.summary)}.</p>
     {#if preview.summary?.changes}
       <p class="dim">{preview.summary.changes} changes in Immich (stacks, tags, reject flags).</p>
@@ -149,6 +191,26 @@
       Undo last run
     </button>
   </div>
+  {#if picks && picks.overruled}
+    <details class="picks">
+      <summary>Your picks: you chose another best in {picks.overruled} of {picks.stacks} stacks</summary>
+      {#if picks.suggestions.length}
+        {#each picks.suggestions as s (s.section)}
+          <div class="suggestion">
+            <p>{s.why}</p>
+            <p class="dim">{changeText(s)} · {s.fixes} of {s.of} of your picks</p>
+            <div class="row">
+              <button onclick={() => tryPick(s)} disabled={!!busy} title="A preview of these photos with this setting">Preview with this</button>
+              <button onclick={() => copyToml(s)} title={`Copy for culler.toml:
+${s.toml}`}>{copied === s.section ? 'Copied' : 'Copy for culler.toml'}</button>
+            </div>
+          </div>
+        {/each}
+      {:else}
+        <p class="dim">No suggestions yet: each needs at least {picks.minPicks} of your picks behind it.</p>
+      {/if}
+    </details>
+  {/if}
   {#if status}
     <p class="dim small">
       {#if status.watcher?.enabled}New uploads are stacked {status.watcher.autoApply ? 'automatically' : 'as suggestions'}.{:else}Automatic
@@ -217,5 +279,19 @@
   }
   .err {
     color: var(--danger);
+  }
+  .picks {
+    margin-top: 8px;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+  }
+  .picks summary {
+    cursor: pointer;
+  }
+  .suggestion {
+    margin-top: 6px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
   }
 </style>
