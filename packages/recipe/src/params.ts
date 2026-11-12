@@ -14,6 +14,8 @@ export interface ParamSpec {
   decimals: number;
   /** Show a leading "+" for positive values (Lightroom does for most sliders). */
   signed?: boolean;
+  /** Unit shown after the value, e.g. "px". */
+  unit?: string;
 }
 
 const p = (
@@ -209,6 +211,6 @@ export function clampParam(spec: ParamSpec, value: number): number {
 }
 
 export function formatParam(spec: ParamSpec, value: number): string {
-  const text = value.toFixed(spec.decimals);
+  const text = value.toFixed(spec.decimals) + (spec.unit ?? '');
   return spec.signed && value > 0 ? `+${text}` : text;
 }

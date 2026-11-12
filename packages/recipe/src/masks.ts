@@ -29,6 +29,8 @@ interface ComponentBase {
   id: string;
   mode: MaskMode;
   invert: boolean;
+  /** Edge refinement of this part alone, before the parts are combined; absent = none. */
+  edge?: MaskEdge;
 }
 
 /** Full effect on the (x0, y0) side, fading to none at (x1, y1). */
@@ -188,6 +190,21 @@ export interface LocalAdjustments {
 
 export type LocalKey = keyof LocalAdjustments;
 
+/**
+ * Edge refinement of one part of a mask, or of the whole mask (its parts combined), in
+ * pixels of the full-resolution photo. Smooth and Offset treat the selection as a shape whose
+ * outline is where it is 50 %; Feather then fades that outline. Lightroom has no equivalent:
+ * masks imported from XMP start without refinement.
+ */
+export interface MaskEdge {
+  /** Grows (+) or shrinks (-) the mask by this many pixels. */
+  offset: number;
+  /** Width of the fade across the edge. */
+  feather: number;
+  /** Radius below which wiggles and specks of the edge are smoothed away. */
+  smooth: number;
+}
+
 export interface Mask {
   id: string;
   name: string;
@@ -197,6 +214,7 @@ export interface Mask {
   amount: number;
   components: MaskComponent[];
   adjust: LocalAdjustments;
+  edge: MaskEdge;
 }
 
 const lp = (key: LocalKey, label: string, min: number, max: number, step = 1, decimals = 0, signed = true): ParamSpec => ({
@@ -233,6 +251,10 @@ export const LOCAL_PARAMS: Record<LocalKey, ParamSpec> = {
 export const LOCAL_KEYS = Object.keys(LOCAL_PARAMS) as LocalKey[];
 
 export const MASK_AMOUNT: ParamSpec = { path: 'amount', label: 'Amount', min: 0, max: 200, default: 100, step: 1, decimals: 0, signed: false };
+export const MASK_OFFSET: ParamSpec = { path: 'edge.offset', label: 'Offset', min: -100, max: 100, default: 0, step: 1, decimals: 0, signed: true, unit: 'px' };
+export const MASK_FEATHER: ParamSpec = { path: 'edge.feather', label: 'Feather', min: 0, max: 200, default: 0, step: 1, decimals: 0, signed: false, unit: 'px' };
+export const MASK_SMOOTH: ParamSpec = { path: 'edge.smooth', label: 'Smooth', min: 0, max: 100, default: 0, step: 1, decimals: 0, signed: false, unit: 'px' };
+export const EDGE_PARAMS: ParamSpec[] = [MASK_OFFSET, MASK_FEATHER, MASK_SMOOTH];
 export const RADIAL_FEATHER: ParamSpec = { path: 'feather', label: 'Feather', min: 0, max: 100, default: 50, step: 1, decimals: 0, signed: false };
 export const LUMINANCE_SMOOTH: ParamSpec = { path: 'smooth', label: 'Smoothness', min: 0, max: 100, default: 20, step: 1, decimals: 0, signed: false };
 export const COLOR_REFINE: ParamSpec = { path: 'refine', label: 'Refine', min: 0, max: 100, default: 50, step: 1, decimals: 0, signed: false };
@@ -274,8 +296,25 @@ export function defaultAdjustments(): LocalAdjustments {
   return Object.fromEntries(LOCAL_KEYS.map((k) => [k, 0])) as unknown as LocalAdjustments;
 }
 
+export const defaultEdge = (): MaskEdge => ({ offset: 0, feather: 0, smooth: 0 });
+
 export function newMask(name: string, first: MaskComponent): Mask {
-  return { id: shortId(), name, visible: true, amount: 100, components: [{ ...first, mode: 'add' }], adjust: defaultAdjustments() };
+  return { id: shortId(), name, visible: true, amount: 100, components: [{ ...first, mode: 'add' }], adjust: defaultAdjustments(), edge: defaultEdge() };
+}
+
+/** True when the refinement changes anything (offset, feather or smooth set). */
+export function isEdgeSet(r: MaskEdge | undefined | null): r is MaskEdge {
+  return !!r && (r.offset !== 0 || r.feather > 0 || r.smooth > 0);
+}
+
+/** True when the whole mask's edge is refined. */
+export function isMaskRefined(m: Pick<Mask, 'edge'>): boolean {
+  return isEdgeSet(m.edge as MaskEdge | undefined); // undefined: a recipe that skipped normalizeMasks
+}
+
+/** True when this part's own edge is refined. */
+export function isPartRefined(c: Pick<MaskComponent, 'edge'>): boolean {
+  return isEdgeSet(c.edge);
 }
 
 /** Defaults for a component of the given kind (geometry is set by whoever creates it). */
@@ -316,7 +355,26 @@ const clampNum = (v: number, min: number, max: number) => Math.min(max, Math.max
 /** Stroke points are stored with 5 decimals (1/100000 of the longer side is far below a pixel). */
 const quant = (v: number) => Math.round(v * 1e5) / 1e5;
 
+/** A stored refinement, clamped (whole pixels); missing fields are 0. */
+function normalizeEdge(input: unknown): MaskEdge {
+  const r = isObject(input) ? input : {};
+  return {
+    offset: Math.round(clampParam(MASK_OFFSET, num(r.offset, 0))),
+    feather: Math.round(clampParam(MASK_FEATHER, num(r.feather, 0))),
+    smooth: Math.round(clampParam(MASK_SMOOTH, num(r.smooth, 0))),
+  };
+}
+
 function normalizeComponent(input: unknown): MaskComponent | null {
+  const c = normalizeComponentShape(input);
+  if (!c) return null;
+  // Kept only when it does something, so parts without one stay as they were stored.
+  const edge = normalizeEdge((input as Record<string, unknown>).edge);
+  if (isEdgeSet(edge)) c.edge = edge;
+  return c;
+}
+
+function normalizeComponentShape(input: unknown): MaskComponent | null {
   if (!isObject(input)) return null;
   const mode: MaskMode = input.mode === 'subtract' || input.mode === 'intersect' ? input.mode : 'add';
   const base = { id: typeof input.id === 'string' && input.id ? input.id : shortId(), mode, invert: input.invert === true };
@@ -449,6 +507,7 @@ export function normalizeMasks(input: unknown): Mask[] {
       amount: clampParam(MASK_AMOUNT, num(item.amount, 100)),
       components: comps,
       adjust,
+      edge: normalizeEdge(item.edge),
     });
   }
   return out;

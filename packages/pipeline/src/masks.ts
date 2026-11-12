@@ -19,6 +19,12 @@ export interface MaskResources {
   aiCells?: Map<string, [number, number, number, number]>;
   /** Half a texel of the AI atlas, in uv. */
   aiHalfTexel?: [number, number];
+  /** Component id -> its refined map's place in the refined-part atlas (mask-refine.ts). */
+  partCells?: Map<string, [number, number, number, number]>;
+  partHalfTexel?: [number, number];
+  /** Mask id -> its refined map's place in the refined-mask atlas (mask-refine.ts). */
+  maskCells?: Map<string, [number, number, number, number]>;
+  maskHalfTexel?: [number, number];
 }
 
 /**
@@ -37,6 +43,10 @@ export function colorFeature(lin: readonly number[]): [number, number, number] {
 export const colorRangeReach = (refine: number) => 0.015 + Math.pow(refine / 100, 1.5) * 0.2;
 
 const KIND = { linear: 1, radial: 2, luminance: 3, brush: 4, color: 5, ai: 6 } as const;
+/** A part read from its refined map (the shader's componentWeight kind 7). */
+export const KIND_PART_REFINED = 7;
+/** A whole mask read from its refined map (kind 8). */
+export const KIND_MASK_REFINED = 8;
 const MODE = { add: 0, subtract: 1, intersect: 2 } as const;
 
 export interface MaskUniforms {
@@ -109,8 +119,8 @@ function encodeComponent(c: MaskComponent, res: MaskResources | undefined, color
  * Packs the masks that change the picture (plus the one whose overlay is shown) for the
  * shader. Masks beyond the limits are ignored (normalizeMasks already enforces them).
  */
-export function maskUniforms(recipe: Recipe, frame: [number, number], overlayId: string | null = null, res?: MaskResources): MaskUniforms {
-  const u: MaskUniforms = {
+function emptyUniforms(frame: [number, number]): MaskUniforms {
+  return {
     uMaskCount: 0,
     uCompCount: 0,
     uCompInfo: new Int32Array(4 * MAX_COMPONENTS),
@@ -125,22 +135,62 @@ export function maskUniforms(recipe: Recipe, frame: [number, number], overlayId:
     uColorSamples: new Float32Array(4 * MAX_COLOR_SAMPLES_TOTAL),
     uses: { detail: false, dehaze: false, sharpness: false },
   };
+}
+
+/** Packs the parts of mask `m` into slot `slot`; a refined part is read from its map. */
+function packParts(u: MaskUniforms, m: Pick<Mask, 'components'>, slot: number, res: MaskResources | undefined, colors: { next: number; data: Float32Array }): void {
+  for (const c of m.components) {
+    const cell = res?.partCells?.get(c.id);
+    if (cell) {
+      // Its map already holds the part inverted (if it is).
+      const i = u.uCompCount++;
+      u.uCompInfo.set([KIND_PART_REFINED, MODE[c.mode], slot, 0], i * 4);
+      u.uCompA.set(cell, i * 4);
+      u.uCompB.set([...(res!.partHalfTexel ?? [0, 0]), 0, 0], i * 4);
+      continue;
+    }
+    const enc = encodeComponent(c, res, colors);
+    if (!enc) continue;
+    const i = u.uCompCount++;
+    const { a, b } = enc;
+    u.uCompInfo.set([KIND[c.kind], MODE[c.mode], slot, c.invert ? 1 : 0], i * 4);
+    u.uCompA.set(a, i * 4);
+    u.uCompB.set(b, i * 4);
+  }
+}
+
+/**
+ * The parts of one mask (or one part, as a mask of its own) alone, in slot 0, whether or not
+ * it changes the picture: what the refinement renders before it refines the edge
+ * (mask-refine.ts).
+ */
+export function maskPartsUniforms(mask: Pick<Mask, 'components'>, frame: [number, number], res?: MaskResources): MaskUniforms {
+  const u = emptyUniforms(frame);
+  if (!mask.components.length) return u;
+  u.uMaskCount = 1;
+  packParts(u, mask, 0, res, { next: 0, data: u.uColorSamples });
+  return u;
+}
+
+export function maskUniforms(recipe: Recipe, frame: [number, number], overlayId: string | null = null, res?: MaskResources): MaskUniforms {
+  const u = emptyUniforms(frame);
   const colors = { next: 0, data: u.uColorSamples };
   for (const m of recipe.masks) {
     const overlay = m.id === overlayId && m.components.length > 0;
     const active = isMaskActive(m);
     if (!active && !overlay) continue;
-    if (u.uMaskCount >= MAX_MASKS || u.uCompCount + m.components.length > MAX_COMPONENTS) break;
+    // A refined mask is read from its map, as one part.
+    const refined = res?.maskCells?.get(m.id);
+    if (u.uMaskCount >= MAX_MASKS || u.uCompCount + (refined ? 1 : m.components.length) > MAX_COMPONENTS) break;
     const slot = u.uMaskCount++;
     if (overlay) u.uOverlay = slot;
-    for (const c of m.components) {
-      const enc = encodeComponent(c, res, colors);
-      if (!enc) continue;
+    if (refined) {
       const i = u.uCompCount++;
-      const { a, b } = enc;
-      u.uCompInfo.set([KIND[c.kind], MODE[c.mode], slot, c.invert ? 1 : 0], i * 4);
-      u.uCompA.set(a, i * 4);
-      u.uCompB.set(b, i * 4);
+      u.uCompInfo.set([KIND_MASK_REFINED, MODE.add, slot, 0], i * 4);
+      u.uCompA.set(refined, i * 4);
+      u.uCompB.set([...(res!.maskHalfTexel ?? [0, 0]), 0, 0], i * 4);
+    } else {
+      packParts(u, m, slot, res, colors);
     }
     if (!active) continue; // overlay only: no adjustments
     const k = m.amount / 100;

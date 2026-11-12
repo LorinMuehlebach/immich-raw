@@ -178,9 +178,8 @@ vec3 sampleLens(vec2 s, out float gain) {
   return cam;
 }
 
-// Scene-linear ProPhoto with exposure applied (no dehaze yet).
-vec3 developBase(vec2 t) {
-  vec2 s = geomMap(t);
+// Scene-linear ProPhoto with exposure applied (no dehaze yet) at ideal source point s.
+vec3 developAt(vec2 s) {
   float gain;
   vec3 cam = sampleLens(s, gain) * uWb;
   // Highlight reconstruction: as any channel nears its clip level, blend towards a
@@ -192,6 +191,8 @@ vec3 developBase(vec2 t) {
   cam = mix(cam, vec3(peak), m) * gain;
   return (uCamToWork * cam) * uExposure;
 }
+
+vec3 developBase(vec2 t) { return developAt(geomMap(t)); }
 
 // Dehaze by the dark channel prior: positive amounts remove haze with the transmission map,
 // negative ones add a veil of the haze colour.
@@ -212,7 +213,7 @@ vec3 developInput(vec2 t) { return applyDehaze(developBase(t), t, uDehaze); }
 uniform int uMaskCount;
 uniform int uCompCount;
 #define MAX_COLOR_SAMPLES 16
-uniform ivec4 uCompInfo[MAX_COMP]; // kind (1 linear, 2 radial, 3 luminance, 4 brush, 5 colour, 6 AI), mode (0 add, 1 subtract, 2 intersect), mask slot, invert
+uniform ivec4 uCompInfo[MAX_COMP]; // kind (1 linear, 2 radial, 3 luminance, 4 brush, 5 colour, 6 AI, 7 refined part, 8 refined mask), mode (0 add, 1 subtract, 2 intersect), mask slot, invert
 uniform vec4 uCompA[MAX_COMP];
 uniform vec4 uCompB[MAX_COMP];
 uniform vec2 uMaskFrame;           // source s -> mask frame
@@ -222,6 +223,8 @@ uniform vec4 uMaskC[MAX_MASK];     // temp, tint, saturation, hue (radians)
 uniform vec4 uMaskD[MAX_MASK];     // dehaze, sharpness, colour overlay a, b
 uniform sampler2D uBrush;          // brush coverage maps, packed (brush.ts)
 uniform sampler2D uAiMask;         // AI selection maps in decoded-image coordinates, packed
+uniform sampler2D uPartRefined;    // mask parts with a refined edge, in source coordinates, packed (mask-refine.ts)
+uniform sampler2D uMaskRefined;    // whole masks with a refined edge, the same way
 uniform mat3 uMaskLms;             // working space -> OKLab LMS, for colour ranges
 uniform vec4 uColorSamples[MAX_COLOR_SAMPLES]; // sampled colours: OKLab a/L, b/L
 
@@ -281,15 +284,19 @@ float componentWeight(int i, vec2 s, vec2 m, float lum, vec3 chroma) {
       vec2 uv = clamp(a.xy + p * a.zw, a.xy + b.xy, a.xy + a.zw - b.xy);
       w = texture(uAiMask, uv).r;
     }
+  } else if (info.x >= 7) {
+    // A refined part (7) or whole mask (8): a: its place in the atlas; b: half a texel. Edge
+    // texels repeat outward (a mask touching the border stays there).
+    vec2 uv = clamp(a.xy + clamp(s, 0.0, 1.0) * a.zw, a.xy + b.xy, a.xy + a.zw - b.xy);
+    w = info.x == 7 ? texture(uPartRefined, uv).r : texture(uMaskRefined, uv).r;
   }
   return info.w == 1 ? 1.0 - w : w;
 }
 
-// Weight of every mask slot at frame point t.
+// Weight of every mask slot at ideal source point s.
 // lin: the pixel's colour in the working space (any exposure), for colour ranges.
-void maskWeights(vec2 t, float lum, vec3 lin, out float w[MAX_MASK]) {
+void maskWeightsAt(vec2 s, float lum, vec3 lin, out float w[MAX_MASK]) {
   for (int k = 0; k < MAX_MASK; k++) w[k] = 0.0;
-  vec2 s = geomMap(t);
   vec2 m = s * uMaskFrame;
   vec3 chroma = maskChroma(lin);
   for (int i = 0; i < MAX_COMP; i++) {
@@ -302,7 +309,102 @@ void maskWeights(vec2 t, float lum, vec3 lin, out float w[MAX_MASK]) {
     else w[k] *= c;
   }
 }
+
+// Weight of every mask slot at frame point t.
+void maskWeights(vec2 t, float lum, vec3 lin, out float w[MAX_MASK]) {
+  maskWeightsAt(geomMap(t), lum, lin, w);
+}
 `;
+
+/**
+ * Mask refinement, pass 1: the weight of one mask (packed into slot 0) over the decoded
+ * image, in source coordinates s (texel = s * uMaskPx), from the preview proxy. Luminance
+ * and colour ranges see the photo with white balance and exposure, before dehaze.
+ */
+export const FS_MASK_RENDER = /* glsl */ `#version 300 es
+precision highp float;
+${COMMON}
+uniform vec2 uMaskPx;   // size of the map in texels
+out vec4 o;
+void main() {
+  vec2 s = gl_FragCoord.xy / uMaskPx;
+  // Mip level of the proxy for one map texel (what srcGradients works out for a frame pixel).
+  vec2 k = uSrcTexScale / uSrcRect.zw;
+  gSrcDx = vec2(k.x / uMaskPx.x, 0.0);
+  gSrcDy = vec2(0.0, k.y / uMaskPx.y);
+  vec3 lin = developAt(s);
+  float w[MAX_MASK];
+  maskWeightsAt(s, maskLum(log2(max(dot(lin, LUMA), 1e-7))), lin, w);
+  o = vec4(w[0], 0.0, 0.0, 1.0);
+}`;
+
+/**
+ * Mask refinement: separable Gaussian of the red channel (uDir (1,0) or (0,1), uSigma in
+ * texels). uSharpen > 0 makes the edge crisp again around 50 % afterwards (Smooth): the
+ * half-width of the transition in mask units. Writes at gl_FragCoord - uOrigin of uTex.
+ */
+export const FS_MASK_BLUR = /* glsl */ `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform ivec2 uDir;
+uniform float uSigma;
+uniform float uSharpen;
+uniform vec2 uOrigin;
+out vec4 o;
+void main() {
+  ivec2 size = textureSize(uTex, 0);
+  ivec2 p = ivec2(gl_FragCoord.xy - uOrigin);
+  ivec2 mx = size - 1;
+  int r = min(int(ceil(uSigma * 3.0)), 256);
+  float k = -0.5 / (uSigma * uSigma);
+  float sum = texelFetch(uTex, p, 0).r;
+  float wsum = 1.0;
+  for (int i = 1; i <= 256; i++) {
+    if (i > r) break;
+    float w = exp(float(i * i) * k);
+    sum += w * (texelFetch(uTex, clamp(p + uDir * i, ivec2(0), mx), 0).r + texelFetch(uTex, clamp(p - uDir * i, ivec2(0), mx), 0).r);
+    wsum += 2.0 * w;
+  }
+  float v = sum / wsum;
+  if (uSharpen > 0.0) v = smoothstep(0.5 - uSharpen, 0.5 + uSharpen, v);
+  o = vec4(v, 0.0, 0.0, 1.0);
+}`;
+
+/**
+ * Mask refinement: grey-level dilation (uMode 1) or erosion (-1) along one direction uDir
+ * ((1,0), (0,1), (1,1) or (1,-1)) by uRadius steps; four of them make an octagon, close to a
+ * disc. The fractional end of the radius is a linearly filtered tap.
+ */
+export const FS_MASK_MORPH = /* glsl */ `#version 300 es
+precision highp float;
+uniform sampler2D uTex;      // linear filtering
+uniform ivec2 uDir;
+uniform float uRadius;
+uniform int uMode;
+uniform vec2 uOrigin;
+out vec4 o;
+void main() {
+  vec2 size = vec2(textureSize(uTex, 0));
+  ivec2 p = ivec2(gl_FragCoord.xy - uOrigin);
+  ivec2 mx = ivec2(size) - 1;
+  float sgn = float(uMode);
+  // Work on sgn * value so that erosion is a dilation too.
+  float v = sgn * texelFetch(uTex, p, 0).r;
+  int n = min(int(floor(uRadius)), 512);
+  for (int i = 1; i <= 512; i++) {
+    if (i > n) break;
+    v = max(v, sgn * texelFetch(uTex, clamp(p + uDir * i, ivec2(0), mx), 0).r);
+    v = max(v, sgn * texelFetch(uTex, clamp(p - uDir * i, ivec2(0), mx), 0).r);
+  }
+  float f = uRadius - float(n);
+  if (f > 0.0) {
+    vec2 c = vec2(p) + 0.5;
+    vec2 d = vec2(uDir) * uRadius;
+    v = max(v, sgn * texture(uTex, clamp(c + d, vec2(0.5), size - 0.5) / size).r);
+    v = max(v, sgn * texture(uTex, clamp(c - d, vec2(0.5), size - 0.5) / size).r);
+  }
+  o = vec4(sgn * v, 0.0, 0.0, 1.0);
+}`;
 
 /** Scene-linear colour (rgb) and log2 luminance (a). Outside the image: grey. */
 export const FS_LINEAR = /* glsl */ `#version 300 es

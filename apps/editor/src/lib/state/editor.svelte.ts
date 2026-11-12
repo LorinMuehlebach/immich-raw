@@ -73,6 +73,8 @@ import {
   componentCount,
   newComponent,
   newMask,
+  defaultEdge,
+  isEdgeSet,
   BAND_LABELS,
   BW_PARAMS,
   DEFAULT_GROUPS,
@@ -105,6 +107,7 @@ import {
   type Mask,
   type MaskComponent,
   type MaskMode,
+  type MaskEdge,
   type MixerChannel,
   type ParamSpec,
   type ProfileId,
@@ -406,7 +409,13 @@ export class Editor {
   maskSel = $state<{ mask: string | null; comp: string | null }>({ mask: null, comp: null });
   maskDraft = $state<MaskDraft | null>(null);
   aiPicker = $state<AiPicker | null>(null);
+  /** The red overlay is wanted (checkbox, O). It shows only while the mask's shape is edited. */
   maskOverlay = $state(true);
+  /**
+   * What is being edited on the selected mask: its shape (parts, refinement: the overlay shows)
+   * or its adjustments (Amount, Exposure…: the overlay hides, so the result can be judged).
+   */
+  maskEditing = $state<'shape' | 'adjust'>('shape');
   brush = $state<BrushSettings>(normalizeBrush(storageGet(BRUSH_KEY)));
   /** Bumped after every render, so on-image handles follow zoom, pan and crop. */
   viewVersion = $state(0);
@@ -712,8 +721,7 @@ export class Editor {
       this.syncLens();
       const recipe = this.currentRecipe();
       this.ai.sync(recipe);
-      const overlay = this.tool === 'mask' && this.maskOverlay ? this.maskSel.mask : null;
-      const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: overlay };
+      const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: this.overlayMask };
       if (this.zoom.on && this.tool !== 'crop' && this.session) {
         const vp = this.viewport;
         // Up to 50 % the half-size decode has a pixel for every screen pixel, and it is a
@@ -747,7 +755,7 @@ export class Editor {
       if (!r || this.status !== 'ready') return;
       // While zoomed the canvas shows a region; the histogram is of the whole image.
       if (this.zoom.on && this.tool !== 'crop') r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
-      else if (this.tool === 'mask' && this.maskOverlay && this.maskSel.mask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
+      else if (this.overlayMask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
       this.histogram = r.histogram();
     }, wait);
   }
@@ -1213,9 +1221,35 @@ export class Editor {
     return this.selectedMask?.components.find((c) => c.id === this.maskSel.comp) ?? null;
   }
 
+  /** Mask shown in red: the selected one while its shape is edited (and the overlay is on). */
+  get overlayMask(): string | null {
+    return this.tool === 'mask' && this.maskOverlay && this.maskEditing === 'shape' ? this.maskSel.mask : null;
+  }
+
+  /** The mask's shape is being edited: show the overlay (if wanted). */
+  private editShape(): void {
+    if (this.maskEditing === 'shape') return;
+    this.maskEditing = 'shape';
+    this.requestRender();
+  }
+
+  /** The mask's adjustments are being edited: hide the overlay to show the result. */
+  private editAdjust(): void {
+    if (this.maskEditing === 'adjust') return;
+    this.maskEditing = 'adjust';
+    this.requestRender();
+  }
+
+  /** A click in the panel's mask settings ('shape') or adjustments ('adjust') area. */
+  setMaskEditing(mode: 'shape' | 'adjust'): void {
+    if (mode === 'shape') this.editShape();
+    else this.editAdjust();
+  }
+
   selectMask(maskId: string | null, compId?: string): void {
     const m = this.mask(maskId);
     this.maskSel = { mask: m?.id ?? null, comp: compId ?? m?.components[0]?.id ?? null };
+    this.maskEditing = 'shape';
     this.requestRender();
   }
 
@@ -1260,6 +1294,7 @@ export class Editor {
     if (this.readOnlyGuard() || !this.maskRoom(!maskId)) return;
     if (this.tool !== 'mask') this.setTool('mask');
     this.aiPicker = null;
+    this.editShape();
     if (kind === 'luminance') {
       this.addComponent(newComponent('luminance', maskId ? mode : 'add'), maskId);
       this.changed(true, `${maskId ? 'Add' : 'New Mask:'} ${COMPONENT_LABELS.luminance}`);
@@ -1289,6 +1324,7 @@ export class Editor {
     const m = maskId ? mode : 'add';
     this.maskDraft = null;
     this.aiPicker = null;
+    this.editShape();
     if (target === 'people' || target === 'landscape') {
       this.aiPicker = { target, mode: m, maskId, parts: ['person'], classes: ['sky'], who: -1 };
       if (target === 'people') void this.ai.findPeople();
@@ -1375,6 +1411,7 @@ export class Editor {
   }
 
   private addComponent(c: MaskComponent, maskId: string | null, name?: string): void {
+    this.editShape();
     const target = this.mask(maskId);
     if (target) {
       target.components.push(c);
@@ -1408,6 +1445,7 @@ export class Editor {
     const m = this.mask(maskId);
     const c = m?.components.find((x) => x.id === compId);
     if (!m || !c) return;
+    this.editShape();
     Object.assign(c, patch);
     if (c.kind === 'radial') {
       c.rx = Math.min(4, Math.max(1e-3, c.rx));
@@ -1459,6 +1497,7 @@ export class Editor {
     const m = this.selectedMask;
     const c = this.selectedComponent;
     if (!m || !c || c.kind !== 'brush') return false;
+    this.editShape();
     const b = this.brush;
     c.strokes.push({ erase, size: q5(brushRadius(b.size)), feather: b.feather, flow: b.flow, density: b.density, points: [q5(p[0]), q5(p[1])] });
     this.stroke = { maskId: m.id, compId: c.id, label };
@@ -1501,6 +1540,7 @@ export class Editor {
       this.notice = `Up to ${MAX_COLOR_SAMPLES} colour samples per range.`;
       return null;
     }
+    this.editShape();
     c.samples = add ? [...c.samples, sample] : [sample];
     this.changed(false, `${m.name}: ${add ? 'Add Color Sample' : 'Color Sample'}`);
     return c.samples.length - 1;
@@ -1510,16 +1550,41 @@ export class Editor {
     const m = this.selectedMask;
     const c = this.selectedComponent;
     if (this.readOnlyGuard() || !m || !c || c.kind !== 'color') return;
+    this.editShape();
     c.samples = c.samples.filter((_, i) => i !== index);
     this.changed(true, `${m.name}: Remove Color Sample`);
   }
 
+  /** Sets one of the selected mask's adjustment sliders (or Amount). */
   setMaskParam(spec: ParamSpec, value: number, commit = false): void {
     const m = this.selectedMask;
     if (!m || this.readOnlyGuard()) return;
+    this.editAdjust();
     const v = clampParam(spec, value);
     setPath(m, spec.path, v);
     this.changed(commit, `${m.name}: ${spec.label} ${formatParam(spec, v)}`);
+  }
+
+  /**
+   * Edge refinement (Offset, Feather, Smooth; spec paths "edge.*") of part `compId` of a
+   * mask, or of the whole mask when compId is null. A part keeps a refinement only while it
+   * does something.
+   */
+  setEdge(maskId: string, compId: string | null, spec: ParamSpec, value: number, commit = false): void {
+    const m = this.mask(maskId);
+    const c = compId ? m?.components.find((x) => x.id === compId) : null;
+    if (!m || (compId && !c) || this.readOnlyGuard()) return;
+    this.editShape();
+    const v = Math.round(clampParam(spec, value));
+    const key = spec.path.slice('edge.'.length) as keyof MaskEdge;
+    if (c) {
+      const e = { ...defaultEdge(), ...c.edge, [key]: v };
+      if (isEdgeSet(e)) c.edge = e;
+      else delete c.edge;
+    } else {
+      m.edge[key] = v;
+    }
+    this.changed(commit, `${m.name}: ${c ? `${partLabel(c)} ` : ''}${spec.label} ${formatParam(spec, v)}`);
   }
 
   maskValue(spec: ParamSpec): number {
@@ -1530,6 +1595,7 @@ export class Editor {
   resetMaskAdjust(): void {
     const m = this.selectedMask;
     if (!m || this.readOnlyGuard()) return;
+    this.editAdjust();
     for (const k of Object.keys(LOCAL_PARAMS) as LocalKey[]) m.adjust[k] = 0;
     m.amount = 100;
     this.changed(true, `${m.name}: Reset`);
@@ -1543,6 +1609,7 @@ export class Editor {
     m.components = m.components.filter((x) => x.id !== compId);
     m.components[0]!.mode = 'add';
     this.maskSel = { mask: m.id, comp: m.components[0]!.id };
+    this.editShape();
     this.changed(true, `${m.name}: Remove ${c ? partLabel(c) : 'part'}`);
   }
 
@@ -1577,9 +1644,19 @@ export class Editor {
     if (c) this.updateComponent(maskId, compId, { invert: !c.invert }, true, `${this.mask(maskId)!.name}: Invert ${partLabel(c)}`);
   }
 
-  toggleMaskOverlay(): void {
-    this.maskOverlay = !this.maskOverlay;
+  /** The Overlay checkbox: wanted or not (switched on, it shows right away). */
+  setMaskOverlay(on: boolean): void {
+    this.maskOverlay = on;
+    if (on) this.maskEditing = 'shape';
     this.requestRender();
+  }
+
+  /** O: an overlay that is wanted but hidden while adjusting comes back; otherwise on/off. */
+  toggleMaskOverlay(): void {
+    if (this.maskOverlay && this.maskEditing === 'adjust') {
+      this.maskEditing = 'shape';
+      this.requestRender();
+    } else this.setMaskOverlay(!this.maskOverlay);
   }
 
   /** Point of the photo view (0..1) -> mask frame, and back. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_COMPONENTS, MAX_MASKS, MAX_OBJECT_POINTS, aiComponents, aiCount, aiLabel, isMaskActive, newAiComponent, newComponent, newMask, normalizeMasks } from './masks.ts';
+import { MASK_FEATHER, MASK_OFFSET, MAX_COMPONENTS, MAX_MASKS, MAX_OBJECT_POINTS, aiComponents, aiCount, aiLabel, isMaskActive, isMaskRefined, isPartRefined, newAiComponent, newComponent, newMask, normalizeMasks } from './masks.ts';
 import { defaultRecipe, normalizeRecipe } from './recipe.ts';
 
 describe('masks', () => {
@@ -54,6 +54,42 @@ describe('masks', () => {
     const [lum, lin] = m!.components;
     expect(lum!.kind === 'luminance' && [lum.lo, lum.hi]).toEqual([20, 80]);
     expect(lin!.kind === 'linear' && Math.hypot(lin.x1 - lin.x0, lin.y1 - lin.y0)).toBeGreaterThan(0);
+  });
+
+  it('refines the whole mask edge: defaults, clamping, and old masks without it', () => {
+    const fresh = newMask('a', newComponent('radial'));
+    expect(fresh.edge).toEqual({ offset: 0, feather: 0, smooth: 0 });
+    expect(isMaskRefined(fresh)).toBe(false);
+    // Stored before refinement existed: nothing changes.
+    const [old] = normalizeMasks([{ name: 'old', components: [newComponent('radial')] }]);
+    expect(old!.edge).toEqual({ offset: 0, feather: 0, smooth: 0 });
+    const [m] = normalizeMasks([{ components: [newComponent('radial')], edge: { offset: -500, feather: 12.4, smooth: 'x' } }]);
+    expect(m!.edge).toEqual({ offset: MASK_OFFSET.min, feather: 12, smooth: 0 });
+    expect(isMaskRefined(m!)).toBe(true);
+    const round = { ...fresh, edge: { offset: 8, feather: 30, smooth: 5 } };
+    expect(normalizeMasks(JSON.parse(JSON.stringify([round])))).toEqual([round]);
+    // A refinement alone doesn't make a mask change the picture.
+    expect(isMaskActive(round)).toBe(false);
+    expect(isMaskRefined({ edge: undefined as never })).toBe(false);
+  });
+
+  it('refines the edge of a part, kept only while it does something', () => {
+    const [m] = normalizeMasks([
+      {
+        components: [
+          { ...newComponent('radial'), edge: { offset: 0, feather: 0, smooth: 0 } },
+          { ...newComponent('color', 'subtract'), refine: 70, edge: { offset: 12, feather: 400, smooth: 3 } },
+        ],
+      },
+    ]);
+    const [radial, color] = m!.components;
+    expect('edge' in radial!).toBe(false);
+    expect(isPartRefined(radial!)).toBe(false);
+    // A colour range keeps its own Refine slider next to the edge.
+    expect(color!.kind === 'color' && color!.refine).toBe(70);
+    expect(color!.edge).toEqual({ offset: 12, feather: MASK_FEATHER.max, smooth: 3 });
+    expect(isPartRefined(color!)).toBe(true);
+    expect(normalizeMasks(JSON.parse(JSON.stringify([m])))).toEqual([m]);
   });
 
   it('is active only with a non-zero slider while visible', () => {

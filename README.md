@@ -164,7 +164,17 @@ Whole photos need a graphics card the browser can use (WebGPU), so open the edit
     seconds per photo depending on the computer, a few seconds with WebGPU, and it is remembered
     for the photo.
 
-  Mask parts can be added, subtracted or intersected, and O shows the overlay.
+  Mask parts can be added, subtracted or intersected. The gear next to each part, and next to
+  the mask itself, opens its edge settings, in pixels of the full-size photo:
+  - Offset grows or shrinks it;
+  - Feather fades its edge;
+  - Smooth irons out wiggles and specks (which also makes a soft gradient crisp).
+
+  Each part's edge is refined before the parts are combined, the whole mask's after. The panel
+  has two areas: the mask settings (parts, edges) show the red overlay, the mask parameters
+  (Amount, Exposure…) hide it so you see the result. A click anywhere in an area switches to it;
+  O brings the overlay back or switches it off. Lightroom has no edge settings, so masks
+  imported from Lightroom start without them.
 - **Workflow:**
   - histogram with clipping warnings (J), before/after (`\`), 100 % zoom (double-click the photo)
     and free zoom up to 800 % (Ctrl + mouse wheel, or pinch on a trackpad);

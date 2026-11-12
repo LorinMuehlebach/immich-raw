@@ -1,7 +1,7 @@
 // WebGL2 renderer: fitted preview from a <= 2560 px proxy, 1:1 zoom regions and
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
-import { canonicalJson, defaultRecipe, type BrushComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
+import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, type BrushComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
 import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
 import { cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type ProfileLooks, type ProfileRender } from './color/index.ts';
 import { buildCurveLut, isCurveNeutral, LUT_SIZE } from './curves.ts';
@@ -10,6 +10,7 @@ import { Denoiser, effectsUniforms, nrPlan } from './effects.ts';
 import { applyAffine, cropViewFrame, editFrame, invertAffine, type Affine, type FrameInfo } from './geometry.ts';
 import { GLContext, type Program, type Target } from './gl.ts';
 import { NO_LENS, defringeUniforms, lensModel, lensSourcePoint, lensUniforms, type LensData, type LensModel } from './lens.ts';
+import { MaskRefiner } from './mask-refine.ts';
 import { colorFeature, maskFrameScale, maskUniforms, type MaskResources } from './masks.ts';
 import * as S from './shaders.ts';
 import { developUniforms, finishUniforms, lookUniforms, STATIC_UNIFORMS, type CameraInfo } from './uniforms.ts';
@@ -134,6 +135,8 @@ export class Renderer {
   private gl: WebGL2RenderingContext;
   private p: Programs;
   private denoiser: Denoiser;
+  /** Masks with a refined edge (Offset, Feather, Smooth), rendered into maps. */
+  private refiner: MaskRefiner;
   private camera: CameraInfo | null = null;
   private proxy: Target | null = null;
   /** The decoded image the proxy was made from (colour range masks read their samples here). */
@@ -212,6 +215,7 @@ export class Renderer {
       thumb: c.program(S.FS_THUMB),
     };
     this.denoiser = new Denoiser(c);
+    this.refiner = new MaskRefiner(c);
     this.dummy = c.texture(1, 1, gl.RGBA16F);
     this.dummy3d = c.texture3d(1, 1, 1, new Float32Array([0, 1, 1, 1]));
     canvas.addEventListener('webglcontextlost', (e) => {
@@ -237,6 +241,7 @@ export class Renderer {
     this.brushKey = NO_KEY;
     this.aiMaps = new Map();
     this.aiKey = NO_KEY;
+    this.refiner.reset();
     const scale = Math.max(1, Math.max(img.width, img.height) / PROXY_MAX);
     const pw = Math.max(1, Math.round(img.width / scale));
     const ph = Math.max(1, Math.round(img.height / scale));
@@ -456,10 +461,52 @@ export class Renderer {
   }
 
   /**
-   * Brush maps (rasterised, packed and shared with every pass as uBrush) and the colours of
-   * colour range samples, read from the decoded image with this recipe's white balance.
+   * Brush maps (rasterised, packed and shared with every pass as uBrush), the colours of
+   * colour range samples (read from the decoded image with this recipe's white balance), and
+   * the maps of masks with a refined edge (uMaskRefined).
    */
-  private maskResources(recipe: Recipe): MaskResources {
+  private maskResources(recipe: Recipe, frame: FrameInfo): MaskResources {
+    const res = this.partResources(recipe);
+    if (!recipe.masks.some((m) => isMaskRefined(m) || m.components.some(isPartRefined))) {
+      // The maps stay cached (Before/After, a refinement switched off for a moment).
+      this.ctx.setShared('uPartRefined', this.dummy);
+      this.ctx.setShared('uMaskRefined', this.dummy);
+      return res;
+    }
+    const { camera, proxy } = this.requireSource();
+    const base = this.baseUniforms(recipe, camera, frame, null);
+    // What every refined map depends on besides its own part or mask: the brush and AI maps,
+    // colour samples, and what the render pass reads of the photo.
+    const key = canonicalJson({
+      brush: this.brushKey,
+      ai: this.aiKey,
+      colors: [...res.colors],
+      dev: [base.uWb, base.uClip, base.uCamToWork, base.uExposure].map((v) => (typeof v === 'number' ? v : Array.from(v))),
+      lens: [this.lensVersion, recipe.lens],
+    });
+    const maps = this.refiner.update(recipe.masks, {
+      fullWidth: camera.fullWidth,
+      fullHeight: camera.fullHeight,
+      maxTextureSize: this.maxTextureSize,
+      res,
+      key,
+      proxy: proxy.tex,
+      dummy: this.dummy,
+      uniforms: () => base,
+    });
+    this.ctx.setShared('uPartRefined', maps.parts?.tex ?? this.dummy);
+    this.ctx.setShared('uMaskRefined', maps.masks?.tex ?? this.dummy);
+    return {
+      ...res,
+      partCells: maps.parts?.cells,
+      partHalfTexel: maps.parts?.half,
+      maskCells: maps.masks?.cells,
+      maskHalfTexel: maps.masks?.half,
+    };
+  }
+
+  /** Brush and AI maps and colour samples: what the masks' parts need. */
+  private partResources(recipe: Recipe): MaskResources {
     const { camera } = this.requireSource();
     const [fx, fy] = maskFrameScale(camera.fullWidth, camera.fullHeight);
     const brushes = recipe.masks.flatMap((m) => m.components.filter((c): c is BrushComponent => c.kind === 'brush' && c.strokes.length > 0));
@@ -708,7 +755,7 @@ export class Renderer {
   ): void {
     const { camera } = this.requireSource();
     const transTex = an.dehaze.uDehazeMode === 1 && an.trans ? an.trans : this.dummy;
-    const mu = maskUniforms(recipe, maskFrameScale(camera.fullWidth, camera.fullHeight), overlay, this.maskResources(recipe));
+    const mu = maskUniforms(recipe, maskFrameScale(camera.fullWidth, camera.fullHeight), overlay, this.maskResources(recipe, frame));
     const { uses, ...masks } = mu;
     const u = {
       ...this.baseUniforms(recipe, camera, frame, an.dehaze),
@@ -1148,6 +1195,9 @@ export class Renderer {
     this.aiKey = NO_KEY;
     this.brushKey = NO_KEY;
     this.ctx.setShared('uAiMask', null);
+    this.refiner.dispose();
+    this.ctx.setShared('uPartRefined', null);
+    this.ctx.setShared('uMaskRefined', null);
     this.releaseZoom();
     this.ctx.deleteTarget(this.proxy);
     this.t = {};

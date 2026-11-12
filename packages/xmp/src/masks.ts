@@ -28,6 +28,7 @@ import {
   PERSON_PART_LABELS,
   clampParam,
   defaultAdjustments,
+  defaultEdge,
   newAiComponent,
   normalizeMasks,
   shortId,
@@ -581,6 +582,8 @@ function convertCorrection(c: XmpStruct, container: MaskContainer, index: number
     amount: clamp(num(c, 'CorrectionAmount', 1) * 100, 0, 200),
     components: mergeAi(comps),
     adjust: localAdjustments(c, container, out),
+    // Lightroom has no edge refinement.
+    edge: defaultEdge(),
   };
 }
 

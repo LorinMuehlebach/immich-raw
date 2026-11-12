@@ -16,11 +16,17 @@
     LOCAL_PARAMS,
     LUMINANCE_SMOOTH,
     MASK_AMOUNT,
+    MASK_FEATHER,
+    MASK_OFFSET,
+    MASK_SMOOTH,
     PERSON_PARTS,
     PERSON_PART_LABELS,
     RADIAL_FEATHER,
     aiLabel,
     getPath,
+    isMaskRefined,
+    isPartRefined,
+    type MaskEdge,
     type AiComponent,
     type AiTarget,
     type ComponentKind,
@@ -65,6 +71,11 @@
   const aiMenuLabel = (t: AiTarget) => `${AI_TARGET_LABELS[t]}${t === 'people' || t === 'landscape' ? '…' : ''} (AI)`;
   const AI_STATE_TEXT: Record<string, string> = { working: 'working…', empty: 'not found', failed: 'failed' };
   const MB = (bytes: number) => `${Math.round(bytes / 1e6)} MB`;
+  const EDGE_ROWS = [
+    { key: 'offset', spec: MASK_OFFSET, title: 'Grows (+) or shrinks (−) the selection by this many pixels' },
+    { key: 'feather', spec: MASK_FEATHER, title: 'Fades the edge over about this many pixels' },
+    { key: 'smooth', spec: MASK_SMOOTH, title: 'Smooths wiggles and specks smaller than this away (a soft gradient becomes a crisp edge)' },
+  ] as const;
   const BRUSH_ROWS = [
     { key: 'size', spec: BRUSH_SIZE },
     { key: 'feather', spec: BRUSH_FEATHER },
@@ -88,6 +99,19 @@
   });
   let renaming = $state<string | null>(null);
   let nameText = $state('');
+  /** Mask or part whose edge settings (gear) are open. */
+  let edgeOpen = $state<string | null>(null);
+
+  /** Opens or closes a mask's (compId absent) or a part's edge settings, and selects it. */
+  function toggleEdge(maskId: string, compId?: string) {
+    const id = compId ?? maskId;
+    if (edgeOpen === id) {
+      edgeOpen = null;
+      return;
+    }
+    edgeOpen = id;
+    editor.selectMask(maskId, compId);
+  }
 
   function startRename(id: string, name: string) {
     if (editor.readOnly) return;
@@ -164,14 +188,52 @@
     sel && editor.updateComponent(sel.id, c.id, { [spec.path]: Math.round(v) } as Partial<MaskComponent>, false, `${sel.name}: ${spec.label} ${Math.round(v)}`);
 </script>
 
+{#snippet gear(id: string, set: boolean, title: string, onclick: () => void)}
+  <button class="icon small gear" class:open={edgeOpen === id} class:set {onclick} {title} aria-label={title} aria-expanded={edgeOpen === id}>
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" stroke-width="3" stroke-dasharray="3.34 3.34" />
+      <circle cx="12" cy="12" r="5.5" stroke-width="3.5" />
+    </svg>
+  </button>
+{/snippet}
+
+<!-- Offset, Feather and Smooth of a part (compId) or of the whole mask (compId null). -->
+{#snippet edgePanel(maskId: string, compId: string | null, e: MaskEdge | undefined, title: string)}
+  <div class="edge">
+    <div class="sub" title="In pixels of the full-size photo">{title}</div>
+    {#each EDGE_ROWS as row (row.key)}
+      <div title={row.title}>
+        <Slider
+          spec={row.spec}
+          value={e?.[row.key] ?? 0}
+          onchange={(v) => editor.setEdge(maskId, compId, row.spec, v)}
+          oncommit={() => editor.commit()}
+          onreset={() => editor.setEdge(maskId, compId, row.spec, 0, true)}
+          disabled={editor.readOnly}
+        />
+      </div>
+    {/each}
+  </div>
+{/snippet}
+
 <Section title="Masking">
   {#snippet actions()}
-    <label class="overlay" title="Show the selected mask in red (O)">
-      <input type="checkbox" checked={editor.maskOverlay} onchange={() => editor.toggleMaskOverlay()} />
+    {@const held = editor.maskOverlay && editor.maskEditing === 'adjust'}
+    <label
+      class="overlay"
+      class:held
+      title={held
+        ? 'The red overlay is hidden while the mask parameters are active; click the mask settings (or press O) to show it'
+        : 'Show the selected mask in red while the mask settings are active; it hides while you work on the mask parameters (O)'}
+    >
+      <input type="checkbox" checked={editor.maskOverlay} onchange={(e) => editor.setMaskOverlay(e.currentTarget.checked)} />
       Overlay
     </label>
   {/snippet}
 
+  <!-- Mask settings: clicking anywhere here shows the red overlay. -->
+  <div class="area" class:active={editor.maskEditing === 'shape'} role="group" aria-label="Mask settings" onpointerdown={() => editor.setMaskEditing('shape')}>
+  <div class="area-head">Mask settings{#if editor.maskEditing === 'shape' && editor.maskOverlay}<span class="badge">red overlay</span>{/if}</div>
   <div class="create">
     <span class="lbl">New mask</span>
     <button class:active={editor.maskDraft?.kind === 'linear' && !editor.maskDraft.maskId} onclick={() => editor.startMask('linear')} disabled={editor.readOnly} title="Linear gradient (M): drag on the photo from full effect to none">Linear</button>
@@ -284,20 +346,30 @@
           {:else}
             <button class="name" onclick={() => editor.selectMask(m.id)} ondblclick={() => startRename(m.id, m.name)} title="Click to select, double-click to rename">{m.name}</button>
           {/if}
+          {@render gear(m.id, isMaskRefined(m), 'Edge of the whole mask: offset, feather, smooth', () => toggleEdge(m.id))}
           <button class="icon small del" onclick={() => editor.deleteMask(m.id)} disabled={editor.readOnly} title="Delete mask" aria-label="Delete mask">✕</button>
         </div>
+        {#if edgeOpen === m.id}
+          {@render edgePanel(m.id, null, m.edge, 'Edge of the whole mask')}
+        {/if}
         {#if m.id === sel?.id}
           <ul class="parts">
             {#each m.components as c, i (c.id)}
               <li class:current={c.id === comp?.id}>
-                <button class="part" onclick={() => editor.selectMask(m.id, c.id)}>
-                  <span class="mode">{i === 0 ? '' : MODE_LABEL[c.mode]}</span>
-                  {partLabel(c)}{c.invert ? ' (inverted)' : ''}
-                  {#if c.kind === 'ai' && editor.ai.status[c.id] && editor.ai.status[c.id]!.state !== 'ready'}
-                    <span class="ai-state {editor.ai.status[c.id]!.state}">{AI_STATE_TEXT[editor.ai.status[c.id]!.state]}</span>
-                  {/if}
-                </button>
-                <button class="icon small del" onclick={() => editor.deleteComponent(m.id, c.id)} disabled={editor.readOnly} title="Remove this part" aria-label="Remove part">✕</button>
+                <div class="part-row">
+                  <button class="part" onclick={() => editor.selectMask(m.id, c.id)}>
+                    <span class="mode">{i === 0 ? '' : MODE_LABEL[c.mode]}</span>
+                    {partLabel(c)}{c.invert ? ' (inverted)' : ''}
+                    {#if c.kind === 'ai' && editor.ai.status[c.id] && editor.ai.status[c.id]!.state !== 'ready'}
+                      <span class="ai-state {editor.ai.status[c.id]!.state}">{AI_STATE_TEXT[editor.ai.status[c.id]!.state]}</span>
+                    {/if}
+                  </button>
+                  {@render gear(c.id, isPartRefined(c), `Edge of this part: offset, feather, smooth`, () => toggleEdge(m.id, c.id))}
+                  <button class="icon small del" onclick={() => editor.deleteComponent(m.id, c.id)} disabled={editor.readOnly} title="Remove this part" aria-label="Remove part">✕</button>
+                </div>
+                {#if edgeOpen === c.id}
+                  {@render edgePanel(m.id, c.id, c.edge, `Edge of ${partLabel(c)}`)}
+                {/if}
               </li>
             {/each}
           </ul>
@@ -399,13 +471,16 @@
       {/if}
     </div>
   {/if}
+  </div>
 
   {#if sel}
-    <div class="group">
-      <div class="sub">
-        {sel.name}
-        <button class="small reset" onclick={() => editor.resetMaskAdjust()} disabled={editor.readOnly}>Reset sliders</button>
-      </div>
+    <!-- Mask parameters: clicking anywhere here hides the red overlay, to show the result. -->
+    <div class="area" class:active={editor.maskEditing === 'adjust'} role="group" aria-label="Mask parameters" onpointerdown={() => editor.setMaskEditing('adjust')}>
+    <div class="area-head">
+      Mask parameters · {sel.name}
+      <button class="small reset" onclick={() => editor.resetMaskAdjust()} disabled={editor.readOnly}>Reset sliders</button>
+    </div>
+    <div class="group first">
       <Slider spec={MASK_AMOUNT} value={sel.amount} onchange={(v) => editor.setMaskParam(MASK_AMOUNT, v)} oncommit={() => editor.commit()} onreset={() => editor.setMaskParam(MASK_AMOUNT, 100, true)} disabled={editor.readOnly} />
     </div>
     {#each GROUPS as g (g.title)}
@@ -438,17 +513,19 @@
         {/if}
       </div>
     {/each}
+    </div>
   {/if}
 </Section>
 
 <style>
   .create {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
   .create button {
-    flex: 1;
+    flex: 1 0 auto;
     padding: 4px 4px;
   }
   .lbl {
@@ -565,10 +642,70 @@
     background: rgba(255, 255, 255, 0.03);
   }
   .mask-row,
-  .parts li {
+  .part-row {
     display: flex;
     align-items: center;
     gap: 4px;
+  }
+  /* The two areas: mask settings (shape: red overlay) and mask parameters (adjustments). */
+  .area {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 8px 8px;
+    margin-top: 8px;
+  }
+  .area.active {
+    border-color: var(--accent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .area-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .area.active .area-head {
+    color: var(--text-bright);
+  }
+  .area-head .reset {
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: normal;
+  }
+  .badge {
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    color: #e57373;
+  }
+  .group.first {
+    margin-top: 0;
+  }
+  .gear {
+    padding: 1px 4px;
+    opacity: 0.55;
+  }
+  .gear.set {
+    opacity: 1;
+    color: var(--accent);
+  }
+  .gear.open {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .edge {
+    border-left: 2px solid var(--accent);
+    padding: 0 0 4px 8px;
+    margin: 2px 0 6px 4px;
+  }
+  .edge .sub {
+    margin-top: 2px;
   }
   .name,
   .part {
@@ -633,7 +770,6 @@
     letter-spacing: 0.06em;
     margin: 4px 0 2px;
   }
-  .sub .reset,
   .sub .invert {
     margin-left: auto;
     text-transform: none;
@@ -650,6 +786,10 @@
     gap: 4px;
     font-size: 11px;
     color: var(--text);
+  }
+  /* Wanted, but hidden while the mask's adjustments are edited. */
+  .overlay.held {
+    opacity: 0.55;
   }
   .small {
     padding: 2px 8px;

@@ -43,10 +43,13 @@ await page.keyboard.press('m');
 await dragOnPhoto([0.5, 0.02], [0.5, 0.45]);
 await page.locator('input[aria-label="Exposure"]').fill('-1.5');
 await page.waitForTimeout(300);
-await shot('1-linear-overlay');
+// Adjusting (the mask parameters) hides the red overlay; O brings it back.
+results.overlayWhileAdjusting = await ed(() => globalThis.__editor.overlayMask);
+await shot('1-linear');
 await page.keyboard.press('o');
 await page.waitForTimeout(300);
-await shot('2-linear');
+results.overlayAfterO = await ed(() => globalThis.__editor.overlayMask !== null);
+await shot('2-linear-overlay');
 results.linear = await ed(() => JSON.parse(JSON.stringify(globalThis.__editor.recipe.masks)));
 
 // 2. Radial gradient, brightened and warmed.
@@ -80,10 +83,8 @@ await page.locator('.mask-row .name').first().click();
 await page.locator('select[aria-label="Intersect mask with"]').selectOption('luminance');
 await page.locator('input[aria-label="Range from"]').fill('55');
 await page.waitForTimeout(300);
-await page.keyboard.press('o');
-await page.waitForTimeout(300);
+// Editing the mask's parts shows the overlay.
 await shot('4-intersect-overlay');
-await page.keyboard.press('o');
 
 // 5. Undo/redo of the last step, history labels, before view.
 results.history = await ed(() => globalThis.__editor.historySteps.slice(-6).map((s) => s.label));
@@ -103,6 +104,24 @@ await page.keyboard.press('z');
 await page.waitForTimeout(800);
 await shot('6-zoom-handles');
 await page.keyboard.press('z');
+
+// 6b. Edge of the second (radial) mask: its gear opens Offset, Feather and Smooth.
+const edge = (label) => page.locator('.edge').locator(`input[aria-label="${label}"]`);
+await page.locator('.mask-row').nth(1).locator('.gear').click();
+await edge('Smooth').fill('20');
+await edge('Offset').fill('40');
+await edge('Feather').fill('60');
+await page.waitForTimeout(300);
+await shot('6b-edge-overlay');
+await page.locator('input[aria-label="Exposure"]').fill('1.5');
+await page.waitForTimeout(300);
+await shot('6c-edge');
+results.edge = await ed(() => ({ edge: globalThis.__editor.selectedMask.edge, overlay: globalThis.__editor.overlayMask }));
+// A click on the mask settings' background shows the overlay again; on the parameters', hides it.
+await page.locator('.area-head', { hasText: 'Mask settings' }).click();
+results.areaClick = { settings: await ed(() => globalThis.__editor.overlayMask !== null) };
+await page.locator('.area-head', { hasText: 'Mask parameters' }).click();
+results.areaClick.parameters = await ed(() => globalThis.__editor.overlayMask !== null);
 await page.keyboard.press('Shift+W');
 
 // 7. Auto settings: apply Auto, then change Brightness while Auto is the last step.
