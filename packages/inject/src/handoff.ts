@@ -1,13 +1,14 @@
-// How the Immich button hands a selection to the editor's export page: the asset ids go into
-// localStorage (Immich and the editor share the origin) under a one-off key, and the page is
-// opened with ?export=<key>. A URL would be too long for thousands of ids.
+// How Immich's selection buttons hand the selected photos to an editor page (export: ?export=<key>,
+// auto-stack: ?cull=<key>): the asset ids go into localStorage (Immich and the editor share the
+// origin) under a one-off key. A URL would be too long for thousands of ids.
 
+// Both pages use it (the name is older than the auto-stack page).
 export const HANDOFF_PREFIX = 'immich-raw.export.';
 /** Handoffs older than this are removed (the page reads its own right away). */
 export const HANDOFF_MAX_AGE_MS = 24 * 3600 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export interface ExportHandoff {
+export interface SelectionHandoff {
   ids: string[];
   /** Where the selection was made: album:<id>, person:<id> or timeline. */
   context: string;
@@ -18,9 +19,11 @@ export interface ExportHandoff {
   createdAt: number;
 }
 
-export function exportPageUrl(base: string, key: string): string {
-  return `${base}${base.includes('?') ? '&' : '?'}export=${encodeURIComponent(key)}`;
-}
+const pageUrl = (base: string, param: string, key: string) => `${base}${base.includes('?') ? '&' : '?'}${param}=${encodeURIComponent(key)}`;
+
+export const exportPageUrl = (base: string, key: string): string => pageUrl(base, 'export', key);
+/** The auto-stack page: choose what counts, then stack the selection and pick the best of each. */
+export const cullPageUrl = (base: string, key: string): string => pageUrl(base, 'cull', key);
 
 export function newHandoffKey(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(9));
@@ -28,7 +31,7 @@ export function newHandoffKey(): string {
 }
 
 /** Checks a stored handoff; null when it isn't one. Ids are lower-cased and de-duplicated. */
-export function parseHandoff(value: unknown): ExportHandoff | null {
+export function parseHandoff(value: unknown): SelectionHandoff | null {
   if (!value || typeof value !== 'object') return null;
   const o = value as Record<string, unknown>;
   if (!Array.isArray(o.ids)) return null;

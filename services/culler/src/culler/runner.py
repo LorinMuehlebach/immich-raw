@@ -142,6 +142,11 @@ class Runner:
         a = self._analyzers.get(repr(self.cfg.analysis_dict()))
         return a.eyes_available if a else None
 
+    def people_available(self) -> bool | None:
+        """None until the first run has loaded the models."""
+        a = self._analyzers.get(repr(self.cfg.analysis_dict()))
+        return a.people_available if a else None
+
     def analyzer(self, cfg: Config) -> Analyzer:
         key = repr(cfg.analysis_dict())
         if key not in self._analyzers:

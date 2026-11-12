@@ -1,6 +1,6 @@
 // Filmstrip: the RAWs around the one being edited, from the place it was opened from.
 // The inject script passes ctx as album:<id>, person:<id> or timeline.
-import { AssetOrder, AssetTypeEnum, AssetVisibility, SearchOrderField, searchAssets, type AssetResponseDto, type SearchFilter } from '@immich/sdk';
+import { AssetOrder, AssetTypeEnum, AssetVisibility, SearchOrderField, searchAssets, type AssetResponseDto, type ExifResponseDto, type SearchFilter } from '@immich/sdk';
 import { isRawFilename, RAW_EXTENSIONS } from '@immich-raw/inject/raw';
 
 export const FILMSTRIP_LIMIT = 300;
@@ -21,6 +21,17 @@ export function parseContext(ctx: string | null | undefined): FilmstripContext {
 export function captureTime(a: Pick<AssetResponseDto, 'localDateTime' | 'fileCreatedAt' | 'exifInfo'>): number {
   const t = Date.parse(a.localDateTime ?? '') || Date.parse(a.exifInfo?.dateTimeOriginal ?? '') || Date.parse(a.fileCreatedAt ?? '');
   return Number.isFinite(t) ? t : 0;
+}
+
+/** Camera settings of a shot: ISO, focal length, aperture, shutter. */
+export function shotSettings(x: Pick<ExifResponseDto, 'iso' | 'focalLength' | 'fNumber' | 'exposureTime'> | null | undefined): string[] {
+  if (!x) return [];
+  const parts: string[] = [];
+  if (x.iso) parts.push(`ISO ${x.iso}`);
+  if (x.focalLength) parts.push(`${Math.round(x.focalLength)} mm`);
+  if (x.fNumber) parts.push(`ƒ/${x.fNumber}`);
+  if (x.exposureTime) parts.push(`${x.exposureTime} s`);
+  return parts;
 }
 
 /**

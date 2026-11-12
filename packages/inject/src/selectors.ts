@@ -9,3 +9,7 @@ export const SELECTED_THUMB_SELECTOR = '[data-thumbnail-focus-container][data-se
 export const BUTTON_ATTR = 'data-raw-editor-button';
 /** Marks our export button in the selection toolbar. */
 export const EXPORT_BUTTON_ATTR = 'data-raw-editor-export';
+/** Marks our auto-stack button in the selection toolbar. */
+export const CULL_BUTTON_ATTR = 'data-raw-editor-cull';
+/** Marks our "Compare stack" button in the asset viewer. */
+export const STACK_BUTTON_ATTR = 'data-raw-editor-stack';

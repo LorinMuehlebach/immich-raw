@@ -14,8 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from culler.features.exposure import ANALYSIS_EDGE, exposure_from_linear
-from culler.models import ExposureStats
+from culler.features.exposure import ANALYSIS_EDGE, Box, MeasuredExposure, exposure_from_linear
 
 CLIP = 0.98  # of the white level (after white balance)
 BLACK = 2.0**-9
@@ -23,12 +22,12 @@ BLACK = 2.0**-9
 
 def measure_raw_exposure(
     path: Path,
-    face_boxes: list[tuple[float, float, float, float]] | None,
+    face_boxes: list[Box] | None,
+    body_boxes: list[Box] | None,
     preview_width: int,
-    face_weight: float,
     headroom_ev: float,
-) -> ExposureStats:
-    """`face_boxes` are in the coordinates of Immich's preview, which is `preview_width` wide."""
+) -> MeasuredExposure:
+    """Boxes are in the coordinates of Immich's preview, which is `preview_width` wide."""
     import rawpy
 
     with rawpy.imread(str(path)) as raw:
@@ -48,6 +47,15 @@ def measure_raw_exposure(
     if scale < 1:
         rgb = cv2.resize(rgb, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
     lin = rgb.astype(np.float32) / 65535
+    peak_small = lin.max(axis=2)
     return exposure_from_linear(
-        lin, clip_hi, clip_lo, face_boxes, lin.shape[1] / preview_width, face_weight, key_offset=headroom_ev
+        lin,
+        peak_small >= CLIP,
+        peak_small <= BLACK,
+        clip_hi,
+        clip_lo,
+        face_boxes,
+        body_boxes,
+        lin.shape[1] / preview_width,
+        key_offset=headroom_ev,
     )

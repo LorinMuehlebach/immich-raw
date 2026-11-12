@@ -1,14 +1,16 @@
 <script lang="ts">
   // Filmstrip of the RAWs around the current one (same album, person or day). With the culler
   // service installed it also shows its stacks: the photos of a stack sit together, best first,
-  // each with a badge saying why it lost.
+  // each with a badge saying why it lost. A stack's number opens the stack window.
   import type { AssetResponseDto } from '@immich/sdk';
   import { untrack } from 'svelte';
   import { apiUrl, authHeaders, hasApiKey } from '../immich/api.ts';
   import { captureTime, loadFilmstrip } from '../immich/context.ts';
   import { arrangeGroups, badgeFor, tooltipFor } from '../immich/cull-view.ts';
   import { cullerStatus, lookupCull, makeBest, waitForRun, type CullInfo, type CullerStatus } from '../immich/culler.ts';
+  import type { StackFrame } from '../immich/stack-view.ts';
   import CullPanel from './CullPanel.svelte';
+  import StackViewer from './StackViewer.svelte';
 
   interface Props {
     ctx: string | null;
@@ -21,9 +23,26 @@
     onCurrentCull?: (info: CullInfo | null) => void;
     /** Start collapsed until the user opens it (phones, where the photo needs the room). */
     startCollapsed?: boolean;
+    /** The stack window is open on the stack of this photo (null: closed). */
+    stackFor?: string | null;
+    /** The photo being edited has unsaved changes (the stack window warns before deleting it). */
+    unsaved?: boolean;
+    /** "Delete others" in the stack window moved the photo being edited to the trash. */
+    onCurrentDeleted?: (kept: StackFrame) => void;
   }
 
-  let { ctx, current, onSelect, onNeighbours, canCull = false, onCurrentCull, startCollapsed = false }: Props = $props();
+  let {
+    ctx,
+    current,
+    onSelect,
+    onNeighbours,
+    canCull = false,
+    onCurrentCull,
+    startCollapsed = false,
+    stackFor = $bindable(null),
+    unsaved = false,
+    onCurrentDeleted,
+  }: Props = $props();
 
   const COLLAPSED_KEY = 'raw-editor.filmstrip.collapsed';
   const STACKS_KEY = 'raw-editor.filmstrip.stacksCollapsed';
@@ -51,13 +70,12 @@
   let culler = $state<CullerStatus | null>(null);
   let cull = $state<Record<string, CullInfo>>({});
   let stacksCollapsed = $state(readFlag(STACKS_KEY));
-  let toggled = $state<string[]>([]); // stacks shown the other way than the default
   let panelOpen = $state(false);
   let busyGroup = $state<string | null>(null);
   let cullError = $state<string | null>(null);
 
   const groupIds = $derived([...new Set(Object.values(cull).map((i) => i.groupId))]);
-  const collapsedGroups = $derived(new Set(groupIds.filter((g) => stacksCollapsed !== toggled.includes(g))));
+  const collapsedGroups = $derived(new Set(stacksCollapsed ? groupIds : []));
   const strip = $derived(arrangeGroups(items, cull, collapsedGroups, current.id));
   const index = $derived(strip.findIndex((s) => s.asset.id === current.id));
 
@@ -110,12 +128,21 @@
 
   function toggleAllStacks() {
     stacksCollapsed = !stacksCollapsed;
-    toggled = [];
     writeFlag(STACKS_KEY, stacksCollapsed);
   }
 
-  function toggleGroup(gid: string) {
-    toggled = toggled.includes(gid) ? toggled.filter((g) => g !== gid) : [...toggled, gid];
+  function openFromStack(rawId: string) {
+    stackFor = null;
+    if (rawId !== current.id) onSelect(rawId);
+  }
+
+  function afterDelete(trashed: string[], kept: StackFrame, warning: string | null) {
+    stackFor = null;
+    const gone = new Set(trashed);
+    items = items.filter((a) => !gone.has(a.id));
+    cullError = warning;
+    if (gone.has(current.id)) onCurrentDeleted?.(kept);
+    else void refreshCull();
   }
 
   async function pick(gid: string, assetId: string) {
@@ -234,11 +261,7 @@
             <span class="badge {badge.tone}" aria-label={badge.label}>{badge.icon}</span>
           {/if}
           {#if g?.first}
-            <button
-              class="gcount"
-              onclick={() => toggleGroup(g.id)}
-              title={g.collapsed ? `Show all ${g.size} photos of this stack` : 'Show only the best photo of this stack'}
-            >
+            <button class="gcount" onclick={() => (stackFor = a.id)} title={`Compare the ${g.size} photos of this stack`}>
               {g.collapsed ? `+${g.hidden}` : g.size}
             </button>
           {/if}
@@ -250,6 +273,18 @@
     </div>
   {/if}
 </div>
+
+{#if stackFor}
+  <StackViewer
+    assetId={stackFor}
+    {canCull}
+    editing={{ id: current.id, unsaved }}
+    onClose={() => (stackFor = null)}
+    onOpenInEditor={openFromStack}
+    onPicked={() => refreshCull()}
+    onDeleted={({ trashed, kept, warning }) => afterDelete(trashed, kept, warning)}
+  />
+{/if}
 
 <style>
   .filmstrip {

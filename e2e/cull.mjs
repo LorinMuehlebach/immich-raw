@@ -90,7 +90,7 @@ function upload(path, filename, date) {
 const info = async (id) => (await api('GET', `/assets/${id}`)).body;
 const cullTags = (asset) => (asset.tags ?? []).map((t) => t.value).filter((v) => v.startsWith('Culling/')).sort();
 
-const cleanup = { assets: [], album: null, user: null, runs: [] };
+const cleanup = { assets: [], album: null, albums: [], user: null, runs: [] };
 let page;
 let browser;
 try {
@@ -261,9 +261,11 @@ try {
   check('the open DNG shows its verdict in the title', /best of 5 \(your pick\)/.test(verdict ?? ''), { verdict });
   await page.screenshot({ path: join(outDir, 'filmstrip.png') });
   await page.locator('.filmstrip .gcount').first().click();
-  const collapsed = await page.locator('.filmstrip .slot.grouped').count();
-  check('a stack collapses to one photo', collapsed === 4, { grouped: collapsed });
-  await page.locator('.filmstrip .gcount').first().click();
+  const firstWindow = page.locator('.window[role="dialog"]');
+  await firstWindow.locator('.pos').waitFor({ timeout: 60000 });
+  const firstTitle = (await firstWindow.locator('h2').textContent())?.trim();
+  check("a stack's number opens the stack window", /^Stack · [35] shots$/.test(firstTitle ?? ''), { title: firstTitle });  await page.keyboard.press('Escape');
+  await firstWindow.waitFor({ state: 'detached', timeout: 5000 });
   await page.getByRole('button', { name: 'Auto-stack…' }).click();
   await page.locator('.panel[role="dialog"]').waitFor();
   await page.getByRole('button', { name: 'Preview' }).click();
@@ -289,6 +291,164 @@ try {
     back.every((a) => !a.stack && cullTags(a).length === 0 && (a.exifInfo?.rating ?? null) === null),
     back.map((a) => ({ n: nameOf[a.id], stack: !!a.stack, tags: cullTags(a), rating: a.exifInfo?.rating })),
   );
+
+  // --- auto-stack from Immich's selection -------------------------------------------------------------------
+  // The JPEG burst (d) and the single JPEG (c) in an album of their own, selected in Immich.
+  const selAlbum = (await api('POST', '/albums', { albumName: 'culler-e2e-selection', assetIds: ['c0', 'd0', 'd1', 'd2'].map((k) => id[k]) })).body?.id;
+  cleanup.albums.push(selAlbum);
+  const immich = await context.newPage();
+  immich.on('pageerror', (e) => errors.push(e.message));
+  await immich.goto(`${BASE}/albums/${selAlbum}`);
+  const thumbs = immich.locator('[data-thumbnail-focus-container]');
+  await thumbs.nth(3).waitFor({ timeout: 60000 });
+  await thumbs.first().hover();
+  await thumbs.first().locator('[role="checkbox"]').click();
+  await immich.locator('[data-raw-editor-export]').waitFor({ timeout: 10000 });
+  await immich.waitForTimeout(1500);
+  check('one photo selected: no auto-stack button', (await immich.locator('[data-raw-editor-cull]').count()) === 0);
+  for (const i of [1, 2, 3]) await thumbs.nth(i).click();
+  const cullButton = immich.locator('[data-raw-editor-cull]');
+  await cullButton.waitFor({ timeout: 15000 });
+  check('four selected: the auto-stack button, next to Export', (await immich.locator('[data-raw-editor-export] + [data-raw-editor-cull]').count()) === 1);
+  await immich.screenshot({ path: join(outDir, 'immich-auto-stack-button.png') });
+  const [cullPage] = await Promise.all([context.waitForEvent('page'), cullButton.click()]);
+  cullPage.on('pageerror', (e) => errors.push(e.message));
+  await cullPage.locator('h2', { hasText: 'Auto-stack' }).waitFor({ timeout: 60000 });
+  const cullHeading = (await cullPage.locator('h2').first().textContent())?.trim();
+  const boxes = await cullPage.locator('fieldset.choices input[type="checkbox"]').count();
+  check('it opens the auto-stack page with the options', cullHeading === 'Auto-stack 4 selected photos' && boxes === 4, { cullHeading, boxes });
+
+  const result = cullPage.locator('section.result');
+  const resultText = async () => (await result.textContent().catch(() => ''))?.replace(/\s+/g, ' ').trim();
+  await cullPage.getByRole('button', { name: 'Preview' }).click();
+  await result.or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  const previewText = await resultText();
+  const previewCards = await result.locator('.stack').count();
+  check(
+    'Preview: one stack of the burst, nothing changed yet',
+    /Preview: 1 stack from 4 photos/.test(previewText) && /Best of 3/.test(previewText) && previewCards === 1 && !(await info(id.d0)).stack,
+    { previewText, previewCards },
+  );
+  await cullPage.screenshot({ path: join(outDir, 'auto-stack-preview.png') });
+  const peopleFirst = cullPage.getByLabel("People's exposure counts most");
+  await peopleFirst.uncheck();
+  check('a changed option drops the preview made with the other one', (await result.count()) === 0);
+  await peopleFirst.check();
+
+  await cullPage.getByRole('button', { name: 'Stack and pick the best' }).click();
+  await result.locator('button.stack').or(cullPage.locator('.err')).first().waitFor({ timeout: 180000 });
+  const pageRun = ((await culler('GET', '/runs?limit=5')).body?.runs ?? []).find((r) => !r.dryRun && r.origin === 'ui');
+  if (pageRun) cleanup.runs.push(pageRun.id);
+  const doneText = await resultText();
+  const dStack = await stackOf('d0');
+  check(
+    'Stack and pick the best: the burst is a stack in Immich, the single photo is not',
+    /Done: 1 stack from 4 photos/.test(doneText) && dStack?.assets?.length === 3 && !(await info(id.c0)).stack,
+    { doneText, files: dStack?.assets?.length },
+  );
+  await cullPage.screenshot({ path: join(outDir, 'auto-stack-done.png') });
+  await result.locator('button.stack').first().click();
+  const pageStack = cullPage.locator('.window[role="dialog"]');
+  await pageStack.locator('.pos').waitFor({ timeout: 60000 });
+  const pageStackTitle = (await pageStack.locator('h2').textContent())?.trim();
+  check('a stack opens in the stack window', pageStackTitle === 'Stack · 3 shots', { pageStackTitle });
+  await cullPage.keyboard.press('Escape');
+  await pageStack.waitFor({ state: 'detached', timeout: 5000 });
+  await cullPage.getByRole('button', { name: 'Undo' }).click();
+  await cullPage.locator('p.ok', { hasText: 'Undone' }).or(cullPage.locator('.err')).first().waitFor({ timeout: 120000 });
+  const afterUndo = await Promise.all(['c0', 'd0', 'd1', 'd2'].map((k) => info(id[k])));
+  check(
+    'Undo on the page takes the stack apart again',
+    afterUndo.every((a) => !a.stack && cullTags(a).length === 0),
+    afterUndo.map((a) => ({ n: nameOf[a.id], stack: !!a.stack, tags: cullTags(a) })),
+  );
+  await cullPage.close();
+  await immich.close();
+
+  // --- the stack window -----------------------------------------------------------------------------------
+  const reapplied = await startRun({ scope, dryRun: false });
+  check('apply again for the stack window', reapplied.status === 'done' && !reapplied.summary?.errors, reapplied.summary);
+  const burst = await stackOf('a0');
+  const front = nameOf[burst?.primaryAssetId];
+  const keepKey = ['a0', 'a3'].find((k) => k !== front);
+  const shotsA = ['a0', 'a1', 'a2', 'a3', 'a4'];
+  await page.goto(`${BASE}/immich-raw/?asset=${id[front]}&ctx=album:${cleanup.album}&return=${encodeURIComponent(`/photos/${id[front]}`)}`);
+  await page.locator('.title button.cull').click({ timeout: 120000 });
+  const win = page.locator('.window[role="dialog"]');
+  await win.locator('.pos').waitFor({ timeout: 60000 });
+  const pos = async (want) => {
+    if (want) await win.locator('.pos', { hasText: want }).waitFor({ timeout: 5000 }).catch(() => {});
+    return (await win.locator('.pos').textContent())?.trim();
+  };
+  const editorAt = page.url();
+  check('the title line opens the stack window on the open photo', (await pos('1 of 5')) === '1 of 5' && /5 shots/.test((await win.locator('h2').textContent()) ?? ''), {
+    front,
+    pos: await pos(),
+  });
+  await page.keyboard.press('ArrowRight');
+  check('→ shows the next shot and the editor stays', (await pos('2 of 5')) === '2 of 5' && page.url() === editorAt, { pos: await pos() });
+  await page.keyboard.press('End');
+  const lastRows = (await win.locator('dl').textContent())?.replace(/\s+/g, ' ');
+  check('the last shot is a rejected one, its deciding measurement marked', (await pos('5 of 5')) === '5 of 5' && (await win.locator('dd.bad').count()) >= 2, { lastRows });
+
+  await win.locator(`.thumb[title^="burst_${keepKey}.dng"]`).click();
+  await win.getByRole('button', { name: '★ Make preferred' }).click();
+  await win.getByRole('button', { name: '★ Preferred' }).waitFor({ timeout: 120000 });
+  const picked = (await info(id.a0)).stack?.primaryAssetId;
+  check('Make preferred puts the shot in front of the stack', picked === id[keepKey], { keepKey, front: nameOf[picked] });
+  await page.screenshot({ path: join(outDir, 'stack-window.png') });
+
+  await win.getByRole('button', { name: 'Delete others…' }).click();
+  const confirm = win.locator('.confirm');
+  await confirm.waitFor();
+  const confirmText = (await confirm.textContent())?.replace(/\s+/g, ' ');
+  check(
+    'Delete others asks first and names the kept shot',
+    !!confirmText?.includes(`Keep burst_${keepKey}.dng`) && confirmText.includes('other 4 shots (4 files') && confirmText.includes('open in the editor is one of them'),
+    { confirmText },
+  );
+  await page.screenshot({ path: join(outDir, 'stack-delete.png') });
+  await confirm.getByRole('button', { name: 'Move to trash' }).click();
+  await page.waitForURL((u) => u.searchParams.get('asset') === id[keepKey], { timeout: 180000 });
+  check('the editor moves on to the kept shot', true);
+  const recull = ((await culler('GET', '/runs?limit=10')).body?.runs ?? []).find((r) => r.origin === 'recull');
+  if (recull) cleanup.runs.push(recull.id);
+  const afterDelete = Object.fromEntries(await Promise.all(shotsA.map(async (k) => [k, await info(id[k])])));
+  check(
+    'the other shots are in the trash',
+    shotsA.every((k) => afterDelete[k].isTrashed === (k !== keepKey)),
+    Object.fromEntries(shotsA.map((k) => [k, afterDelete[k].isTrashed])),
+  );
+  check('the kept shot leaves the burst stack and its culling tags', !afterDelete[keepKey].stack && cullTags(afterDelete[keepKey]).length === 0, {
+    stack: afterDelete[keepKey].stack,
+    tags: cullTags(afterDelete[keepKey]),
+    recull: recull?.status,
+  });
+
+  // From Immich's own viewer: the RAW + JPEG burst (b) is still stacked.
+  await page.goto(`${BASE}/photos/${id.b0}`);
+  const stackButton = page.locator('[data-raw-editor-stack]');
+  await stackButton.waitFor({ timeout: 45000 });
+  await page.waitForTimeout(800);
+  if (await page.locator('[data-dialog-overlay][data-state="open"]').count()) await page.keyboard.press('Escape');
+  check("Immich's viewer shows Compare stack on a culled burst", true);
+  await page.screenshot({ path: join(outDir, 'immich-stack-button.png') });
+  await stackButton.click();
+  await page.waitForURL(/\/immich-raw\/\?stack=/, { timeout: 15000 });
+  const pageWindow = page.locator('.window[role="dialog"]');
+  await pageWindow.locator('.pos').waitFor({ timeout: 60000 });
+  const pageTitle = (await pageWindow.locator('h2').textContent())?.trim();
+  const pageFiles = (await pageWindow.locator('.files').textContent())?.trim();
+  check('it opens the stack page, a shot with its RAW and JPEG', pageTitle === 'Stack · 3 shots' && /\.dng/i.test(pageFiles ?? '') && /\.jpg/i.test(pageFiles ?? ''), { pageTitle, pageFiles });
+  await page.screenshot({ path: join(outDir, 'stack-page.png') });
+  await page.keyboard.press('Escape');
+  await page.waitForURL((u) => u.pathname === `/photos/${id.b0}`, { timeout: 15000 });
+  check('Esc goes back to the same Immich page', true);
+  await page.goto(`${BASE}/photos/${id.c0}`);
+  await page.locator('[data-testid="asset-viewer-navbar-actions"]').waitFor({ timeout: 45000 });
+  await page.waitForTimeout(3000);
+  check('no Compare stack button on a photo outside a stack', (await page.locator('[data-raw-editor-stack]').count()) === 0);
+  check('no page errors in the stack window', errors.length === 0, { errors });
 } catch (e) {
   check('error', false, { message: String(e?.stack ?? e) });
   await page?.screenshot({ path: join(outDir, 'failure.png') }).catch(() => {});
@@ -302,7 +462,7 @@ try {
     if (undo.body?.runId) await waitRun(undo.body.runId).catch(() => {});
   }
   if (cleanup.assets.length) await api('DELETE', '/assets', { ids: cleanup.assets, force: true });
-  if (cleanup.album) await api('DELETE', `/albums/${cleanup.album}`);
+  for (const album of [cleanup.album, ...cleanup.albums]) if (album) await api('DELETE', `/albums/${album}`);
   if (cleanup.user) await api('DELETE', `/admin/users/${cleanup.user}`, { force: true });
   const tags = (await api('GET', '/tags')).body ?? [];
   for (const t of tags.filter((t) => t.value === 'Culling')) await api('DELETE', `/tags/${t.id}`);

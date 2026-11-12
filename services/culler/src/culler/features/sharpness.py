@@ -6,7 +6,8 @@
 3. Noise floor: the energy of the flattest tiles is subtracted, so a grainy high-ISO frame does
    not look sharp.
 4. Subject: the eye band of the largest face; without faces, the sharpest 5 % of tiles (a
-   blurred background or a moving edge of the frame doesn't matter).
+   blurred background or a moving edge of the frame doesn't matter). Both are kept, so a group
+   where only some shots show a face is compared on the sharpest tiles throughout.
 """
 
 from __future__ import annotations
@@ -40,14 +41,19 @@ def _tiles(energy: np.ndarray) -> np.ndarray:
     return energy[: th * rows, : tw * cols].reshape(rows, th, cols, tw).mean(axis=(1, 3)).ravel()
 
 
-def measure_sharpness(rgb: np.ndarray, face_boxes: list[tuple[float, float, float, float]] | None = None) -> float:
-    """`face_boxes` are in the pixel coordinates of `rgb`. Larger is sharper; 0 = no detail."""
+def measure_sharpness_parts(
+    rgb: np.ndarray, face_boxes: list[tuple[float, float, float, float]] | None = None
+) -> tuple[float, float | None]:
+    """(the sharpest 5 % of tiles, the largest face's eye band or None). Larger is sharper."""
     energy = _detail_energy(rgb)
     if energy is None:
-        return 0.0
+        return 0.0, None
     tiles = _tiles(energy)
     floor = float(np.percentile(tiles, 10))
+    k = max(3, math.ceil(0.05 * tiles.size))
+    photo = math.sqrt(max(0.0, float(np.sort(tiles)[-k:].mean()) - floor))
 
+    face = None
     if face_boxes:
         scale = energy.shape[1] / rgb.shape[1]
         x, y, w, h = max(face_boxes, key=lambda b: b[2] * b[3])
@@ -55,8 +61,11 @@ def measure_sharpness(rgb: np.ndarray, face_boxes: list[tuple[float, float, floa
         y0, y1 = int((y + 0.2 * h) * scale), int((y + 0.55 * h) * scale) + 1  # brows to cheeks
         region = energy[max(0, y0) : y1, max(0, x0) : x1]
         if region.size >= 64:
-            return math.sqrt(max(0.0, float(region.mean()) - floor))
+            face = math.sqrt(max(0.0, float(region.mean()) - floor))
+    return photo, face
 
-    k = max(3, math.ceil(0.05 * tiles.size))
-    top = np.sort(tiles)[-k:]
-    return math.sqrt(max(0.0, float(top.mean()) - floor))
+
+def measure_sharpness(rgb: np.ndarray, face_boxes: list[tuple[float, float, float, float]] | None = None) -> float:
+    """`face_boxes` are in the pixel coordinates of `rgb`. The face when measurable, else the photo."""
+    photo, face = measure_sharpness_parts(rgb, face_boxes)
+    return photo if face is None else face

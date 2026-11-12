@@ -1,28 +1,37 @@
 """Picks the best frame of a group by sequential elimination, then a tie-break.
 
-Order of the result: best, runner-ups (passed every check) by score, then rejected frames, those
-that survived longer first.
+Among the frames that pass every check, the one with the most smiling faces is the best (when
+smiles count), then the best mix of sharpness, exposure and open eyes.
+
+Order of the result: best, runner-ups (passed every check) in that order, then rejected frames,
+those that survived longer first.
 """
 
 from __future__ import annotations
 
-from culler.checks import CHECKS, Candidate
+from culler.checks import CHECKS, Basis, Candidate
 from culler.config import Config
+from culler.features.exposure import subject_exposure, subject_target
 from culler.models import Features, Frame, FrameResult, GroupResult, Reason
 
 
 def tie_break_score(c: Candidate, top_sharpness: float) -> float:
-    sharp = c.features.sharpness / top_sharpness if top_sharpness > 0 else 0.0
+    sharp = c.sharpness / top_sharpness if top_sharpness > 0 else 0.0
     light = 1.0 - min(1.0, c.badness / 1.5)
     f = c.features
-    eyes = (f.faces_known - f.faces_closed) / f.faces_known if f.faces_known else 0.5
+    openness = f.eyes_openness()
+    if openness:
+        eyes = sum(openness) / len(openness)
+    else:
+        eyes = (f.faces_known - f.faces_closed) / f.faces_known if f.faces_known else 0.5
     return 0.45 * sharp + 0.35 * light + 0.20 * eyes
 
 
 def rank_group(
     frames: list[Frame], features: dict[str, Features], cfg: Config, pinned: str | None = None
 ) -> GroupResult:
-    cands = [Candidate.of(f, features[f.id], cfg) for f in frames]
+    basis = Basis.of([features[f.id] for f in frames], cfg)
+    cands = [Candidate.of(f, features[f.id], cfg, basis) for f in frames]
     by_id = {c.frame_id: c for c in cands}
     survivors = list(cands)
     rejected: dict[str, tuple[int, Reason]] = {}
@@ -37,11 +46,14 @@ def rank_group(
             rejected[fid] = (stage, check.name)
         survivors = [c for c in survivors if c.frame_id not in out]
 
-    top_sharp = max(c.features.sharpness for c in cands)
+    top_sharp = max(c.sharpness for c in cands)
     score = {c.frame_id: tie_break_score(c, top_sharp) for c in cands}
 
+    def smiles(c: Candidate) -> int:
+        return c.features.faces_smiling(cfg.smiles.min_score) if cfg.smiles.enabled else 0
+
     def order_key(c: Candidate) -> tuple:
-        return (-score[c.frame_id], c.taken, c.frame.name)
+        return (-smiles(c), -score[c.frame_id], c.taken, c.frame.name)
 
     best_id: str | None = None
     if pinned in by_id:
@@ -74,19 +86,35 @@ def rank_group(
             rank=rank,
             score=round(score[fid], 4),
             pinned=is_pinned and fid == best_id,
-            metrics=_metrics(c, best),
+            metrics=_metrics(c, best, cfg),
         )
     return GroupResult(frame_ids=[c.frame_id for c in ordered], results=results)
 
 
-def _metrics(c: Candidate, best: Candidate) -> dict:
-    f, b = c.features, best.features
-    return {
-        "evVsBest": round(f.exposure.key - b.exposure.key, 2),
+def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
+    f = c.features
+    out = {
+        "evVsBest": round(c.exposure.key - best.exposure.key, 2),
         "clipHiPct": round(100 * f.exposure.clip_hi, 1),
         "clipLoPct": round(100 * f.exposure.clip_lo, 1),
         "lighting": round(c.badness, 2),
-        "sharpPct": round(100 * f.sharpness / b.sharpness) if b.sharpness > 0 else None,
+        "sharpPct": round(100 * c.sharpness / best.sharpness) if best.sharpness > 0 else None,
         "faces": f.faces_known,
         "closed": f.faces_closed,
+        "judgedOn": c.judged_on,
     }
+    openness = f.eyes_openness()
+    if openness:
+        out["eyesOpen"] = round(100 * sum(openness) / len(openness))
+        out["eyesLeast"] = round(100 * min(openness))
+    if cfg.people.enabled:
+        out["people"] = len(f.bodies)
+    subject = subject_exposure(f, c.judged_on)
+    if subject:
+        out["subjectEv"] = round(subject.key - subject_target(cfg.lighting, c.judged_on), 2)
+        out["subjectClipHiPct"] = round(100 * subject.clip_hi, 1)
+        out["subjectClipLoPct"] = round(100 * subject.clip_lo, 1)
+    if any(face.smile is not None for face in f.faces):
+        out["smiling"] = f.faces_smiling(cfg.smiles.min_score)
+        out["smileFaces"] = sum(1 for face in f.faces if face.smile is not None)
+    return out

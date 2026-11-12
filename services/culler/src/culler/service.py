@@ -178,6 +178,7 @@ class Service:
             "ok": self.owner_id is not None,
             "version": "0.1.0",
             "eyes": self.runner.eyes_available(),
+            "people": self.runner.people_available(),
             "tagRoot": self.cfg.tags.root,
         }
 

@@ -57,7 +57,7 @@ def dngs(tmp_path_factory):
 
 
 def raw_exposure(path: Path):
-    return measure_raw_exposure(path, None, 720, 0.6, headroom_ev=1.0)
+    return measure_raw_exposure(path, None, None, 720, headroom_ev=1.0).photo
 
 
 def test_exposure_differences_survive(dngs):
@@ -70,7 +70,7 @@ def test_exposure_differences_survive(dngs):
 
 def test_raw_key_matches_the_jpeg_key(dngs):
     scene, files = dngs
-    from_jpeg = measure_exposure(variant(scene))
+    from_jpeg = measure_exposure(variant(scene)).photo
     assert abs(raw_exposure(files["base"]).key - from_jpeg.key) < 0.4
 
 

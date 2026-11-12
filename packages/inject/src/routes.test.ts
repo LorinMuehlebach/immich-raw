@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { editorUrl, isExcludedPath, isSafeReturnPath, pageContext, parseViewerRoute } from './routes.ts';
+import { editorUrl, isExcludedPath, isSafeReturnPath, pageContext, parseViewerRoute, stackPageUrl } from './routes.ts';
 
 const A = '06d70775-6b65-4af4-8cfc-60a93afa9c3d';
 const B = 'a95b288d-caf0-49ac-a428-a47db8e05d4a';
@@ -53,6 +53,23 @@ describe('editorUrl', () => {
 
   it('drops unsafe return paths', () => {
     const url = editorUrl('/immich-raw/', A, 'timeline', '//evil.example.com');
+    expect(new URL(url, 'https://x').searchParams.has('return')).toBe(false);
+  });
+});
+
+describe('stackPageUrl', () => {
+  it('builds the stack page link with asset, context and return path', () => {
+    const url = stackPageUrl('/immich-raw/', A, 'timeline', `/photos/${A}`);
+    const params = new URL(url, 'https://immich.example.com').searchParams;
+    expect(url.startsWith('/immich-raw/?')).toBe(true);
+    expect(params.get('stack')).toBe(A);
+    expect(params.get('ctx')).toBe('timeline');
+    expect(params.get('return')).toBe(`/photos/${A}`);
+  });
+
+  it('drops unsafe return paths', () => {
+    const url = stackPageUrl('/immich-raw/?x=1', A, 'timeline', 'https://evil.example.com');
+    expect(url.startsWith('/immich-raw/?x=1&stack=')).toBe(true);
     expect(new URL(url, 'https://x').searchParams.has('return')).toBe(false);
   });
 });

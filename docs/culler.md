@@ -13,6 +13,8 @@ Code: [services/culler/](../services/culler/).
 1. **Which photos.**
    - **Auto-stack… in the editor:** the album the editor was opened from, or else the day of the
      photo being edited.
+   - **Auto-stack in Immich's selection bar:** the selected photos, with the rest of any stack
+     they're in (Immich shows a stack as one photo).
    - **Automatic run:** every new upload, plus the photos taken around it, so a burst uploaded in two
      parts is seen whole.
    - Trashed, hidden and locked photos are left out.
@@ -39,13 +41,24 @@ Code: [services/culler/](../services/culler/).
    |---|---|---|
    | Lighting | its exposure score is more than 0.75 worse than the best shot's, or it is more than 1 stop brighter or darker than the best and worse at all | `Culling/Rejected/Lighting` |
    | Sharpness | its subject has less than 70 % of the sharpest shot's fine detail | `Culling/Rejected/Blur` |
-   | Eyes | more faces have closed eyes than in the best shot | `Culling/Rejected/Eyes closed` |
+   | Eyes | more faces have closed eyes than in the best shot, or its least open eyes are clearly less open (a half-blink) | `Culling/Rejected/Eyes closed` |
 
    - **Exposure score:**
      - How far the typical brightness is from the target. The target is the same one the editor's
        Auto tone aims for; brightness within ±0.5 stops of it costs nothing.
      - Blown highlights, crushed shadows, and a very flat image (haze, flare).
-     - Faces count more than the rest of the photo; without faces, the centre does.
+     - **People first.** When the photos show people, their exposure counts most:
+       - the faces make up 80 % of the score, the rest of the photo 20 %;
+       - faces have their own target, because well exposed skin is brighter than a scene's average
+         and differs between people: within ±1 stop of it costs nothing;
+       - the faces' own blown highlights and crushed shadows count too. A face burnt out by the
+         flash loses, even if the rest of the photo is fine;
+       - without a usable face (seen from the side or from behind, too small), the people the
+         object detector found count 60 %.
+     - **Every shot of a group is judged alike.** Faces only when every shot has a usable face,
+       else people when every shot shows some, else the whole photo with its centre weighted. A
+       shot doesn't win just because a whole figure is brighter than a face. Sharpness works the
+       same way: the eyes when every shot has a face, else the sharpest areas.
    - **Exposure of RAW files is measured on the RAW file itself.** Immich renders RAW previews with
      LibRaw's automatic brightness. In a test, that made a shot 1.5 stops darker look exactly like
      the normal one in its preview. So the culler downloads the RAW and decodes it without that
@@ -61,8 +74,19 @@ Code: [services/culler/](../services/culler/).
      - MediaPipe's face landmarks give how far each eye is open. An eye counts as closed when it is
        less than 0.155 open (height/width, both eyes averaged), or both blink scores are at least 0.5.
        These values were checked on real stage photos.
-   - **Best:** the survivor with the best mix of sharpness (45 %), exposure (35 %) and open eyes
-     (20 %); if that is a tie, the earliest shot.
+     - **How open, 0–100 %:** the same opening, 0 % at 0.10 and 100 % from 0.24. Closed eyes
+       measured 0.08–0.13, open ones 0.19–0.32. On a face turned more than 30°, only the eye nearer
+       the camera counts: the far one, seen from the side, looks more open than it is.
+     - **Half-blinks:** a shot is also rejected when its least open eyes are more than 30 points
+       less open than in the best shot. A broad smile narrows the eyes a little (on real portraits
+       to about 90 %), so a squinting smile stays.
+   - **Smiles:** among the survivors, the shot with the most smiling faces is the best. The others
+     stay runner-ups, not rejected: a serious face is no flaw.
+     - The smile is MediaPipe's score for both mouth corners, averaged. A face counts as smiling
+       from 0.4; on real portraits neutral faces measured 0.00–0.17, smiles 0.48–0.87.
+   - **Best:** the survivor with the most smiles, then the best mix of sharpness (45 %), exposure
+     (35 %) and how open the eyes are (20 %, the faces' average); if that is a tie, the earliest
+     shot.
    - **Your choice comes first:** a shot you put in front yourself is always the best. So is the only
      favourite in a group.
    - The other survivors are runner-ups (`Culling/Runner-up`). The best gets `Culling/Best`.
@@ -111,11 +135,48 @@ A run that finds nothing new changes nothing.
   ◉ eyes.
 - **Tooltip:** the reason and the measurements, for example "−1.5 EV vs best" or "sharpness 54 % of
   best".
-- **Stack controls:** the number on a stack collapses it to its best photo. ★ on another photo makes
-  that one the best.
-- **Auto-stack…** previews a run (a dry run), applies it, or undoes the last one.
+- **Stack controls:** the number on a stack opens the stack window (below). ★ on another photo makes
+  that one the best. **Collapse stacks** in the filmstrip's header shows only the best photo of each
+  stack.
+- **Auto-stack…** previews a run (a dry run), applies it, or undoes the last one. Its checkboxes
+  choose what that run takes into account; the browser remembers them. Automatic runs use the
+  culler's own settings (`culler.toml`).
+  - **People's exposure counts most:** the faces, or else the people, before the rest of the photo.
+  - **Find people without a visible face.**
+  - **Prefer the most smiles.**
+  - **Set aside closed eyes** (also half-blinks).
 - **Title line:** shows the verdict for the photo you're editing, for example "★ best of 6" or
-  "rejected: not sharp".
+  "rejected: not sharp". Click it to open the stack window.
+
+**From Immich's selection.** Select two photos or more in Immich (in the timeline, an album or a
+person's page) and click **Auto-stack** (a stack of photos with a star) in the selection bar. It
+opens a page for those photos with the same checkboxes as **Auto-stack…** in the editor.
+- **Preview** shows the stacks it would make, each with its best shot in front, and changes nothing.
+- **Stack and pick the best** makes them. If a preview is on show, it applies that preview.
+- Afterwards a click on a stack opens it in the stack window, to check the pick or delete the others.
+- **Undo** takes the stacks apart again. After a change in the stack window the run can no longer be
+  undone there (undo goes newest run first).
+- The button shows only when the culler works for you: on the same address as Immich, and run with
+  your API key.
+
+**The stack window.** It shows the shots of one stack, best first, one at a time and large.
+- **Opening it:** the number on a stack in the filmstrip, the verdict in the editor's title line, or
+  **Compare stack** in Immich's photo viewer. That button shows on photos in a stack the culler made
+  with at least two shots. It opens the window as a page of its own; Esc goes back to Immich.
+- **Switching shots:** ← / →, Home / End, the thumbnails at the bottom, or a swipe on touch screens.
+- **Details:** the verdict and its place in the stack, sharpness and exposure compared with the best
+  shot, the faces' or people's own exposure, blown highlights, crushed shadows, the exposure error,
+  how open the eyes are (in %), smiles, the people found, the camera settings and the files of the
+  shot. The measurement a shot was rejected for is shown in red.
+- **Pictures:** each shot shows its edit if it has one, else the camera JPEG, else the RAW. Immich's
+  RAW previews are auto-brightened, so for exposure trust the numbers more than the RAW's picture.
+- **★ Make preferred** (or P) puts the shot in front, the same as ★ in the filmstrip.
+- **Delete others…** keeps the preferred shot and moves every other shot to Immich's trash: its RAW,
+  camera JPEG and edits. It asks first.
+  - Files in the stack the culler doesn't know are left alone.
+  - The culler then sorts the group again. With one shot left, it takes the stack apart, puts a RAW
+    + JPEG pair back into its own stack and removes the `Culling/` tags.
+  - To get the shots back, restore them from Immich's trash and run **Auto-stack…** again.
 
 The filmstrip shows only RAWs. Stacks of JPEGs are sorted too, and show in Immich.
 
@@ -201,12 +262,27 @@ respect_favorites = true
 
 [eyes]
 enabled = true
+max_open_gap = 0.3       # reject eyes this much less open than in the best shot (0.3 = 30 points)
+
+[lighting]
+people_first = true      # faces, or else people, count most for exposure
+face_weight = 0.8
+
+[people]
+enabled = true           # people without a usable face (MediaPipe object detector)
+
+[smiles]
+enabled = true
+min_score = 0.4          # a face counts as smiling from this score
 ```
 
 ## Resources
 
-- **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms). Only photos that have a
-  neighbour within 90 s are measured.
+- **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms, the people detector about
+  30 ms). Only photos that have a neighbour within 90 s are measured.
+- **Models:** CLIP, YuNet (faces), MediaPipe's face landmarker (eyes, smiles) and its object
+  detector EfficientDet-Lite0 (people, 7 MB). Updating to this version measures every photo once
+  again, because faces, people and smiles are now stored apart.
 - **Downloads:** for RAW files the original is downloaded as well.
 - **Cache:** measurements are cached in `/data`, so re-runs are quick.
 - **Memory and size:** about 1 GB of RAM while working; the image is about 1.8 GB including the
@@ -215,8 +291,14 @@ enabled = true
 ## Known limits
 
 - **Reject flag:** see the Immich 3.4 note above.
-- **Small faces:** faces under 40 px, as in group photos taken from afar, get no eyes verdict.
+- **Small faces:** faces under 40 px, as in group photos taken from afar, get no eyes verdict and no
+  smile. The people detector still finds those people for exposure.
+- **Smiles count, not how broad:** a shot with three slight smiles beats one with two big ones.
 - **Starting values:** the thresholds were tuned on test bursts. Check a dry run or `calibrate` on
   your own photos.
-- **Filmstrip:** it lists RAWs only.
+- **Filmstrip:** it lists RAWs only. Stacks of JPEGs can still be opened in the stack window from
+  Immich's photo viewer.
+- **Compare stack and Auto-stack buttons:** they need the culler on the same address as Immich
+  (the immich-raw container or the proxy setup). With the userscript on another address they don't
+  show.
 - **One library per container:** run one container per user.

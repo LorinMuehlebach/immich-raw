@@ -1,19 +1,25 @@
 <script lang="ts">
-  // "Auto-stack…" popover above the filmstrip: preview (dry run), apply, undo the last run.
+  // "Auto-stack…" popover above the filmstrip: preview (dry run), apply, undo the last run, and
+  // what the run takes into account (remembered in this browser; automatic runs use the culler's
+  // own settings).
   import type { AssetResponseDto } from '@immich/sdk';
   import { onMount } from 'svelte';
   import { parseContext } from '../immich/context.ts';
+  import { describeRun, runPhase } from '../immich/cull-view.ts';
   import {
     applyRun,
     lastUndoableRun,
+    loadCullOptions,
+    saveCullOptions,
     startRun,
     undoRun,
     waitForRun,
     type CullerStatus,
+    type CullOptions,
     type CullRun,
-    type RunCounts,
     type RunScope,
   } from '../immich/culler.ts';
+  import CullOptionsFields from './CullOptionsFields.svelte';
 
   interface Props {
     ctx: string | null;
@@ -41,6 +47,14 @@
   let error = $state<string | null>(null);
   let undoable = $state<CullRun | null>(null);
   const controller = new AbortController();
+
+  let options = $state<CullOptions>(loadCullOptions());
+
+  function setOptions(o: CullOptions) {
+    options = o;
+    preview = null; // it was made with the other choice
+    saveCullOptions(o);
+  }
 
   onMount(() => {
     void refreshUndoable();
@@ -76,14 +90,14 @@
   }
 
   async function doPreview() {
-    preview = await track(() => startRun(scope, true), 'preview');
+    preview = await track(() => startRun(scope, true, options), 'preview');
   }
 
   async function doApply() {
     if (!preview) return;
     const run = await track(() => applyRun(preview!.id), 'apply');
     if (!run) return;
-    result = `Done: ${describe(run.summary)}.`;
+    result = `Done: ${describeRun(run.summary)}.`;
     preview = null;
     onChanged();
     await refreshUndoable();
@@ -100,22 +114,6 @@
     await refreshUndoable();
   }
 
-  function describe(c: Partial<RunCounts> | null | undefined): string {
-    if (!c) return 'nothing to do';
-    const r = c.rejected ?? { lighting: 0, blur: 0, eyes: 0 };
-    const rejected = r.lighting + r.blur + r.eyes;
-    const parts = [`${c.groups ?? 0} ${c.groups === 1 ? 'stack' : 'stacks'} from ${c.photos ?? 0} photos`];
-    if (c.runnerUps) parts.push(`${c.runnerUps} runner-ups`);
-    if (rejected) {
-      const why = [r.lighting && `${r.lighting} lighting`, r.blur && `${r.blur} not sharp`, r.eyes && `${r.eyes} eyes closed`].filter(Boolean);
-      parts.push(`${rejected} set aside (${why.join(', ')})`);
-    }
-    if (c.pending) parts.push(`${c.pending} still waiting for Immich's preview`);
-    return parts.join(' · ');
-  }
-
-  const phaseText = (r: CullRun | null) =>
-    !r ? 'starting…' : r.status === 'queued' ? 'waiting for another run…' : `${r.phase ?? 'working'}${r.total ? ` ${r.done}/${r.total}` : '…'}`;
 </script>
 
 <div class="panel" role="dialog" aria-label="Auto-stack">
@@ -128,10 +126,12 @@
     sharpness, then closed eyes.
   </p>
 
+  <CullOptionsFields {options} {status} disabled={!!busy} onChange={setOptions} />
+
   {#if busy}
-    <p class="progress">{busy === 'preview' ? 'Checking' : busy === 'apply' ? 'Applying' : 'Undoing'}: {phaseText(progress)}</p>
+    <p class="progress">{busy === 'preview' ? 'Checking' : busy === 'apply' ? 'Applying' : 'Undoing'}: {runPhase(progress)}</p>
   {:else if preview}
-    <p>{describe(preview.summary)}.</p>
+    <p>{describeRun(preview.summary)}.</p>
     {#if preview.summary?.changes}
       <p class="dim">{preview.summary.changes} changes in Immich (stacks, tags, reject flags).</p>
     {:else}
@@ -153,7 +153,9 @@
     <p class="dim small">
       {#if status.watcher?.enabled}New uploads are stacked {status.watcher.autoApply ? 'automatically' : 'as suggestions'}.{:else}Automatic
         stacking of new uploads is off.{/if}
-      {#if status.eyes === false}The closed-eyes check is off (face models missing).{/if}
+      {#if status.eyes === false}Faces, eyes and smiles are off (face models missing).{/if}
+      {#if status.people === false}People without a visible face aren't found (model missing).{/if}
+      These choices are for runs started here; automatic runs use the culler's settings.
     </p>
   {/if}
 </div>

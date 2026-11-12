@@ -17,6 +17,20 @@ export interface CullMetrics {
   sharpPct?: number | null;
   faces?: number;
   closed?: number;
+  /** How open the eyes are, in %: the faces' average, and the least open face. */
+  eyesOpen?: number;
+  eyesLeast?: number;
+  /** What the exposure was judged on first: the faces, the people, or only the whole photo. */
+  judgedOn?: 'faces' | 'people' | 'photo';
+  /** Brightness of those faces or people vs their ideal, in stops, and their own clipping. */
+  subjectEv?: number;
+  subjectClipHiPct?: number;
+  subjectClipLoPct?: number;
+  /** People found (also without a visible face). */
+  people?: number;
+  /** Smiling faces, of the faces whose smile could be read. */
+  smiling?: number;
+  smileFaces?: number;
 }
 
 /** What the service last decided for one photo. */
@@ -47,6 +61,36 @@ export interface RunCounts {
   errors?: number;
 }
 
+/** One shot of a stack in a run's report. */
+export interface ReportFrame {
+  frameId: string;
+  name: string;
+  /** Every file of the shot (RAW, camera JPEG, edits). */
+  assetIds: string[];
+  /** The file Immich shows for it: the newest edit, else the camera JPEG, else the RAW. */
+  faceId: string;
+  taken: string | null;
+  role: CullRole;
+  reason: CullReason | null;
+  rank: number;
+  pinned: boolean;
+  metrics: CullMetrics;
+}
+
+/** A stack the run made (or, in a preview, would make). */
+export interface ReportGroup {
+  id: string;
+  primaryId: string | null;
+  frames: ReportFrame[];
+}
+
+export interface RunReport {
+  counts?: Partial<RunCounts>;
+  groups?: ReportGroup[];
+  errors?: string[];
+  notes?: string[];
+}
+
 export interface CullRun {
   id: string;
   origin: string;
@@ -62,12 +106,16 @@ export interface CullRun {
   finishedAt: string | null;
   undoneAt: string | null;
   sourceRun: string | null;
+  /** Only when asked for one run (getRun), not in the list. */
+  report?: RunReport | null;
 }
 
 export interface CullerStatus {
   ok: boolean;
   tagRoot: string;
   eyes: boolean | null;
+  /** The people model is there (null until the service's first run). */
+  people?: boolean | null;
   owner?: string | null;
   watcher?: { enabled: boolean; autoApply: boolean };
 }
@@ -145,11 +193,64 @@ const runId = (r: { runId: string } | null): string => {
   return r.runId;
 };
 
-export const startRun = async (scope: RunScope, dryRun: boolean): Promise<string> => runId(await call('POST', '/runs', { scope, dryRun }));
+/** What a run started from the editor takes into account (the Auto-stack panel's checkboxes). */
+export interface CullOptions {
+  /** The exposure of the faces, or else of the people, counts most. */
+  peopleFirst: boolean;
+  /** Also find people without a visible face. */
+  people: boolean;
+  /** Among the good shots, the one with the most smiles is the best. */
+  smiles: boolean;
+  /** Set aside shots with closed eyes. */
+  eyes: boolean;
+}
+
+export const DEFAULT_CULL_OPTIONS: CullOptions = { peopleFirst: true, people: true, smiles: true, eyes: true };
+
+/** Stored or partial options, with the defaults for anything missing or of the wrong type. */
+export function parseCullOptions(value: unknown): CullOptions {
+  const o = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const flag = (k: keyof CullOptions) => (typeof o[k] === 'boolean' ? (o[k] as boolean) : DEFAULT_CULL_OPTIONS[k]);
+  return { peopleFirst: flag('peopleFirst'), people: flag('people'), smiles: flag('smiles'), eyes: flag('eyes') };
+}
+
+const OPTIONS_KEY = 'raw-editor.cull.options';
+
+/** The choices last made in this browser (the Auto-stack panel and page share them). */
+export function loadCullOptions(): CullOptions {
+  try {
+    return parseCullOptions(JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? 'null'));
+  } catch {
+    return parseCullOptions(null);
+  }
+}
+
+export function saveCullOptions(o: CullOptions): void {
+  try {
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify(o));
+  } catch {
+    // storage blocked: the choice holds while the page is open
+  }
+}
+
+/** The service's `options` (its settings sections) for these choices. */
+export function runOptions(o: CullOptions): Record<string, Record<string, boolean>> {
+  return {
+    lighting: { people_first: o.peopleFirst },
+    people: { enabled: o.people },
+    smiles: { enabled: o.smiles },
+    eyes: { enabled: o.eyes },
+  };
+}
+
+export const startRun = async (scope: RunScope, dryRun: boolean, options?: CullOptions): Promise<string> =>
+  runId(await call('POST', '/runs', options ? { scope, dryRun, options: runOptions(options) } : { scope, dryRun }));
 export const applyRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/apply`));
 export const undoRun = async (id: string): Promise<string> => runId(await call('POST', `/runs/${encodeURIComponent(id)}/undo`));
 export const makeBest = async (groupId: string, assetId: string): Promise<string> =>
   runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/best`, { assetId }));
+/** Sorts the group again, e.g. after photos of it were trashed (a group of one is taken apart). */
+export const recullGroup = async (groupId: string): Promise<string> => runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/recull`));
 
 export async function getRun(id: string): Promise<CullRun | null> {
   return call<CullRun>('GET', `/runs/${encodeURIComponent(id)}`);

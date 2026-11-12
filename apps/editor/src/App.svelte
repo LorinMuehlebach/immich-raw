@@ -2,8 +2,10 @@
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
   import { onMount } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
+  import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
+  import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
   import { editor } from './lib/state/editor.svelte.ts';
   import { VIEW_PAD, wheelFactor } from './lib/state/zoom.ts';
@@ -43,6 +45,8 @@
   let neighbours = $state<{ prev: string | null; next: string | null }>({ prev: null, next: null });
   // What the culler decided for this photo (shown in the title line).
   let cullInfo = $state<CullInfo | null>(null);
+  // The stack window is open on the stack of this photo.
+  let stackFor = $state<string | null>(null);
   const cullText = $derived.by(() => {
     const badge = badgeFor(cullInfo);
     if (!cullInfo || !badge) return '';
@@ -108,16 +112,7 @@
     return { w: Math.round(w), h: Math.round(h) };
   });
 
-  const info = $derived.by(() => {
-    const x = editor.asset?.exifInfo;
-    if (!x) return '';
-    const parts: string[] = [];
-    if (x.iso) parts.push(`ISO ${x.iso}`);
-    if (x.focalLength) parts.push(`${Math.round(x.focalLength)} mm`);
-    if (x.fNumber) parts.push(`ƒ/${x.fNumber}`);
-    if (x.exposureTime) parts.push(`${x.exposureTime} s`);
-    return parts.join('   ');
-  });
+  const info = $derived(shotSettings(editor.asset?.exifInfo).join('   '));
 
   const camera = $derived([editor.asset?.exifInfo?.make, editor.asset?.exifInfo?.model].filter(Boolean).join(' '));
 
@@ -186,6 +181,18 @@
     if (id !== editor.asset?.id) leave(() => editor.urlFor(id));
   }
 
+  /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
+  function afterCurrentDeleted(kept: StackFrame) {
+    discarding = true;
+    if (kept.raw) {
+      location.href = editor.urlFor(kept.raw.id);
+      return;
+    }
+    const gone = editor.asset?.id;
+    const back = editor.returnPath;
+    location.href = back && gone && back.includes(gone) ? back.replaceAll(gone, kept.face.id) : `/photos/${kept.face.id}`;
+  }
+
   function isTyping(target: EventTarget | null): boolean {
     const el = target as HTMLElement | null;
     if (!el) return false;
@@ -198,7 +205,7 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving) return;
+    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving || stackFor) return;
     if (editor.status !== 'ready' || editor.saving) return;
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
@@ -423,7 +430,13 @@
           {#if editor.readOnly}· view only{/if}
           {#if editor.recipe.render && !editor.dirty}· saved{/if}
           {#if editor.dirty}· unsaved changes{/if}
-          {#if cullText}<span class="cull" class:rejected={cullInfo?.role === 'rejected'}>· {cullText}</span>{/if}
+          {#if cullText}
+            {#if (cullInfo?.groupSize ?? 0) > 1}
+              <button class="cull" class:rejected={cullInfo?.role === 'rejected'} onclick={() => (stackFor = editor.asset?.id ?? null)} title="Compare the photos of this stack">· {cullText}</button>
+            {:else}
+              <span class="cull" class:rejected={cullInfo?.role === 'rejected'}>· {cullText}</span>
+            {/if}
+          {/if}
         {/if}
       </div>
     </div>
@@ -612,6 +625,9 @@
         onNeighbours={(prev, next) => (neighbours = { prev, next })}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
+        bind:stackFor
+        unsaved={editor.dirty}
+        onCurrentDeleted={afterCurrentDeleted}
         startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
@@ -728,7 +744,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .cull.rejected {
+  button.cull {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  button.cull:hover {
+    color: var(--text-bright);
+  }
+  .cull.rejected,
+  button.cull.rejected:hover {
     color: var(--danger);
   }
   .sub {
