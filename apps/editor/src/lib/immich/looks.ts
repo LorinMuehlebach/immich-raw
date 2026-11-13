@@ -5,7 +5,7 @@
 //   (view-cache.ts);
 // - the saved JPEG's preview in Immich;
 // - Immich's preview of the RAW.
-import type { AssetResponseDto } from '@immich/sdk';
+import { getAssetInfo, type AssetResponseDto } from '@immich/sdk';
 import type { Recipe } from '@immich-raw/recipe';
 import { savedShows } from '../drafts/draft-store.ts';
 import { drafts } from '../drafts/drafts.svelte.ts';
@@ -32,6 +32,8 @@ export interface LookDeps {
   draft(id: string): Promise<Recipe | null>;
   /** Immich's preview of an asset, or null. */
   preview(id: string): Promise<Blob | null>;
+  /** Immich has made the asset's previews (a JPEG saved a moment ago may not have them yet). */
+  hasPreview?(id: string): Promise<boolean>;
 }
 
 /** The picture to show while the photo opens, or null when there is none. */
@@ -46,6 +48,7 @@ export async function resolveLook(asset: Pick<AssetResponseDto, 'id' | 'checksum
   // The saved JPEG may be gone (deleted in Immich): then the RAW's preview.
   for (const id of [state.renderId, asset.id]) {
     if (!id) continue;
+    if (id === state.renderId && deps.hasPreview && !(await deps.hasPreview(id).catch(() => false))) continue;
     const image = await deps.preview(id).catch(() => null);
     if (image) return { image, source: previewSource(id) };
   }
@@ -150,4 +153,8 @@ export const looks = new LookCache({
   editState: (id) => editStates.get(id),
   draft: async (id) => (await drafts.get(id, null))?.recipe ?? null,
   preview: fetchPreview,
+  hasPreview: async (id) => {
+    const a = await getAssetInfo({ id });
+    return !!a.thumbhash && !a.isTrashed;
+  },
 });

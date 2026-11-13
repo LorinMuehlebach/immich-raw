@@ -36,6 +36,12 @@ describe('resolveLook', () => {
     expect((await resolveLook(asset('a'), d))?.source).toBe(previewSource('jpg'));
   });
 
+  it("doesn't ask for a saved JPEG's preview before Immich has made it", async () => {
+    const d = deps({ editState: async () => edited, hasPreview: async () => false });
+    expect((await resolveLook(asset('a'), d))?.source).toBe(previewSource('a'));
+    expect(d.previews).toEqual(['a']);
+  });
+
   it("takes the RAW's preview when the saved JPEG is gone, or there is none", async () => {
     const gone = deps({ editState: async () => edited, preview: async (id) => (id === 'jpg' ? null : jpeg(id)) });
     expect((await resolveLook(asset('a'), gone))?.source).toBe(previewSource('a'));

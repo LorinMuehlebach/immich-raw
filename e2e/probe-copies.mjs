@@ -51,6 +51,8 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && !expectedConsoleError(m.text()) && errors.push(m.text()));
+  // Says which request a "Failed to load resource: 404" console error was.
+  page.on('response', (r) => r.status() === 404 && console.log('404', r.request().method(), r.url()));
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   const open = async (copy) => {
     await page.goto(`${PAGE_BASE}/immich-raw/?asset=${raw.id}${copy ? `&copy=${copy}` : ''}&debug`);

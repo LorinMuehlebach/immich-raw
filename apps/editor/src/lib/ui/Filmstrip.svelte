@@ -4,7 +4,7 @@
   // each with a badge saying why it lost. A stack's number opens the stack window.
   // Each thumbnail shows the photo as edited (its draft, else its saved JPEG) with its stars, pick,
   // reject and edit marks; the filters leave photos out of the strip and of ← → ↑ ↓.
-  import { getAllTags, type AssetResponseDto } from '@immich/sdk';
+  import { getAllTags, getAssetInfo, type AssetResponseDto } from '@immich/sdk';
   import { untrack } from 'svelte';
   import { apiUrl, authHeaders, hasApiKey } from '../immich/api.ts';
   import { captureTime, loadFilmstrip, loadTagged } from '../immich/context.ts';
@@ -327,6 +327,17 @@
 
   const thumbUrl = (id: string) => apiUrl(`/assets/${id}/thumbnail?size=thumbnail`);
 
+  /** Waits (up to ~20 s) until Immich has made the asset's thumbnail; false when it doesn't, or `gone()`. */
+  async function thumbnailReady(id: string, gone: () => boolean): Promise<boolean> {
+    for (let i = 0; i < 20 && !gone(); i++) {
+      const info = await getAssetInfo({ id }).catch(() => null);
+      if (!info || info.isTrashed) return false;
+      if (info.thumbhash) return true;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return false;
+  }
+
   /**
    * The photo as edited, once it scrolls into view: its draft's picture (kept in this browser),
    * else its saved JPEG's thumbnail, else the RAW's. With an API key <img> can't send the header,
@@ -347,7 +358,9 @@
       const draft = q.draft ? await drafts.get(q.id, null).catch(() => null) : null;
       if (wanted !== q) return;
       if (draft?.thumb) return show(URL.createObjectURL(draft.thumb), true);
-      const id = q.render ?? (await learnEdited(q.id)) ?? q.id;
+      const render = q.render ?? (await learnEdited(q.id));
+      // A JPEG saved a moment ago has no thumbnail yet: the RAW's until it has.
+      const id = render && (await thumbnailReady(render, () => wanted !== q)) ? render : q.id;
       if (wanted !== q) return;
       if (!hasApiKey()) return show(thumbUrl(id), false);
       const b = await fetch(thumbUrl(id), { headers: authHeaders() })
