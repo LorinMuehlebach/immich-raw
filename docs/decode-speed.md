@@ -95,7 +95,8 @@ Two branches, neither merged yet:
       photo is open by then.
     - **The address bar follows** (`history.pushState`), so reloading opens the same photo and the
       browser's Back and Forward go through the photos opened.
-    - **Unsaved changes ask first,** as when leaving.
+    - **Unsaved changes** asked first at the time, as when leaving; they now stay as a draft
+      ([Workflow → Drafts](workflow.md#drafts)).
     - **Gain:** in one browser session, on the same cached Fuji photos, a switch inside the page
       showed the photo after 0.53–0.88 s (median 0.86 s). Loading the page with it took
       0.87–1.52 s (median 1.27 s).

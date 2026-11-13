@@ -77,6 +77,12 @@ def capture_base_name(name: str) -> str:
     return lower[:dot] if dot > 0 else lower
 
 
+def manual_reject_tag(root: str) -> str:
+    """The tag of a photo the user rejected themselves (the editor's X): the culler never removes it,
+    and that shot is never the best."""
+    return f"{root}/Rejected"
+
+
 @dataclass(frozen=True)
 class Tag:
     id: str
@@ -192,6 +198,7 @@ class Frame:
     name: str
     favorite: bool = False
     starred: bool = False  # the user gave it 1-5 stars
+    user_rejected: bool = False  # carries the user's own reject tag (manual_reject_tag): never the best
     duplicate_ids: frozenset[str] = frozenset()
     exposure_ev: float | None = None  # the camera settings' exposure (see camera_exposure_ev)
     exposure_time: float | None = None  # seconds

@@ -75,6 +75,13 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   can log in with the test password; run the same command without `E2E_BIND` to close it again.
 - Decoder build: `node e2e/probe-decoder-compare.mjs <samples-dir>` decodes the samples with
   `packages/libraw/lib` and the npm libraw-wasm 1.6.0 it replaced, and checks the output is the same.
+- Filmstrip: `node e2e/filmstrip.mjs <out-dir> [file name part]` (default `DSCF`, a series with
+  neighbours) checks that → shows the next photo's look within a second without loading the page
+  again, and that ← works while a photo is still opening; drafts (no question on the way out,
+  their mark, undo after a switch and a reload, Discard); stars, pick, reject and clear in Immich,
+  and the reject filter; selecting three photos, stars on all of them and Sync settings; Compare.
+  It puts back the stars, flags and drafts it set. `SAVE=1` also saves two drafts with Save N
+  drafts (then removes their JPEGs and settings again); `NO_PREFETCH=1` uses less memory.
 - Opening speed: `node e2e/probe-open-speed.mjs <out-dir> [sony,canon,fuji]` reports the median
   time until the photo shows, plus the editor's own `immich-raw:*` step timings. Nothing is saved.
   Each RAW is opened three ways:

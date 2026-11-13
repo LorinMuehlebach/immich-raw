@@ -408,7 +408,7 @@ class Runner:
             for sid, st in live.stacks.items()
             if any(m in prev or culler_tags(live.assets[m], root) for m in st.asset_ids)
         }
-        fs = build_frames(list(live.assets.values()), live.stacks, loaded.render_sources, culler_stacks)
+        fs = build_frames(list(live.assets.values()), live.stacks, loaded.render_sources, culler_stacks, root)
         frames_by_id = {f.id: f for f in fs.frames}
 
         # What the user changed in Immich since the last run.

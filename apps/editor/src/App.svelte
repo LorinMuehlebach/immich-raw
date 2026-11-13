@@ -1,9 +1,15 @@
 <script lang="ts">
+  import type { AssetResponseDto } from '@immich/sdk';
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
   import { onMount, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
+  import { looks } from './lib/immich/looks.ts';
+  import { factsOf, flag, flagStatus } from './lib/immich/photo-facts.svelte.ts';
+  import type { FlagAction } from './lib/immich/shot-flags.ts';
+  import { compareCandidate, factsText, type Neighbours } from './lib/immich/strip-view.ts';
+  import { drafts } from './lib/drafts/drafts.svelte.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
@@ -22,6 +28,7 @@
   import ColorMixerPanel from './lib/ui/ColorMixerPanel.svelte';
   import ConvertDngDialog from './lib/ui/ConvertDngDialog.svelte';
   import CopySettingsDialog from './lib/ui/CopySettingsDialog.svelte';
+  import CompareView from './lib/ui/CompareView.svelte';
   import CropOverlay from './lib/ui/CropOverlay.svelte';
   import CropPanel from './lib/ui/CropPanel.svelte';
   import DetailPanel from './lib/ui/DetailPanel.svelte';
@@ -32,7 +39,6 @@
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
-  import UnsavedDialog from './lib/ui/UnsavedDialog.svelte';
   import CopyMenu from './lib/ui/CopyMenu.svelte';
   import UpscaleOverlay from './lib/ui/UpscaleOverlay.svelte';
   import UprightOverlay from './lib/ui/UprightOverlay.svelte';
@@ -49,7 +55,19 @@
   let stageH = $state(600);
   let apiKey = $state('');
   let copyOpen = $state(false);
-  let neighbours = $state<{ prev: string | null; next: string | null; nearby: string[] }>({ prev: null, next: null, nearby: [] });
+  let neighbours = $state<Neighbours>({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [], order: [], stack: [] });
+  // Compare (C): the photo shown next to the one being edited (not on narrow screens).
+  let compareWith = $state<string | null>(null);
+  $effect(() => {
+    if (compareWith && (compareWith === editor.asset?.id || layout === 'stacked')) compareWith = null;
+  });
+  // Photos picked in the filmstrip (Ctrl/Cmd-click, Shift-click, long press): stars, flags and
+  // Sync Settings act on them.
+  let selection = $state<string[]>([]);
+  // Sync Settings is choosing what to sync onto these photos.
+  let syncFor = $state<string[] | null>(null);
+  // Stars, pick and reject of the open photo (shown in the title line).
+  const flagsText = $derived(editor.asset ? factsText(factsOf(editor.asset.id)) : '');
   // What the culler decided for this photo (shown in the title line).
   let cullInfo = $state<CullInfo | null>(null);
   // The stack window is open on the stack of this photo.
@@ -162,73 +180,60 @@
     // Not passive: Ctrl + wheel must not also zoom the browser page.
     stage.addEventListener('wheel', onWheel, { passive: false });
     editor.load(canvas);
+    // Unsaved changes stay as a draft (drafts/), so leaving never asks. Only a save still running,
+    // or edits from the last moments not stored yet, make the browser ask.
     const beforeUnload = (e: BeforeUnloadEvent) => {
-      if (!discarding && (editor.dirty || editor.saving)) e.preventDefault();
+      if (unloading) return;
+      const late = editor.draftDue || drafts.pending > 0;
+      void editor.keepDraft();
+      if (editor.saving || late) e.preventDefault();
+    };
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') void editor.keepDraft();
     };
     addEventListener('beforeunload', beforeUnload);
+    addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onHide);
     addEventListener('popstate', onPopState);
     return () => {
       ro.disconnect();
       stage.removeEventListener('wheel', onWheel);
       removeEventListener('beforeunload', beforeUnload);
+      removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onHide);
       removeEventListener('popstate', onPopState);
     };
   });
 
-  // Leaving the photo (or this edit of it) with unsaved changes asks first: Yes saves, No
-  // discards, Cancel stays. go: what happens after the answer (another photo or a virtual copy
-  // opens in this page, or the page goes back to Immich). unload: it leaves the page, so the
-  // browser's own "leave page?" question mustn't ask again.
-  let leaving = $state<{ go: () => unknown; unload: boolean } | null>(null);
-  let leaveSaving = $state(false);
-  let discarding = false;
+  /** The page is being left on purpose, with the draft stored: the browser mustn't ask. */
+  let unloading = false;
 
   /** Back to Immich. The target is a function: after saving, it points at the new render. */
   async function toImmich(target: () => string) {
     await editor.waitForRender();
+    unloading = true;
     location.href = target();
   }
 
-  function leave(go: () => unknown, unload: boolean) {
-    if (!editor.dirty) void go();
-    else leaving = { go, unload };
-  }
-
-  async function leaveSave() {
-    const l = leaving;
-    if (!l) return;
-    leaveSaving = true;
-    const ok = await editor.save();
-    leaveSaving = false;
-    leaving = null;
-    // A failed save keeps the editor open; the error is shown.
-    if (ok) await l.go();
-  }
-
-  function leaveDiscard() {
-    const l = leaving;
-    leaving = null;
-    if (!l) return;
-    if (l.unload) discarding = true;
-    void l.go();
-  }
-
-  /** The original edit (null) or a virtual copy of this RAW, asking first about unsaved changes. */
+  /** The original edit (null) or a virtual copy of this RAW; the edit left keeps its draft. */
   function switchEdit(copyId: string | null) {
-    leave(() => editor.openEdit(copyId), false);
+    void editor.openEdit(copyId);
   }
 
-  function goBack() {
-    leave(() => toImmich(() => editor.backUrl()), true);
+  async function goBack() {
+    await editor.keepDraft();
+    await toImmich(() => editor.backUrl());
   }
 
-  /** Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again. */
-  function openAsset(id: string) {
+  /**
+   * Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again.
+   * The photo left keeps its unsaved changes as a draft.
+   */
+  function openAsset(id: string, asset?: AssetResponseDto) {
     if (id === editor.asset?.id) return;
-    leave(() => {
-      stackFor = null;
-      return editor.switchPhoto(id);
-    }, false);
+    stackFor = null;
+    // The filmstrip's look of it shows at once (looks.ts).
+    void editor.switchPhoto(id, 'push', looks.hint(id, asset));
   }
 
   /** Back and Forward between photos opened in this page. */
@@ -236,19 +241,19 @@
     const id = new URLSearchParams(location.search).get('asset');
     const open = editor.asset?.id;
     if (!id || id === open) return;
-    if (editor.dirty || editor.saving) {
-      // Not yet: the open photo's address goes back until the question is answered.
+    if (editor.saving) {
+      // Not while saving: the open photo's address goes back.
       if (open) history.pushState(null, '', editor.urlFor(open));
-      if (!editor.saving) openAsset(id);
       return;
     }
     stackFor = null;
-    void editor.switchPhoto(id, 'none');
+    void editor.switchPhoto(id, 'none', looks.hint(id));
   }
 
   /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
   function afterCurrentDeleted(kept: StackFrame) {
-    discarding = true;
+    editor.discardDraft();
+    unloading = true;
     if (kept.raw) {
       location.href = editor.urlFor(kept.raw.id);
       return;
@@ -270,11 +275,21 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving || stackFor) return;
-    if (editor.status !== 'ready' || editor.saving) return;
+    if (isTyping(e.target) || copyOpen || syncFor || editor.dngDialog || editor.exportDialog || stackFor) return;
+    if (e.key === 'Escape' && selection.length) {
+      selection = [];
+      return;
+    }
+    if (editor.saving) return;
+    if (editor.status !== 'ready') {
+      if (editor.status === 'loading' || editor.status === 'error') onKeyWhileOpening(e);
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     const onRange = (e.target as HTMLElement | null)?.tagName === 'INPUT';
+    if (flagKey(e)) return;
+    if (!mod && !e.altKey && compareKey(e, key, onRange)) return;
     if (mod && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) editor.redo();
@@ -363,12 +378,78 @@
     } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onRange) {
       const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
       if (id) openAsset(id);
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !onRange) {
+      e.preventDefault();
+      const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
+      if (id) openAsset(id);
     } else if (e.key === 'Escape') {
       if (editor.maskDraft) editor.cancelMaskDraft();
       else if (editor.tool !== 'edit') editor.setTool('edit');
       else if (editor.zoom.on) editor.setZoom(false);
       else goBack();
     }
+  }
+
+  /** While a photo opens (or failed to): moving on to another photo, its flags, and back to Immich. */
+  function onKeyWhileOpening(e: KeyboardEvent) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (flagKey(e)) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
+      if (id) openAsset(id);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
+      if (id) openAsset(id);
+    } else if (e.key === 'Escape') {
+      goBack();
+    }
+  }
+
+  /**
+   * C opens and closes Compare; while it is open, ← → show another photo and Enter opens it.
+   * True when the key was used.
+   */
+  function compareKey(e: KeyboardEvent, key: string, onRange: boolean): boolean {
+    const open = editor.asset?.id;
+    if (!open || layout === 'stacked' || editor.tool !== 'edit') return false;
+    if (!compareWith) {
+      if (key !== 'c') return false;
+      compareWith = compareCandidate(neighbours, open, null, 1);
+      return true;
+    }
+    if (key === 'c' || e.key === 'Escape') {
+      compareWith = null;
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onRange) {
+      compareWith = compareCandidate(neighbours, open, compareWith, e.key === 'ArrowLeft' ? -1 : 1);
+    } else if (e.key === 'Enter') {
+      const id = compareWith;
+      compareWith = null;
+      openAsset(id);
+    } else {
+      return false;
+    }
+    e.preventDefault();
+    return true;
+  }
+
+  /**
+   * 0-5 (stars), P (pick), X (reject; in the crop tool it turns the crop), U (neither) on the
+   * selected photos' shots, else the open photo's. True when the key was one of them.
+   */
+  function flagKey(e: KeyboardEvent): boolean {
+    const id = editor.asset?.id;
+    if (!id || editor.readOnly || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const k = e.key.toLowerCase();
+    let action: FlagAction | null = null;
+    if (/^[0-5]$/.test(e.key)) action = { kind: 'rate', rating: Number(e.key) };
+    else if (k === 'p') action = { kind: 'pick' };
+    else if (k === 'x' && editor.tool !== 'crop') action = { kind: 'reject' };
+    else if (k === 'u') action = { kind: 'clear' };
+    if (!action) return false;
+    e.preventDefault();
+    void flag(selection.length ? [...selection] : [id], action);
+    return true;
   }
 
   // ------------------------------------------------------- view: tap / double-tap / pan
@@ -515,7 +596,12 @@
           {#if editor.fullStatus === 'decoding'}· decoding full resolution{fullLeft >= 1500 ? ` (about ${Math.round(fullLeft / 1000)} s)` : ''}…{/if}
           {#if editor.readOnly}· view only{/if}
           {#if editor.recipe.render && !editor.dirty}· saved{/if}
-          {#if editor.dirty}· unsaved changes{/if}
+          {#if editor.dirty}
+            · unsaved changes
+            {#if !editor.readOnly}<button class="discard" onclick={() => editor.discardDraft()} title="Back to the saved edit; the draft kept in this browser goes">Discard</button>{/if}
+          {/if}
+          {#if flagsText}<span class="flags" class:rejected={flagsText.startsWith('rejected')}>· {flagsText}</span>{/if}
+          {#if flagStatus.error}<span class="cull rejected" title={flagStatus.error}>· {flagStatus.error}</span>{/if}
           {#if cullText}
             {#if (cullInfo?.groupSize ?? 0) > 1}
               <button class="cull" class:rejected={cullInfo?.role === 'rejected'} onclick={() => (stackFor = editor.asset?.id ?? null)} title="Compare the photos of this stack">· {cullText}</button>
@@ -609,6 +695,7 @@
   {/if}
 
   <section class="center">
+    <div class="views">
     <main class="stage" bind:this={stage}>
       <div
         class="frame"
@@ -695,7 +782,16 @@
         </div>
       {/if}
 
-      {#if editor.sidecarOffer}
+      {#if editor.draftConflict}
+        <div class="banner">
+          <div>
+            <strong>This draft is older than the saved edit.</strong>
+            Your unsaved changes from {new Date(editor.draftConflict.at).toLocaleString()} were kept in this browser; the edit was saved again since (in another tab or browser).
+          </div>
+          <button class="primary" onclick={() => editor.keepOlderDraft()}>Keep draft</button>
+          <button onclick={() => editor.discardDraft()}>Use saved</button>
+        </div>
+      {:else if editor.sidecarOffer}
         <div class="banner">
           <div>
             <strong>Lightroom settings found.</strong>
@@ -743,18 +839,26 @@
         </div>
       {/if}
     </main>
+    {#if compareWith && editor.status === 'ready'}
+      <CompareView candidateId={compareWith} name={looks.hint(compareWith).asset?.originalFileName ?? ''} zoom={editor.zoom} frame={editor.frame} />
+    {/if}
+    </div>
     <!-- Stays while the next photo loads, so it keeps its place and its list. -->
     {#if editor.asset && editor.status !== 'auth'}
       <Filmstrip
         ctx={editor.ctx}
         current={editor.asset}
         onSelect={openAsset}
-        onNeighbours={(prev, next, nearby) => (neighbours = { prev, next, nearby })}
+        onNeighbours={(n) => (neighbours = n)}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
         bind:stackFor
         unsaved={editor.dirty}
         onCurrentDeleted={afterCurrentDeleted}
+        onSaveDrafts={editor.readOnly ? undefined : (ids) => void editor.saveDrafts(ids)}
+        currentRenderId={editor.recipe.render?.assetId ?? null}
+        bind:selected={selection}
+        onSync={editor.readOnly ? undefined : (ids) => (syncFor = ids)}
         startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
@@ -812,7 +916,11 @@
             <div><kbd>W</kbd> WB picker</div>
             <div><kbd>Z</kbd> / double-click: 1:1</div>
             <div><kbd>Ctrl</kbd>+wheel: zoom</div>
-            <div><kbd>←</kbd><kbd>→</kbd> filmstrip</div>
+            <div><kbd>←</kbd><kbd>→</kbd> filmstrip, <kbd>↑</kbd><kbd>↓</kbd> stacks</div>
+            <div><kbd>0</kbd>–<kbd>5</kbd> stars</div>
+            <div><kbd>P</kbd> pick, <kbd>X</kbd> reject, <kbd>U</kbd> neither</div>
+            <div><kbd>Ctrl</kbd>/<kbd>⇧</kbd>+click: select in filmstrip</div>
+            <div><kbd>C</kbd> compare</div>
             <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
             <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
             <div><kbd>Ctrl</kbd>+<kbd>'</kbd> virtual copy</div>
@@ -840,8 +948,18 @@
   <BatchExportDialog onClose={() => (editor.exportDialog = null)} />
 {/if}
 
-{#if leaving}
-  <UnsavedDialog fileName={editor.asset?.originalFileName ?? 'This photo'} busy={leaveSaving} onSave={leaveSave} onDiscard={leaveDiscard} onCancel={() => (leaving = null)} />
+{#if syncFor}
+  <CopySettingsDialog
+    title="Sync Settings"
+    confirmLabel="Sync"
+    initial={DEFAULT_GROUPS}
+    onConfirm={(groups) => {
+      const ids = syncFor;
+      syncFor = null;
+      if (ids) void editor.syncSettings(ids, groups);
+    }}
+    onCancel={() => (syncFor = null)}
+  />
 {/if}
 
 {#if copyOpen}
@@ -898,6 +1016,24 @@
   .cull.rejected,
   button.cull.rejected:hover {
     color: var(--danger);
+  }
+  .flags {
+    color: #ffd54a;
+  }
+  .flags.rejected {
+    color: var(--danger);
+  }
+  button.discard {
+    background: none;
+    border: none;
+    padding: 0 0 0 4px;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  button.discard:hover {
+    color: var(--text-bright);
   }
   .sub {
     color: var(--text-dim);
@@ -1035,9 +1171,16 @@
     min-width: 0;
     min-height: 0;
   }
+  /* The photo, and Compare's photo next to it. */
+  .views {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   .stage {
     position: relative;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     background: var(--bg-view);
     display: flex;

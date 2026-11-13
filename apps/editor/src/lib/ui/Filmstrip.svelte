@@ -2,12 +2,21 @@
   // Filmstrip of the RAWs around the current one (same album, person or day). With the culler
   // service installed it also shows its stacks: the photos of a stack sit together, best first,
   // each with a badge saying why it lost. A stack's number opens the stack window.
-  import type { AssetResponseDto } from '@immich/sdk';
+  // Each thumbnail shows the photo as edited (its draft, else its saved JPEG) with its stars, pick,
+  // reject and edit marks; the filters leave photos out of the strip and of ← → ↑ ↓.
+  import { getAllTags, getAssetInfo, type AssetResponseDto } from '@immich/sdk';
   import { untrack } from 'svelte';
   import { apiUrl, authHeaders, hasApiKey } from '../immich/api.ts';
-  import { captureTime, loadFilmstrip } from '../immich/context.ts';
+  import { captureTime, loadFilmstrip, loadTagged } from '../immich/context.ts';
+  import { editStates } from '../immich/edit-state.ts';
+  import { factsOf, noteFacts, setTagRoot, currentTagRoot } from '../immich/photo-facts.svelte.ts';
+  import { rejectTagIds } from '../immich/shot-flags.ts';
+  import { NO_FILTER, factBadges, filterActive, filterStrip, normalizeFilter, stripNeighbours, type Neighbours, type StripFilter } from '../immich/strip-view.ts';
+  import { drafts } from '../drafts/drafts.svelte.ts';
   import { arrangeGroups, badgeFor, tooltipFor } from '../immich/cull-view.ts';
   import { cullerStatus, lookupCull, makeBest, waitForRun, type CullInfo, type CullerStatus } from '../immich/culler.ts';
+  import { looks } from '../immich/looks.ts';
+  import { draftPhotos } from '../drafts/drafts.svelte.ts';
   import type { StackFrame } from '../immich/stack-view.ts';
   import CullPanel from './CullPanel.svelte';
   import StackViewer from './StackViewer.svelte';
@@ -15,9 +24,10 @@
   interface Props {
     ctx: string | null;
     current: AssetResponseDto;
-    onSelect: (id: string) => void;
-    /** prev, next: for ← and →. nearby: the photos to get ready, nearest first (next, previous, then two either way). */
-    onNeighbours?: (prev: string | null, next: string | null, nearby: string[]) => void;
+    /** `asset`: the photo's info from the filmstrip's list, when it has it. */
+    onSelect: (id: string, asset?: AssetResponseDto) => void;
+    /** Where ← → ↑ ↓ go, and the photos to get ready (strip-view.ts). */
+    onNeighbours?: (n: Neighbours) => void;
     /** The user may change stacks (owner of the photo). */
     canCull?: boolean;
     /** What the culler decided for the photo being edited. */
@@ -30,6 +40,14 @@
     unsaved?: boolean;
     /** "Delete others" in the stack window moved the photo being edited to the trash. */
     onCurrentDeleted?: (kept: StackFrame) => void;
+    /** Saves the drafts of these photos to Immich (absent: the user can't save here). */
+    onSaveDrafts?: (assetIds: Set<string>) => void;
+    /** The saved JPEG of the photo being edited (its thumbnail follows a save). */
+    currentRenderId?: string | null;
+    /** Photos picked with Ctrl/Cmd-click, Shift-click or a long press (stars, flags and sync act on them). */
+    selected?: string[];
+    /** Sync Settings onto these photos (absent: the user can't edit here). */
+    onSync?: (assetIds: string[]) => void;
   }
 
   let {
@@ -43,10 +61,30 @@
     stackFor = $bindable(null),
     unsaved = false,
     onCurrentDeleted,
+    onSaveDrafts,
+    currentRenderId = null,
+    selected = $bindable([]),
+    onSync,
   }: Props = $props();
 
   const COLLAPSED_KEY = 'raw-editor.filmstrip.collapsed';
   const STACKS_KEY = 'raw-editor.filmstrip.stacksCollapsed';
+  const FILTER_KEY = 'raw-editor.filmstrip.filter';
+  const HEIGHT_KEY = 'raw-editor.filmstrip.height';
+  const readJson = (key: string): unknown => {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? 'null');
+    } catch {
+      return null;
+    }
+  };
+  const writeJson = (key: string, v: unknown) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(v));
+    } catch {
+      // storage blocked: only this page remembers it
+    }
+  };
   const readFlag = (key: string, fallback = false) => {
     try {
       const v = localStorage.getItem(key);
@@ -77,8 +115,75 @@
 
   const groupIds = $derived([...new Set(Object.values(cull).map((i) => i.groupId))]);
   const collapsedGroups = $derived(new Set(stacksCollapsed ? groupIds : []));
-  const strip = $derived(arrangeGroups(items, cull, collapsedGroups, current.id));
+  let filter = $state<StripFilter>(normalizeFilter(readJson(FILTER_KEY)));
+  /** The reject tags have been read: they, not the culler's verdict, say what is rejected. */
+  let rejectsKnown = $state(false);
+  const filtering = $derived(filterActive(filter));
+  const arranged = $derived(arrangeGroups(items, cull, collapsedGroups, current.id));
+  /** The cells shown: the arranged strip with the filters applied (the open photo always stays). */
+  const strip = $derived(filterStrip(arranged, filter, factsOf, current.id));
   const index = $derived(strip.findIndex((s) => s.asset.id === current.id));
+  /** Thumbnail height (px), dragged at the strip's top edge. */
+  let thumbH = $state(Math.min(200, Math.max(48, Number(readJson(HEIGHT_KEY)) || 64)));
+  /** Photos of the filmstrip with a draft, the open one also with changes not in its draft yet. */
+  const withDrafts = $derived(new Set(items.filter((a) => draftPhotos.has(a.id) || (a.id === current.id && unsaved)).map((a) => a.id)));
+  /** What Save drafts saves: the selected photos' drafts, else every draft in the filmstrip. */
+  const toSave = $derived(selected.length ? new Set(selected.filter((id) => withDrafts.has(id))) : withDrafts);
+
+  // ---------------------------------------------------------------- selection
+  /** Where a Shift-click range starts. */
+  let anchor: string | null = null;
+  /** Touch: after a long press, taps add and remove photos instead of opening them. */
+  let selecting = $state(false);
+  let pressTimer: ReturnType<typeof setTimeout> | null = null;
+  let pressed = false;
+
+  $effect(() => {
+    if (!selected.length) selecting = false;
+  });
+
+  function toggleSelected(id: string) {
+    // The first pick also takes the open photo, as the photo its settings come from.
+    const base = selected.length ? selected : [current.id];
+    selected = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+    anchor = id;
+  }
+
+  function selectRange(to: string) {
+    const ids = strip.map((s) => s.asset.id);
+    const from = ids.indexOf(anchor ?? current.id);
+    const at = ids.indexOf(to);
+    if (from < 0 || at < 0) return;
+    selected = ids.slice(Math.min(from, at), Math.max(from, at) + 1);
+  }
+
+  function clickCell(e: MouseEvent, a: AssetResponseDto) {
+    if (pressed) {
+      pressed = false;
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || selecting) return toggleSelected(a.id);
+    if (e.shiftKey) return selectRange(a.id);
+    selected = [];
+    anchor = a.id;
+    if (a.id !== current.id) onSelect(a.id, $state.snapshot(a) as AssetResponseDto);
+  }
+
+  /** A long press on a touch screen starts picking photos. */
+  function pressStart(e: PointerEvent, id: string) {
+    if (e.pointerType !== 'touch') return;
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      pressed = true;
+      selecting = true;
+      toggleSelected(id);
+    }, 500);
+  }
+
+  function pressEnd() {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = null;
+  }
 
   // Load once per context; reload only if the current asset is not in the list.
   $effect(() => {
@@ -93,15 +198,29 @@
       if (cancelled) return;
       items = list;
       loading = false;
-      void refreshCull(list);
+      for (const a of list) noteFacts(a.id, { rating: a.exifInfo?.rating && a.exifInfo.rating > 0 ? a.exifInfo.rating : null, favorite: a.isFavorite });
+      void refreshCull(list).then(() => loadRejected(c, cur, list));
     });
     return () => {
       cancelled = true;
     };
   });
 
+  /** Which photos carry a reject tag (the culler's or a manual one). */
+  async function loadRejected(c: string | null, cur: AssetResponseDto, list: AssetResponseDto[]) {
+    try {
+      const tagIds = rejectTagIds(currentTagRoot(), await getAllTags());
+      const rejected = await loadTagged(c, cur, tagIds);
+      for (const a of list) noteFacts(a.id, { rejected: rejected.has(a.id) });
+      rejectsKnown = true;
+    } catch (e) {
+      console.warn('Filmstrip: could not read the reject tags', e);
+    }
+  }
+
   async function refreshCull(list = items) {
     culler = await cullerStatus();
+    setTagRoot(culler?.tagRoot);
     if (!culler) return;
     try {
       cull = (await lookupCull(list.map((a) => a.id))) ?? {};
@@ -111,12 +230,56 @@
   }
 
   $effect(() => {
+    const n = stripNeighbours(strip, index);
+    // The open photo's stack, best first, also when it is collapsed (compare steps through it).
+    const gid = cull[current.id]?.groupId;
+    const rank = (id: string) => cull[id]?.rank ?? Number.MAX_SAFE_INTEGER;
+    const stack = gid ? items.filter((a) => cull[a.id]?.groupId === gid).map((a) => a.id).sort((x, y) => rank(x) - rank(y)) : [];
+    untrack(() => onNeighbours?.({ ...n, stack }));
+  });
+
+  // Filtering by edits needs to know them for every photo, not just the ones scrolled to.
+  $effect(() => {
+    if (filter.edits === 'edited' || filter.edits === 'unedited') for (const a of items) untrack(() => void learnEdited(a.id));
+  });
+
+  function setFilter(patch: Partial<StripFilter>) {
+    filter = { ...filter, ...patch };
+    writeJson(FILTER_KEY, filter);
+  }
+
+  async function learnEdited(id: string): Promise<string | null> {
+    const state = await editStates.get(id);
+    noteFacts(id, { edited: !!state.stored });
+    return state.renderId;
+  }
+
+  // The strip's top edge sets the thumbnails' height.
+  function resize(e: PointerEvent) {
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
+    const y0 = e.clientY;
+    const h0 = thumbH;
+    const move = (m: PointerEvent) => (thumbH = Math.min(200, Math.max(48, Math.round(h0 + y0 - m.clientY))));
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      writeJson(HEIGHT_KEY, thumbH);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+  }
+
+  // What the photos around this one and the rest of its stack look like gets ready (looks.ts),
+  // so switching to one of them shows it at once, also to the photos of a collapsed stack.
+  $effect(() => {
     const i = index;
-    const at = (k: number) => (i >= 0 && k >= 0 && k < strip.length ? strip[k]!.asset.id : null);
-    const prev = at(i - 1);
-    const next = at(i + 1);
-    const nearby = [next, prev, at(i + 2), at(i - 2)].filter((id): id is string => !!id);
-    untrack(() => onNeighbours?.(prev, next, nearby));
+    if (i < 0) return;
+    const near = [i + 1, i - 1, i + 2, i - 2].map((k) => strip[k]?.asset).filter((a): a is AssetResponseDto => !!a);
+    const gid = cull[current.id]?.groupId;
+    const mates = gid ? items.filter((a) => a.id !== current.id && cull[a.id]?.groupId === gid) : [];
+    const wanted = new Map([...near, ...mates].map((a) => [a.id, $state.snapshot(a) as AssetResponseDto]));
+    untrack(() => looks.prefetch([...wanted.values()]));
   });
 
   $effect(() => {
@@ -164,40 +327,67 @@
 
   const thumbUrl = (id: string) => apiUrl(`/assets/${id}/thumbnail?size=thumbnail`);
 
-  // Session cookie: a plain lazy <img>. API key: <img> can't send the header, so fetch the
-  // thumbnail as a blob once it scrolls into view.
-  function thumb(node: HTMLImageElement, id: string) {
+  /** Waits (up to ~20 s) until Immich has made the asset's thumbnail; false when it doesn't, or `gone()`. */
+  async function thumbnailReady(id: string, gone: () => boolean): Promise<boolean> {
+    for (let i = 0; i < 20 && !gone(); i++) {
+      const info = await getAssetInfo({ id }).catch(() => null);
+      if (!info || info.isTrashed) return false;
+      if (info.thumbhash) return true;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return false;
+  }
+
+  /**
+   * The photo as edited, once it scrolls into view: its draft's picture (kept in this browser),
+   * else its saved JPEG's thumbnail, else the RAW's. With an API key <img> can't send the header,
+   * so Immich's thumbnails are fetched as blobs.
+   */
+  function thumb(node: HTMLImageElement, p: { id: string; draft: boolean; render: string | null }) {
     let objectUrl: string | null = null;
     let io: IntersectionObserver | null = null;
-    const load = (assetId: string) => {
-      io?.disconnect();
+    let wanted = p;
+    /** What the picture is of: the strip passes a new object on every redraw. */
+    let shownFor: typeof p | null = null;
+    const show = (url: string, own: boolean) => {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
-      objectUrl = null;
-      if (!hasApiKey()) {
-        node.loading = 'lazy';
-        node.src = thumbUrl(assetId);
-        return;
-      }
+      objectUrl = own ? url : null;
+      node.src = url;
+    };
+    const fill = async (q: typeof p) => {
+      const draft = q.draft ? await drafts.get(q.id, null).catch(() => null) : null;
+      if (wanted !== q) return;
+      if (draft?.thumb) return show(URL.createObjectURL(draft.thumb), true);
+      const render = q.render ?? (await learnEdited(q.id));
+      // A JPEG saved a moment ago has no thumbnail yet: the RAW's until it has.
+      const id = render && (await thumbnailReady(render, () => wanted !== q)) ? render : q.id;
+      if (wanted !== q) return;
+      if (!hasApiKey()) return show(thumbUrl(id), false);
+      const b = await fetch(thumbUrl(id), { headers: authHeaders() })
+        .then((r) => (r.ok ? r.blob() : null))
+        .catch(() => null);
+      if (b && wanted === q) show(URL.createObjectURL(b), true);
+    };
+    const load = (q: typeof p) => {
+      wanted = q;
+      shownFor = q;
+      io?.disconnect();
       io = new IntersectionObserver(
         (entries) => {
           if (!entries.some((e) => e.isIntersecting)) return;
           io?.disconnect();
-          fetch(thumbUrl(assetId), { headers: authHeaders() })
-            .then((r) => (r.ok ? r.blob() : null))
-            .then((b) => {
-              if (!b) return;
-              objectUrl = URL.createObjectURL(b);
-              node.src = objectUrl;
-            })
-            .catch(() => {});
+          void fill(q);
         },
         { root: node.closest('.strip'), rootMargin: '0px 300px' },
       );
       io.observe(node);
     };
-    load(id);
+    load(p);
     return {
-      update: load,
+      update: (q: typeof p) => {
+        if (shownFor && q.id === shownFor.id && q.draft === shownFor.draft && q.render === shownFor.render) return;
+        load(q);
+      },
       destroy() {
         io?.disconnect();
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -233,35 +423,78 @@
         <button class="headbtn" class:active={panelOpen} onclick={() => (panelOpen = !panelOpen)} title="Stack similar photos and pick the best of each">Auto-stack…</button>
       {/if}
     {/if}
+    {#if selected.length && !collapsed}
+      <span class="sel">{selected.length} selected</span>
+      {#if onSync && selected.some((id) => id !== current.id)}
+        <button class="headbtn" onclick={() => onSync([...selected])} title="Put settings of this photo on the selected photos, as drafts">Sync settings…</button>
+      {/if}
+      <button class="chip" onclick={() => (selected = [])} title="Select none (Esc)" aria-label="Select none">✕</button>
+    {/if}
+    {#if onSaveDrafts && toSave.size && !collapsed}
+      <button class="headbtn" onclick={() => onSaveDrafts(toSave)} title="Render the drafts of these photos and save them to Immich, one photo at a time">
+        Save {toSave.size} {toSave.size === 1 ? 'draft' : 'drafts'}
+      </button>
+    {/if}
     {#if cullError}<span class="err" title={cullError}>{cullError}</span>{/if}
+    {#if !collapsed}
+      <span class="filters" class:on={filtering}>
+        <select aria-label="Stars at least" title="Only photos with at least this many stars" value={filter.minRating} onchange={(e) => setFilter({ minRating: Number(e.currentTarget.value) })}>
+          <option value={0}>★ any</option>
+          {#each [1, 2, 3, 4, 5] as n (n)}<option value={n}>★ {n}+</option>{/each}
+        </select>
+        <button class="chip" class:active={filter.favorites} aria-pressed={filter.favorites} onclick={() => setFilter({ favorites: !filter.favorites })} title="Only picks (favourites)">♥</button>
+        <button class="chip" class:active={filter.hideRejected} aria-pressed={filter.hideRejected} onclick={() => setFilter({ hideRejected: !filter.hideRejected })} title="Hide rejected photos">✕</button>
+        <select aria-label="Edits" title="By edit" value={filter.edits} onchange={(e) => setFilter({ edits: e.currentTarget.value as StripFilter['edits'] })}>
+          <option value="any">all</option>
+          <option value="edited">edited</option>
+          <option value="unedited">not edited</option>
+          <option value="draft">drafts</option>
+        </select>
+        {#if filtering}<button class="chip" onclick={() => setFilter(NO_FILTER)} title="Show every photo again">clear</button>{/if}
+      </span>
+    {/if}
     <span class="count">
-      {#if loading}loading…{:else if index >= 0}{index + 1} of {strip.length}{:else}{strip.length}{/if}
+      {#if loading}loading…{:else if index >= 0}{index + 1} of {strip.length}{:else}{strip.length}{/if}{#if filtering && !loading}&nbsp;(of {arranged.length}){/if}
     </span>
     {#if panelOpen}
       <CullPanel {ctx} {current} status={culler} onClose={() => (panelOpen = false)} onChanged={() => refreshCull()} />
     {/if}
   </div>
   {#if !collapsed}
-    <div class="strip" role="listbox" aria-label="Photos">
+    <div class="resize" role="separator" aria-orientation="horizontal" aria-label="Thumbnail size" title="Drag to make the thumbnails bigger or smaller" onpointerdown={resize}></div>
+    <div class="strip" role="listbox" aria-label="Photos" style:--thumb-h="{thumbH}px">
       {#each strip as s (s.asset.id)}
         {@const a = s.asset}
-        {@const badge = badgeFor(s.info)}
+        {@const f = factsOf(a.id)}
+        {@const culled = badgeFor(s.info)}
+        <!-- A reject taken off (U, P, or in Immich) shows as such before the culler runs again. -->
+        {@const badge = culled?.tone === 'rejected' && rejectsKnown && !f.rejected ? null : culled}
         {@const g = s.group}
         <div class="slot" class:grouped={!!g} class:gfirst={g?.first} class:glast={g?.last} class:busy={g && busyGroup === g.id}>
           <button
             class="cell"
             class:current={a.id === current.id}
-            class:rejected={badge?.tone === 'rejected'}
+            class:selected={selected.includes(a.id)}
+            class:rejected={rejectsKnown ? f.rejected : badge?.tone === 'rejected'}
             role="option"
             aria-selected={a.id === current.id}
             title={tooltipFor(label(a), s.info)}
-            onclick={() => a.id !== current.id && onSelect(a.id)}
+            onclick={(e) => clickCell(e, a)}
+            onpointerdown={(e) => pressStart(e, a.id)}
+            onpointerup={pressEnd}
+            onpointerleave={pressEnd}
+            onpointercancel={pressEnd}
             use:centreIf={a.id === current.id}
           >
-            <img alt={a.originalFileName} use:thumb={a.id} draggable="false" />
+            <img alt={a.originalFileName} use:thumb={{ id: a.id, draft: f.draft, render: a.id === current.id ? currentRenderId : null }} draggable="false" />
           </button>
           {#if badge}
             <span class="badge {badge.tone}" aria-label={badge.label}>{badge.icon}</span>
+          {/if}
+          {#if factBadges(f).length}
+            <span class="facts">
+              {#each factBadges(f) as b (b.tone)}<span class="fact {b.tone}" title={b.label} aria-label={b.label}>{b.icon}</span>{/each}
+            </span>
           {/if}
           {#if g?.first}
             <button class="gcount" onclick={() => (stackFor = a.id)} title={`Compare the ${g.size} photos of this stack`}>
@@ -353,7 +586,7 @@
     overflow-x: auto;
     overflow-y: hidden;
     padding: 2px 8px 8px;
-    height: 76px;
+    height: calc(var(--thumb-h, 64px) + 12px);
     scrollbar-width: thin;
   }
   .slot {
@@ -385,8 +618,8 @@
     opacity: 0.5;
   }
   .cell {
-    width: 84px;
-    height: 64px;
+    width: calc(var(--thumb-h, 64px) * 1.31);
+    height: var(--thumb-h, 64px);
     padding: 2px;
     background: #1b1b1b;
     border: 1px solid transparent;
@@ -405,6 +638,16 @@
     border-color: var(--accent);
     background: #2a2f38;
   }
+  .cell.selected {
+    opacity: 1;
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .sel {
+    font-size: 11px;
+    color: var(--text-bright);
+    margin-left: 6px;
+  }
   .cell.rejected img {
     filter: saturate(0.5) brightness(0.8);
   }
@@ -413,6 +656,8 @@
     max-height: 100%;
     object-fit: contain;
     display: block;
+    /* Clicks go to the cell: the browser's own handling of images (Ctrl-click, dragging) stays out. */
+    pointer-events: none;
   }
   .badge {
     position: absolute;
@@ -440,6 +685,88 @@
   .badge.rejected {
     color: #fff;
     background: rgba(200, 50, 50, 0.85);
+  }
+  .facts {
+    position: absolute;
+    bottom: 3px;
+    left: 3px;
+    display: flex;
+    gap: 2px;
+    pointer-events: none;
+  }
+  .fact {
+    height: 13px;
+    padding: 0 3px;
+    border-radius: 7px;
+    font-size: 9px;
+    line-height: 13px;
+    background: rgba(0, 0, 0, 0.65);
+    color: var(--text);
+  }
+  .fact.rating {
+    color: #ffd54a;
+  }
+  .fact.favorite {
+    color: #ff7a9a;
+  }
+  .fact.rejected {
+    color: #fff;
+    background: rgba(200, 50, 50, 0.85);
+  }
+  .fact.draft {
+    color: #6db3ff;
+  }
+  .fact.edited {
+    color: #b9e6a0;
+  }
+  .filters {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 8px;
+  }
+  .filters select {
+    height: 18px;
+    padding: 0 2px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    border-radius: 3px;
+  }
+  .filters select:hover,
+  .filters select:focus {
+    border-color: var(--line);
+    color: var(--text-bright);
+  }
+  .filters.on {
+    color: var(--accent);
+  }
+  .chip {
+    height: 18px;
+    padding: 0 5px;
+    font-size: 11px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--text-dim);
+  }
+  .chip:hover {
+    color: var(--text-bright);
+    border-color: var(--line);
+  }
+  .chip.active {
+    color: var(--text-bright);
+    border-color: var(--accent);
+  }
+  .resize {
+    height: 5px;
+    margin-top: -3px;
+    cursor: ns-resize;
+    touch-action: none;
+  }
+  .resize:hover {
+    background: var(--line);
   }
   .gcount {
     position: absolute;
