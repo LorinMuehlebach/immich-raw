@@ -121,7 +121,7 @@ import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification
 import { hasDecoded, readDecoded, writeDecoded } from '../immich/decoded-cache.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
 import { pinPhoto } from '../immich/photo-cache.ts';
-import { canPrefetch, prefetchPhoto } from '../immich/prefetch.ts';
+import { canPrefetch, decodeNeighbour, fetchNeighbour } from '../immich/prefetch.ts';
 import { cacheDng, convertBlocked, replaceWithDng, type DeleteMode, type ReplaceStep } from '../immich/replace.ts';
 import { canEdit, loadRecipe, saveRender, type SaveStep } from '../immich/save.ts';
 import { History, editable, editableJson, type HistoryStep } from './history.ts';
@@ -500,8 +500,15 @@ export class Editor {
   private fileBytes = 0;
   /** Photos next to this one to get ready in the background, and those already done. */
   private prefetchWanted: string[] = [];
-  private prefetchDone = new Set<string>();
-  private prefetchRunning = false;
+  /** Photos whose download was tried, and the checksums of those fetched (to decode next). */
+  private prefetchTried = new Set<string>();
+  private prefetchFetched = new Map<string, string>();
+  private prefetchDecodeTried = new Set<string>();
+  private prefetchMayDecode = false;
+  private fetching = false;
+  private decoding = false;
+  /** The open photo's half-size image is in the cache (or won't be): neighbours come after it. */
+  private decodedKept: Promise<void> = Promise.resolve();
   /** When the download's progress was last shown. */
   private lastBytesShown = 0;
 
@@ -738,39 +745,87 @@ export class Editor {
 
   /** Keeps the half-size image for the next open of this photo, once the browser has a moment. */
   private keepDecoded(checksum: string, session: RawSession): void {
-    const write = () => {
-      const done = startMeasure('decoded cache write');
-      void writeDecoded(checksum, session.meta, session.half).then(done);
-    };
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(write, { timeout: 2000 });
-    else setTimeout(write, 500);
+    this.decodedKept = new Promise<void>((resolve) => {
+      const write = () => {
+        const done = startMeasure('decoded cache write');
+        void writeDecoded(checksum, session.meta, session.half).then(done).finally(resolve);
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(write, { timeout: 2000 });
+      else setTimeout(write, 500);
+    });
   }
 
   /**
-   * Gets the photos next to this one (the filmstrip's neighbours) ready to open, one at a time in
-   * the background: their originals and half-size images go into this browser's caches.
+   * Gets the photos around this one ready to open, nearest first (`ids`: the filmstrip's next and
+   * previous, then two either way; no further). Their originals download now, one at a time; they
+   * are decoded at half size once `decode` is true (the open photo's full-resolution decode is
+   * done: two decodes at once would slow it down and need more memory).
    */
-  prefetch(ids: (string | null)[]): void {
-    this.prefetchWanted = ids.filter((id): id is string => !!id && id !== this.asset?.id);
-    if (this.prefetchRunning || !canPrefetch()) return;
-    this.prefetchRunning = true;
-    void this.runPrefetch().finally(() => (this.prefetchRunning = false));
+  prefetch(ids: string[], decode: boolean): void {
+    this.prefetchWanted = ids.filter((id) => id !== this.asset?.id).slice(0, 4);
+    if (decode) this.prefetchMayDecode = true;
+    if (!canPrefetch()) return;
+    this.fetchMore();
+    this.decodeNeighbours();
   }
 
-  private async runPrefetch(): Promise<void> {
+  private fetchMore(): void {
+    if (this.fetching) return;
+    this.fetching = true;
+    void this.fetchNeighbours().finally(() => {
+      this.fetching = false;
+      // Photos asked for while the last one was finishing.
+      if (this.prefetchWanted.some((x) => !this.prefetchTried.has(x))) this.fetchMore();
+    });
+  }
+
+  /** Waits while a save runs: it renders at full size and needs the memory and the processor. */
+  private async notWhileSaving(): Promise<void> {
+    while (this.saving) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  private async fetchNeighbours(): Promise<void> {
+    await this.decodedKept;
     for (;;) {
-      const id = this.prefetchWanted.find((x) => !this.prefetchDone.has(x));
+      const id = this.prefetchWanted.find((x) => !this.prefetchTried.has(x));
       if (!id) return;
-      this.prefetchDone.add(id);
-      // A save renders at full size: leave it the memory and the processor.
-      while (this.saving) await new Promise((resolve) => setTimeout(resolve, 1000));
-      const done = startMeasure('prefetch');
+      this.prefetchTried.add(id);
+      await this.notWhileSaving();
+      const done = startMeasure('prefetch download');
       try {
-        if ((await prefetchPhoto(id)) === 'done') done();
+        const checksum = await fetchNeighbour(id);
+        if (checksum) {
+          done();
+          this.prefetchFetched.set(id, checksum);
+          this.decodeNeighbours();
+        }
       } catch (e) {
-        console.warn('Could not get the next photo ready', e);
+        console.warn('Could not download a photo nearby ahead of time', e);
       }
     }
+  }
+
+  /** Decodes the fetched photos, nearest first, one at a time (once that is allowed). */
+  private decodeNeighbours(): void {
+    if (this.decoding || !this.prefetchMayDecode) return;
+    this.decoding = true;
+    void (async () => {
+      for (;;) {
+        const id = this.prefetchWanted.find((x) => this.prefetchFetched.has(x) && !this.prefetchDecodeTried.has(x));
+        if (!id) return;
+        this.prefetchDecodeTried.add(id);
+        await this.notWhileSaving();
+        const done = startMeasure('prefetch');
+        try {
+          if (await decodeNeighbour(this.prefetchFetched.get(id)!)) done();
+        } catch (e) {
+          console.warn('Could not decode a photo nearby ahead of time', e);
+        }
+      }
+    })().finally(() => {
+      this.decoding = false;
+      if (this.prefetchWanted.some((x) => this.prefetchFetched.has(x) && !this.prefetchDecodeTried.has(x))) this.decodeNeighbours();
+    });
   }
 
   /** Offers the Fujifilm film looks when the photo or its saved edit would use them. */

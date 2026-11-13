@@ -47,7 +47,7 @@
   let stageH = $state(600);
   let apiKey = $state('');
   let copyOpen = $state(false);
-  let neighbours = $state<{ prev: string | null; next: string | null }>({ prev: null, next: null });
+  let neighbours = $state<{ prev: string | null; next: string | null; nearby: string[] }>({ prev: null, next: null, nearby: [] });
   // What the culler decided for this photo (shown in the title line).
   let cullInfo = $state<CullInfo | null>(null);
   // The stack window is open on the stack of this photo.
@@ -60,10 +60,12 @@
     return `${badge.icon} ${badge.label.toLowerCase()}`;
   });
 
-  // Once the full-resolution decode is done, the photos next to this one get ready to open.
+  // The photos around this one get ready to open: their originals download once it shows, and
+  // they are decoded once its full-resolution decode is done.
   $effect(() => {
-    const { prev, next } = neighbours;
-    if (editor.status === 'ready' && (editor.fullStatus === 'ready' || editor.fullStatus === 'error')) untrack(() => editor.prefetch([next, prev]));
+    const ids = neighbours.nearby;
+    const decode = editor.fullStatus === 'ready' || editor.fullStatus === 'error';
+    if (editor.status === 'ready') untrack(() => editor.prefetch(ids, decode));
   });
 
   // The title line counts down to the full-resolution image.
@@ -659,7 +661,7 @@
         ctx={editor.ctx}
         current={editor.asset}
         onSelect={openAsset}
-        onNeighbours={(prev, next) => (neighbours = { prev, next })}
+        onNeighbours={(prev, next, nearby) => (neighbours = { prev, next, nearby })}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
         bind:stackFor

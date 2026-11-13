@@ -1,12 +1,13 @@
-// Gets the photos next to the open one ready to open: their originals and half-size images go
-// into this browser's cache (photo-cache.ts), so moving on to one of them skips the download and
-// the decode. Runs in the background, one photo at a time, and only while the cache has room
-// next to the photos this page keeps.
+// Gets the photos around the open one ready to open: their originals and half-size images go into
+// this browser's cache (photo-cache.ts), so moving on to one of them skips the download and the
+// decode. Two steps per photo, one photo at a time: fetchNeighbour() downloads the original, and
+// decodeNeighbour() decodes it later. A photo is only fetched if it fits in the cache, with its
+// decoded image, next to the photos this page keeps.
 import { getAssetInfo } from '@immich/sdk';
 import { RawSession } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { hasDecoded, writeDecoded } from './decoded-cache.ts';
-import { downloadOriginal, hasOriginal } from './download.ts';
+import { cacheOriginal, downloadUncached, hasOriginal, readCachedOriginal } from './download.ts';
 import { cacheRoom, pinPhoto } from './photo-cache.ts';
 
 interface NetworkInfo {
@@ -15,7 +16,7 @@ interface NetworkInfo {
 }
 
 /**
- * Prefetching needs the caches (HTTPS or localhost) and isn't worth a phone's data plan or memory:
+ * Prefetching needs the cache (HTTPS or localhost) and isn't worth a phone's data plan or memory:
  * not with Data Saver on, on a mobile network, or with less than 4 GB of memory.
  */
 export function canPrefetch(nav: Navigator = navigator, secure = globalThis.isSecureContext): boolean {
@@ -34,27 +35,47 @@ export function decodedBytesGuess(width: number | null | undefined, height: numb
   return Math.round(fileBytes * 1.7);
 }
 
+/** Room set aside for decoded images still to come, by checksum (fetched, not decoded yet). */
+const reserved = new Map<string, number>();
+
 /**
- * Puts one photo's original and half-size image into the cache, unless they are there already or
- * don't fit next to the photos this page keeps. 'full': skipped for lack of room.
+ * Downloads one photo's original into the cache, unless it is there already, the photo isn't a
+ * RAW, or it doesn't fit with its decoded image. The photo's checksum for decodeNeighbour(), or
+ * null when skipped.
  */
-export async function prefetchPhoto(id: string): Promise<'done' | 'full' | 'skipped'> {
+export async function fetchNeighbour(id: string): Promise<string | null> {
   const asset = await getAssetInfo({ id });
-  if (asset.isTrashed || !isRawFilename(asset.originalFileName)) return 'skipped';
+  if (asset.isTrashed || !isRawFilename(asset.originalFileName)) return null;
   const { checksum } = asset;
   const [decoded, original] = await Promise.all([hasDecoded(checksum, true), hasOriginal(checksum, true)]);
+  const fileBytes = asset.exifInfo?.fileSizeInByte || 60e6;
+  const decodedBytes = decoded ? 0 : decodedBytesGuess(asset.exifInfo?.exifImageWidth, asset.exifInfo?.exifImageHeight, fileBytes);
   if (!(decoded && original)) {
-    const fileBytes = asset.exifInfo?.fileSizeInByte || 60e6;
-    const needed = (original ? 0 : fileBytes) + (decoded ? 0 : decodedBytesGuess(asset.exifInfo?.exifImageWidth, asset.exifInfo?.exifImageHeight, fileBytes));
-    if (needed > (await cacheRoom())) return 'full';
+    const pending = [...reserved.values()].reduce((sum, b) => sum + b, 0);
+    if ((original ? 0 : fileBytes) + decodedBytes + pending > (await cacheRoom())) return null;
   }
-  // Kept from now on, so the other neighbour doesn't push this one out.
+  // Kept from now on, so the other neighbours don't push this one out.
   pinPhoto(checksum);
-  if (decoded && original) return 'done';
-  const bytes = await downloadOriginal({ id: asset.id, checksum });
-  if (decoded) return 'done';
-  // A decode of its own, in its own worker, like the editor's; the worker is gone afterwards.
-  const session = await RawSession.open(bytes);
-  await writeDecoded(checksum, session.meta, session.half);
-  return 'done';
+  if (decodedBytes) reserved.set(checksum, decodedBytes);
+  if (!original) {
+    const bytes = await downloadUncached(asset.id);
+    await cacheOriginal(checksum, bytes);
+  }
+  return checksum;
+}
+
+/** Decodes a fetched photo at half size into the cache. False when there was nothing to do. */
+export async function decodeNeighbour(checksum: string): Promise<boolean> {
+  try {
+    if (await hasDecoded(checksum, true)) return false;
+    // Not there when it didn't fit after all: then there is nothing to decode from.
+    const bytes = await readCachedOriginal(checksum);
+    if (!bytes) return false;
+    // A decode of its own, in its own worker, like the editor's; the worker is gone afterwards.
+    const session = await RawSession.open(bytes);
+    await writeDecoded(checksum, session.meta, session.half);
+    return true;
+  } finally {
+    reserved.delete(checksum);
+  }
 }

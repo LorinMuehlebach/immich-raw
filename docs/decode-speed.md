@@ -56,15 +56,21 @@ Two branches, neither merged yet:
 
     **Gain:** a photo opened before shows after 0.84–1.1 s instead of 2.0–3.6 s. The original and
     the kept image are read side by side in 0.2–0.3 s.
-  - **The filmstrip's next and previous photo get ready in the background**
-    (`apps/editor/src/lib/immich/prefetch.ts`).
-    - **What happens:** once the full-resolution decode is done, the editor downloads both
-      neighbours and decodes them at half size into the two caches, one at a time. It waits while a
-      save runs.
+  - **The photos around the open one get ready in the background**
+    (`apps/editor/src/lib/immich/prefetch.ts`): the filmstrip's next and previous photo, then the
+    two after those. No further: 4 photos at most.
+    - **Downloads** start as soon as the photo shows, one at a time, nearest first.
+    - **Half-size decodes** wait until the open photo's full-resolution decode is done. Two decodes
+      at once would slow that one down and need more memory.
+    - **During a save,** both wait.
     - **Skipped:** on plain HTTP (no caches), with Data Saver on, on a mobile network, and when the
       browser reports less than 4 GB of memory.
     - **Only what fits:** a neighbour is fetched only if it fits in the cache next to the photos
-      the page keeps. Its size is estimated from Immich's file size and sensor size.
+      the page keeps, with room set aside for its decoded image. Its size is estimated from
+      Immich's file size and sensor size.
+    - **Compressing the cache doesn't pay.** The RAW files are already compressed. The decoded
+      images shrink 1.5–1.8× with deflate, but unpacking them adds 0.1–0.5 s to every cached open,
+      for 18–28 % more photos in the same space ([spike-results.md](spike-results.md)).
     - **Gain:** → and ← then open the photo from the caches, in 0.84–1.0 s instead of 3.4–4.1 s.
       Getting one 45 MP photo ready took about 3 s in the background.
   - **The loading screen lists the steps:** photo info, the original, the decode and the first

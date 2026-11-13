@@ -16,7 +16,8 @@
     ctx: string | null;
     current: AssetResponseDto;
     onSelect: (id: string) => void;
-    onNeighbours?: (prev: string | null, next: string | null) => void;
+    /** prev, next: for ← and →. nearby: the photos to get ready, nearest first (next, previous, then two either way). */
+    onNeighbours?: (prev: string | null, next: string | null, nearby: string[]) => void;
     /** The user may change stacks (owner of the photo). */
     canCull?: boolean;
     /** What the culler decided for the photo being edited. */
@@ -111,9 +112,11 @@
 
   $effect(() => {
     const i = index;
-    const prev = i > 0 ? strip[i - 1]!.asset.id : null;
-    const next = i >= 0 && i < strip.length - 1 ? strip[i + 1]!.asset.id : null;
-    untrack(() => onNeighbours?.(prev, next));
+    const at = (k: number) => (i >= 0 && k >= 0 && k < strip.length ? strip[k]!.asset.id : null);
+    const prev = at(i - 1);
+    const next = at(i + 1);
+    const nearby = [next, prev, at(i + 2), at(i - 2)].filter((id): id is string => !!id);
+    untrack(() => onNeighbours?.(prev, next, nearby));
   });
 
   $effect(() => {

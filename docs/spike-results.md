@@ -283,6 +283,30 @@ The editor's timings on a reopened or prefetched photo (`immich-raw:*`, medians)
     worker.
   - The editor now compiles once the worker has started unpacking, or, when both files are
     cached, while they are read.
+- **Prefetching four neighbours** (`DSCF7860.RAF`, 26 MP Fuji):
+  - The photo showed at 3.2 s, and its kept image was written by 3.7 s.
+  - The four originals downloaded at 3.7–5.1 s, during the full-resolution decode, which ran until
+    15.7 s.
+  - The four half-size decodes followed, about 2 s each, until 23.7 s.
+  - The cache then held 5 photos, 320 MB.
+- **Compressing the cache** (in the page, after opening the photos; median of one run):
+
+  | File | Size | Read as is | deflate | shuffle + deflate | delta + shuffle + deflate |
+  |---|---|---|---|---|---|
+  | Sony half-size image | 92 MB | 95 ms | 1.21×, 424–516 ms | 1.51×, 620–1119 ms | 1.57×, 572–614 ms |
+  | Canon half-size image | 67 MB | 59 ms | 1.41×, 307–331 ms | 1.82×, 318–325 ms | 1.85×, 324–371 ms |
+  | Fuji half-size image | 39 MB | 89 ms | 1.35×, 169–221 ms | 1.75×, 155–210 ms | 1.73×, 167–186 ms |
+  | The RAW files | 25–86 MB | 27–57 ms | 1.01–1.03× | | |
+
+  Each cell gives how much smaller the file gets, and the time to read and unpack it. The two times
+  in a cell are gzip and deflate-raw, the formats Edge offers in `CompressionStream`.
+  - **Shuffle:** the low bytes stored apart from the high bytes.
+  - **Delta:** each value minus the one a pixel to the left.
+
+  Compressing took 0.8–4 s per image, in the background.
+  - **The RAW files are already compressed.**
+  - **A photo's footprint would shrink only 18–28 %**, because the original stays the same size.
+  - **Every cached open would take 0.1–0.5 s longer.** So the cache stays uncompressed.
 - **Smoke test (`e2e/smoke.mjs`, Sony):** 13/13 passed on both builds.
   - Opening took 5.3 s after and 10.5 s before.
   - Saving took 7.6 s after and 14.0 s before, with the PC short of memory.

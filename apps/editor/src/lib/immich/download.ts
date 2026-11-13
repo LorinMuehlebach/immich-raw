@@ -32,6 +32,11 @@ export function downloadUncached(id: string, onProgress?: OnDownloadProgress): P
   return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress);
 }
 
+/** The original from this browser's cache only, or null. */
+export function readCachedOriginal(checksum: string): Promise<Uint8Array | null> {
+  return readCache(cacheName(checksum));
+}
+
 /** Whether the original is cached in this browser. `touch`: also keep it longer, as if opened. */
 export function hasOriginal(checksum: string, touch = false): Promise<boolean> {
   return originals.has(cacheName(checksum), touch);
