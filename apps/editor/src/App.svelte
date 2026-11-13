@@ -121,9 +121,8 @@
 
   const PAD = VIEW_PAD;
   const zoomed = $derived(editor.zoom.on && editor.tool !== 'crop');
-  const display = $derived.by(() => {
-    if (zoomed) return { w: Math.round(stageW), h: Math.round(stageH) };
-    const aspect = editor.frame.width / editor.frame.height;
+  /** The photo's size on screen at this aspect: as big as fits the stage, with a margin. */
+  function fit(aspect: number): { w: number; h: number } {
     const maxW = Math.max(50, stageW - PAD * 2);
     const maxH = Math.max(50, stageH - PAD * 2);
     let w = maxW;
@@ -133,7 +132,18 @@
       w = h * aspect;
     }
     return { w: Math.round(w), h: Math.round(h) };
+  }
+  const display = $derived(zoomed ? { w: Math.round(stageW), h: Math.round(stageH) } : fit(editor.frame.width / editor.frame.height));
+
+  // While a photo loads, Immich's preview of it takes the photo's place at the same size, so
+  // nothing moves when the photo is ready (unless the edit crops it). Its aspect is known once
+  // it has loaded.
+  let previewAspect = $state<number | null>(null);
+  $effect(() => {
+    void editor.previewUrl;
+    previewAspect = null;
   });
+  const previewBox = $derived(previewAspect ? fit(previewAspect) : null);
 
   const info = $derived(shotSettings(editor.asset?.exifInfo).join('   '));
 
@@ -610,8 +620,23 @@
 
       {#if editor.status === 'loading'}
         <div class="center-msg">
-          {#if editor.previewUrl}<img class="preview" src={editor.previewUrl} alt="" />{/if}
-          <OpenProgress steps={editor.openSteps} fallback={editor.loadingText} />
+          {#if editor.previewUrl}
+            <img
+              class="preview"
+              class:sized={previewBox}
+              src={editor.previewUrl}
+              alt=""
+              style:width={previewBox ? `${previewBox.w}px` : null}
+              style:height={previewBox ? `${previewBox.h}px` : null}
+              onload={(e) => {
+                const img = e.currentTarget as HTMLImageElement;
+                if (img.naturalWidth && img.naturalHeight) previewAspect = img.naturalWidth / img.naturalHeight;
+              }}
+            />
+          {/if}
+          <div class="progress-over">
+            <OpenProgress steps={editor.openSteps} fallback={editor.loadingText} />
+          </div>
         </div>
       {:else if editor.status === 'auth'}
         <div class="center-msg card">
@@ -1026,11 +1051,24 @@
     justify-content: center;
     gap: 12px;
   }
+  /* Where the photo will be drawn, like .frame; hidden until its size is known. */
   .preview {
-    max-width: calc(100% - 48px);
-    max-height: calc(100% - 200px);
-    opacity: 0.55;
-    filter: blur(0.5px);
+    visibility: hidden;
+    box-shadow: 0 2px 18px rgba(0, 0, 0, 0.6);
+  }
+  .preview.sized {
+    visibility: visible;
+  }
+  .progress-over {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .progress-over > :global(*) {
+    pointer-events: auto;
   }
   .bar {
     height: 4px;

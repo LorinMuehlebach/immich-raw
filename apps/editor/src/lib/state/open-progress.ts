@@ -113,6 +113,20 @@ export function stepDetail(s: OpenStep, now: number): string {
   return elapsed >= s.estimateMs || s.estimateMs < 1000 ? formatElapsed(elapsed) : `${formatElapsed(elapsed)} of ${formatEstimate(s.estimateMs)}`;
 }
 
+/**
+ * Whether the loading screen shows the progress at all: only for an open expected to take more
+ * than a second (`since`: when the loading screen appeared). It waits a moment first, while the
+ * estimates settle (e.g. a decoded image turns out to be cached), and shows it after a second
+ * anyway, when the open took longer than expected.
+ */
+export function progressWorthShowing(steps: OpenStep[], now: number, since: number): boolean {
+  const waited = now - since;
+  if (waited >= 1000) return true;
+  if (waited < 250) return false;
+  const first = steps.find((s) => s.startedAt !== null)?.startedAt ?? since;
+  return now - first + remainingMs(steps, now) > 1000;
+}
+
 /** The line above the bar: how long the whole open will still take. */
 export function remainingText(steps: OpenStep[], now: number): string {
   const active = activeStep(steps);

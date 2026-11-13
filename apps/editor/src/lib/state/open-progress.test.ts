@@ -7,6 +7,7 @@ import {
   newOpenSteps,
   overallFraction,
   remainingMs,
+  progressWorthShowing,
   remainingText,
   stepDetail,
   type OpenStep,
@@ -72,6 +73,21 @@ describe('open progress', () => {
     beginStep(s, 'show', 2400);
     endStep(s, 'show', 2420);
     expect(stepDetail(step(s, 'show'), 9999)).toBe('<0.1 s');
+  });
+
+  it('shows the progress only for an open expected to take over a second', () => {
+    const quick = newOpenSteps({ info: 50, original: 100, decode: 300, show: 50 });
+    beginStep(quick, 'info', 0);
+    expect(progressWorthShowing(quick, 100, 0)).toBe(false);
+    expect(progressWorthShowing(quick, 300, 0)).toBe(false);
+    // Slower than expected: after a second it shows anyway.
+    expect(progressWorthShowing(quick, 1000, 0)).toBe(true);
+    const slow = steps();
+    beginStep(slow, 'info', 0);
+    // Not in the first moment, while the estimates settle.
+    expect(progressWorthShowing(slow, 100, 0)).toBe(false);
+    expect(progressWorthShowing(slow, 300, 0)).toBe(true);
+    expect(progressWorthShowing([], 300, 0)).toBe(false);
   });
 
   it('says how long the rest takes', () => {

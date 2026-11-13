@@ -1,7 +1,8 @@
 <script lang="ts">
   // The loading screen's progress: the step opening the photo is on, the time left for all of
   // them, and each step with how long it took or should take (estimates from earlier opens).
-  import { activeStep, overallFraction, remainingText, stepDetail, type OpenStep } from '../state/open-progress.ts';
+  // Shown only for an open expected to take more than a second (progressWorthShowing).
+  import { activeStep, overallFraction, progressWorthShowing, remainingText, stepDetail, type OpenStep } from '../state/open-progress.ts';
 
   interface Props {
     steps: OpenStep[];
@@ -11,9 +12,15 @@
 
   let { steps, fallback }: Props = $props();
 
-  let now = $state(performance.now());
+  const since = performance.now();
+  let now = $state(since);
+  // Once shown, it stays until the photo is open (no flicker when an estimate shrinks).
+  let visible = $state(false);
   $effect(() => {
-    const timer = setInterval(() => (now = performance.now()), 100);
+    const timer = setInterval(() => {
+      now = performance.now();
+      if (!visible && progressWorthShowing(steps, now, since)) visible = true;
+    }, 100);
     return () => clearInterval(timer);
   });
 
@@ -23,6 +30,7 @@
   const active = $derived(activeStep(steps));
 </script>
 
+{#if visible}
 <div class="open-progress">
   {#if steps.length}
     <div class="head">
@@ -52,6 +60,7 @@
     <div class="head"><span class="now">{fallback}</span></div>
   {/if}
 </div>
+{/if}
 
 <style>
   .open-progress {

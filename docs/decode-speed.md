@@ -106,6 +106,12 @@ Two branches, neither merged yet:
   - **The loading screen lists the steps:** photo info, the original, the decode and the first
     render. Each step shows how long it took or should take, and the bar shows the time left
     (`apps/editor/src/lib/ui/OpenProgress.svelte`).
+    - **Only for slow opens:** the list shows when an open should take more than a second, or
+      after a second when it takes longer than expected. A quick switch shows none of it.
+    - **Over Immich's preview:** the preview sits where the photo will appear and at its size, so
+      nothing moves when the photo is ready (unless the edit crops it). It doesn't look like the
+      editor's render: Immich converts the RAW its own way (or shows the camera's JPEG), in
+      Display P3, and without the saved edit.
     - **Estimates** are moving averages of earlier opens in this browser, kept in `localStorage`
       (`apps/editor/src/lib/state/open-times.ts`).
       - **Decode times:** per camera (make, model, file type); a camera seen for the first time is

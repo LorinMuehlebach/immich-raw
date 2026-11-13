@@ -26,7 +26,7 @@ const LOGIN = { email: 'admin@example.com', password: 'raw-editor-e2e' };
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 const shown = (page) => page.locator('.frame:not(.hidden) canvas').waitFor({ timeout: 120000 });
 /** Builds with the step-by-step loading screen also keep decoded images and prefetch. */
-const hasProgressScreen = async (page) => (await page.locator('.open-progress').count()) > 0;
+const hasProgressScreen = async (page) => (await page.locator('.progress-over').count()) > 0;
 
 const browser = await chromium.launch({
   channel: process.env.BROWSER_CHANNEL ?? 'msedge',

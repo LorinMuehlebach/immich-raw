@@ -13,9 +13,10 @@ and on edited copies, where it opens the RAW again.
 ## 2. Edit in the browser
 
 The RAW is decoded on your computer, not on the server, and your graphics card renders every
-change live. While it opens, the editor lists what it is doing (downloading the original, decoding
-it, rendering) and how long that should take; a photo opened before comes from the browser's
-cache and skips most of it. The panels follow Lightroom's Develop module: Basic, Tone Curve, Color Mixer, Color
+change live. While it opens, Immich's preview of the photo stands in for it. When opening takes
+more than a second, the editor lists what it is doing (downloading the original, decoding it,
+rendering) and how long that should take; a photo opened before comes from the browser's cache
+and skips most of it. The panels follow Lightroom's Develop module: Basic, Tone Curve, Color Mixer, Color
 Grading, Detail, Lens Corrections, Transform, Effects and Calibration
 ([Editing](editing.md)). On the left are presets, snapshots, history, export, AI Upscale and Convert
 to DNG; below the photo is the filmstrip.
