@@ -170,6 +170,173 @@ of 2 runs each; the half-size rows for Canon and Sony were re-run 6 times (first
 "Identical" means the same bytes in the image (or raw sensor data) and in the full metadata.
 Speed is unchanged within the run-to-run noise.
 
+### Opening a photo: where the time goes (2026-11-12)
+
+Same machine; the shared e2e Immich was running. Two measurements:
+- **Bench:** `Q= WARM=1 TILES=2 node spikes/decode-bench/run-bench.mjs`, the npm libraw-wasm build in
+  headless Edge.
+- **Editor:** `e2e/probe-open-speed.mjs`, 3 opens per file and cache state, alternating between two
+  editor builds. Timed from navigating to the editor until the photo shows.
+
+**`open` only parses the file (35–170 ms). Unpacking and processing both happen in `imageData`.**
+On a worker started 2 s earlier, `open` took 35–77 ms instead of 58–157 ms. So starting the worker
+early saves 20–120 ms.
+
+**Splitting a decode into 2 horizontal stripes (`cropbox`, 24 rows of overlap, 2 workers at once):**
+
+| File | Half: whole | Half: 2 stripes | Full: whole | Full: 2 stripes | Stripes identical |
+|---|---|---|---|---|---|
+| Canon R5 CR3 | 1073 ms | 874 ms | 4286 ms | 2292 ms | no (see below) |
+| Fuji X-T5 RAF (q2) | 2426 ms | 2296 ms | 14904 ms | 12357 ms | half yes, full no (130 of 5178 rows) |
+| Leica Q2 DNG | 2527 ms | 2950 ms | 9665 ms | 3848 ms | yes |
+| Nikon Z7 NEF | 1946 ms | 1931 ms | 5864 ms | 3644 ms | yes |
+| Sony A7R V ARW | 1686 ms | 1758 ms | 5929 ms | 3858 ms | yes |
+
+- **The half decode doesn't get faster.** Each worker still unpacks the whole file, and the unpacking is
+  most of a half decode.
+- **Bayer full decodes take 0.5–0.65× as long** (the Leica "whole" run was slow; earlier runs measured
+  4.6–5.2 s).
+- **X-Trans gains little:** 0.83×.
+- **Canon CR3 fails the check** for two reasons:
+  - its full decode is 8191×5463, while LibRaw's metadata says 8190×5462, so the stripes were cut
+    1 pixel too narrow;
+  - the half-size stripes are binned on a different colour-pattern phase.
+
+  Stripe edges must be aligned in raw coordinates (`top_margin` + y), not just in image coordinates.
+- **Memory:** with 2 stripes, the browser's peak was up to 0.4 GB higher than for one decode.
+
+**Editor, median ms until the photo shows** (before: main; after: the original downloads alongside
+the recipe, the worker starts early, the shaders compile during the decode, and a cache hit doesn't
+wait for the cache index):
+
+| File | Original | Before | After |
+|---|---|---|---|
+| Sony A7R V ARW | downloaded | 3432 | 3104 |
+| | from cache | 2247 | 2290 |
+| Canon CR3 | downloaded | 2189 | 2077 |
+| | from cache | 1712 | 1616 |
+| Fuji X-T5 RAF | downloaded | 3664 | 3702 |
+| | from cache | 3308 | 3331 |
+
+The editor's own timings (`immich-raw:*` measures, after):
+
+| Step | Time |
+|---|---|
+| asset info | 10–30 ms |
+| recipe and snapshots | 15–80 ms |
+| download over localhost | 320–820 ms (cache hit: 45–160 ms) |
+| renderer (shader compiling) | 50–100 ms |
+| half decode (Canon, Sony, Fuji) | 1.0, 1.5–2.0, 2.3–2.7 s |
+| first render | 40–50 ms (Fuji: 160–280 ms) |
+
+**The half decode is 60–75 % of the time until the photo shows.** Reordering the steps around it
+saves 0.1–0.3 s on this machine and network, mostly on downloads. Making the half decode itself
+faster takes a faster unpack, i.e. threads in the decoder.
+
+### Opening from the browser's cache and prefetching (2026-11-13)
+
+`e2e/probe-open-speed.mjs`, 3 runs per file and case, alternating between two builds on the same
+test Immich:
+- **before:** the `testing` build, with none of the open speed-ups;
+- **after:** `feature/decode-speed`.
+
+The second case keeps the half-size image in the browser's storage, and the third case prefetches
+the filmstrip's neighbours.
+
+| File | Open | Before | After |
+|---|---|---|---|
+| Sony A7R V ARW (61 MP) | first | 4715 | 3884 |
+| | again | 3601 | 1097 |
+| Canon R5 CR3 (45 MP) | first | 2609 | 2235 |
+| | again | 2023 | 841 |
+| | → next (`canon-r5`) | 3372 | 997 |
+| Fuji RAF (`DSCF7860`) | first | 2920 | 2808 |
+| | again | 2710 | 851 |
+| | → next | 4125 | 840 |
+
+Median ms until the photo shows.
+- **first:** a fresh browser profile.
+- **again:** the same photo once more.
+- **→ next:** the neighbour, after the editor had prefetched it.
+
+The probe's browser keeps its shader cache between runs.
+
+The editor's timings on a reopened or prefetched photo (`immich-raw:*`, medians):
+
+| Step | Time |
+|---|---|
+| page start (navigation until the editor's code runs) | 100–140 ms |
+| session, photo info, saved edit and snapshots | 60–90 ms |
+| original from the cache | 170–260 ms |
+| decoded image from the cache, at the same time | 190–270 ms |
+| renderer (shader compiling), at the same time | 90–120 ms |
+| first render | 40–70 ms |
+
+- **The kept image is larger than the RAW:** 67 MB for the 45 MP Canon (its CR3 is 41 MB), and about
+  92 MB at 61 MP. Reading it at 250–300 MB/s still beats decoding by 0.9–1.6 s.
+- **Writing it** takes 0.14–0.27 s, after the photo shows.
+- **Prefetching one 45 MP CR3** (download and half-size decode) took 3 s.
+- **In a new browser profile, the shaders took 2.7–3.7 s to compile.**
+  - Compiling while the original downloaded stalled the download, whose chunks are read on the
+    page's thread: 41 MB took 3.1 s instead of 0.6 s.
+  - Compiling right after the decode started stalled the decode between its round trips to the
+    worker.
+  - The editor now compiles once the worker has started unpacking, or, when both files are
+    cached, while they are read.
+- **Prefetching four neighbours** (`DSCF7860.RAF`, 26 MP Fuji):
+  - The photo showed at 3.2 s, and its kept image was written by 3.7 s.
+  - The four originals downloaded at 3.7–5.1 s, during the full-resolution decode, which ran until
+    15.7 s.
+  - The four half-size decodes followed, about 2 s each, until 23.7 s.
+  - The cache then held 5 photos, 320 MB.
+- **Compressing the cache** (in the page, after opening the photos; median of one run):
+
+  | File | Size | Read as is | deflate | shuffle + deflate | delta + shuffle + deflate |
+  |---|---|---|---|---|---|
+  | Sony half-size image | 92 MB | 95 ms | 1.21×, 424–516 ms | 1.51×, 620–1119 ms | 1.57×, 572–614 ms |
+  | Canon half-size image | 67 MB | 59 ms | 1.41×, 307–331 ms | 1.82×, 318–325 ms | 1.85×, 324–371 ms |
+  | Fuji half-size image | 39 MB | 89 ms | 1.35×, 169–221 ms | 1.75×, 155–210 ms | 1.73×, 167–186 ms |
+  | The RAW files | 25–86 MB | 27–57 ms | 1.01–1.03× | | |
+
+  Each cell gives how much smaller the file gets, and the time to read and unpack it. The two times
+  in a cell are gzip and deflate-raw, the formats Edge offers in `CompressionStream`.
+  - **Shuffle:** the low bytes stored apart from the high bytes.
+  - **Delta:** each value minus the one a pixel to the left.
+
+  Compressing took 0.8–4 s per image, in the background.
+  - **The RAW files are already compressed.**
+  - **A photo's footprint shrinks 18–28 %**, because the original stays the same size.
+  - **Unpacking adds 0.1–0.5 s** in this test, which unpacks on the page's thread.
+
+  **The editor packs the decoded images** with shuffle + gzip, in a worker. Sony 92 → 61 MB and Fuji
+  39 → 22 MB; five Fuji photos now take 235 MB instead of 320. In the editor
+  (`probe-open-speed.mjs`, 3 runs; uncompressed from the run above):
+
+  | File | Open | Uncompressed | Packed | Decoded image read and unpacked |
+  |---|---|---|---|---|
+  | Sony A7R V ARW | again | 1097 | 1157 | 272 → 543 ms |
+  | Canon R5 CR3 | again | 841 | 1046 | 221 → 365 ms |
+  | | → next | 997 | 985 | 206 → 373 ms |
+  | Fuji RAF | again | 851 | 724 | 193 → 253 ms |
+  | | → next | 840 | 637 | 194 → 228 ms |
+
+  The middle columns are the median ms until the photo shows. Unpacking runs in the worker,
+  alongside reading the original and compiling the shaders, so the photo shows at most 0.2 s later.
+  The packed Fuji images are so much smaller to read that they open sooner.
+- **Switching photos inside the page:** in one session, on the same cached Fuji photos,
+  alternating:
+  - **switching in the page:** 870, 861, 879, 533, 553 and 537 ms;
+  - **loading the page with the photo:** 1387, 1523, 990, 1268, 885 and 873 ms.
+
+  Each time is how long until the photo shows. A switch spends about 0.25 s reading and unpacking
+  the decoded image. The first render takes 1–4 ms with the renderer's shaders already compiled.
+  - **Memory:** over 12 switches between two photos in one tab, the browser stayed at 1.7–2.0 GB.
+  - **One shared worker for packing and unpacking was a mistake:** an open's unpacking waited
+    behind packing a neighbour (1–3 s). Each now has its own worker.
+- **Smoke test (`e2e/smoke.mjs`, Sony):** 13/13 passed on both builds.
+  - Opening took 5.3 s after and 10.5 s before.
+  - Saving took 7.6 s after and 14.0 s before, with the PC short of memory.
+
 ### AI masks: model choice (2026-11-11)
 
 Candidates had to have a permissive licence (MIT, Apache-2.0, BSD; no non-commercial weights),

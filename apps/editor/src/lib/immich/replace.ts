@@ -22,6 +22,7 @@ import {
 import { RECIPE_KEY, RENDER_KEY, normalizeRecipe } from '@immich-raw/recipe';
 import { httpStatus } from './api.ts';
 import { copiesIn } from './copies.ts';
+import { forgetDecoded } from './decoded-cache.ts';
 import { cacheOriginal, forgetOriginal } from './download.ts';
 import { copyAlbums, errorMessage, readMetadata, renderUpdate, writeMetadata } from './save.ts';
 import { sha1Base64, uploadAsset } from './upload.ts';
@@ -162,6 +163,7 @@ export async function replaceWithDng({ raw, dng, deleteMode, conversion, onProgr
   }
   progress('delete', 1);
   void forgetOriginal(raw.checksum);
+  void forgetDecoded(raw.checksum);
   return dngId;
 }
 

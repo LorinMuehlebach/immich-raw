@@ -1,6 +1,6 @@
 <script lang="ts">
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
@@ -27,6 +27,7 @@
   import DetailPanel from './lib/ui/DetailPanel.svelte';
   import DngPanel from './lib/ui/DngPanel.svelte';
   import Filmstrip from './lib/ui/Filmstrip.svelte';
+  import OpenProgress from './lib/ui/OpenProgress.svelte';
   import Scopes from './lib/ui/Scopes.svelte';
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
   import LensPanel from './lib/ui/LensPanel.svelte';
@@ -48,7 +49,7 @@
   let stageH = $state(600);
   let apiKey = $state('');
   let copyOpen = $state(false);
-  let neighbours = $state<{ prev: string | null; next: string | null }>({ prev: null, next: null });
+  let neighbours = $state<{ prev: string | null; next: string | null; nearby: string[] }>({ prev: null, next: null, nearby: [] });
   // What the culler decided for this photo (shown in the title line).
   let cullInfo = $state<CullInfo | null>(null);
   // The stack window is open on the stack of this photo.
@@ -61,6 +62,24 @@
     if (cullInfo.role === 'runner-up') return `${badge.icon} runner-up (${cullInfo.rank} of ${cullInfo.groupSize})`;
     return `${badge.icon} ${badge.label.toLowerCase()}`;
   });
+
+  // The photos around this one get ready to open: their originals download once it shows, and
+  // they are decoded once its full-resolution decode is done.
+  $effect(() => {
+    const ids = neighbours.nearby;
+    const decode = editor.fullStatus === 'ready' || editor.fullStatus === 'error';
+    if (editor.status === 'ready') untrack(() => editor.prefetch(ids, decode));
+  });
+
+  // The title line counts down to the full-resolution image.
+  let fullNow = $state(0);
+  $effect(() => {
+    if (!editor.fullEta) return;
+    fullNow = performance.now();
+    const timer = setInterval(() => (fullNow = performance.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  const fullLeft = $derived(editor.fullEta ? editor.fullEta.estimateMs - (fullNow - editor.fullEta.startedAt) : 0);
   const presetStore = new PresetStore();
   // Built by apps/editor/vite.config.ts: our licence, the third-party notices and the source link.
   const LICENSES_URL = `${import.meta.env.BASE_URL}licenses.txt`;
@@ -105,9 +124,8 @@
 
   const PAD = VIEW_PAD;
   const zoomed = $derived(editor.zoom.on && !editor.wholeView);
-  const display = $derived.by(() => {
-    if (zoomed) return { w: Math.round(stageW), h: Math.round(stageH) };
-    const aspect = editor.frame.width / editor.frame.height;
+  /** The photo's size on screen at this aspect: as big as fits the stage, with a margin. */
+  function fit(aspect: number): { w: number; h: number } {
     const maxW = Math.max(50, stageW - PAD * 2);
     const maxH = Math.max(50, stageH - PAD * 2);
     let w = maxW;
@@ -117,7 +135,18 @@
       w = h * aspect;
     }
     return { w: Math.round(w), h: Math.round(h) };
+  }
+  const display = $derived(zoomed ? { w: Math.round(stageW), h: Math.round(stageH) } : fit(editor.frame.width / editor.frame.height));
+
+  // While a photo loads, Immich's preview of it takes the photo's place at the same size, so
+  // nothing moves when the photo is ready (unless the edit crops it). Its aspect is known once
+  // it has loaded.
+  let previewAspect = $state<number | null>(null);
+  $effect(() => {
+    void editor.previewUrl;
+    previewAspect = null;
   });
+  const previewBox = $derived(previewAspect ? fit(previewAspect) : null);
 
   const info = $derived(shotSettings(editor.asset?.exifInfo).join('   '));
 
@@ -137,29 +166,32 @@
       if (!discarding && (editor.dirty || editor.saving)) e.preventDefault();
     };
     addEventListener('beforeunload', beforeUnload);
+    addEventListener('popstate', onPopState);
     return () => {
       ro.disconnect();
       stage.removeEventListener('wheel', onWheel);
       removeEventListener('beforeunload', beforeUnload);
+      removeEventListener('popstate', onPopState);
     };
   });
 
-  // Leaving with unsaved changes asks first: Yes saves, No discards, Cancel stays.
-  // The target is a function: after saving, "back" points at the new render.
-  // back: returning to Immich, which should show the saved render (see editor.waitForRender).
-  // run: switching to another edit of the same RAW (a virtual copy) instead of leaving the page.
-  let leaving = $state<{ target: () => string; back: boolean; run?: () => Promise<void> } | null>(null);
+  // Leaving the photo (or this edit of it) with unsaved changes asks first: Yes saves, No
+  // discards, Cancel stays. go: what happens after the answer (another photo or a virtual copy
+  // opens in this page, or the page goes back to Immich). unload: it leaves the page, so the
+  // browser's own "leave page?" question mustn't ask again.
+  let leaving = $state<{ go: () => unknown; unload: boolean } | null>(null);
   let leaveSaving = $state(false);
   let discarding = false;
 
-  async function go(target: () => string, back: boolean) {
-    if (back) await editor.waitForRender();
+  /** Back to Immich. The target is a function: after saving, it points at the new render. */
+  async function toImmich(target: () => string) {
+    await editor.waitForRender();
     location.href = target();
   }
 
-  function leave(target: () => string, back = false) {
-    if (!editor.dirty) void go(target, back);
-    else leaving = { target, back };
+  function leave(go: () => unknown, unload: boolean) {
+    if (!editor.dirty) void go();
+    else leaving = { go, unload };
   }
 
   async function leaveSave() {
@@ -170,31 +202,48 @@
     leaveSaving = false;
     leaving = null;
     // A failed save keeps the editor open; the error is shown.
-    if (ok) await (l.run ? l.run() : go(l.target, l.back));
+    if (ok) await l.go();
   }
 
   function leaveDiscard() {
     const l = leaving;
     leaving = null;
     if (!l) return;
-    if (l.run) return void l.run();
-    discarding = true;
-    void go(l.target, l.back);
+    if (l.unload) discarding = true;
+    void l.go();
   }
 
   /** The original edit (null) or a virtual copy of this RAW, asking first about unsaved changes. */
   function switchEdit(copyId: string | null) {
-    const run = () => editor.openEdit(copyId);
-    if (!editor.dirty) void run();
-    else leaving = { target: () => location.href, back: false, run };
+    leave(() => editor.openEdit(copyId), false);
   }
 
   function goBack() {
-    leave(() => editor.backUrl(), true);
+    leave(() => toImmich(() => editor.backUrl()), true);
   }
 
+  /** Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again. */
   function openAsset(id: string) {
-    if (id !== editor.asset?.id) leave(() => editor.urlFor(id));
+    if (id === editor.asset?.id) return;
+    leave(() => {
+      stackFor = null;
+      return editor.switchPhoto(id);
+    }, false);
+  }
+
+  /** Back and Forward between photos opened in this page. */
+  function onPopState() {
+    const id = new URLSearchParams(location.search).get('asset');
+    const open = editor.asset?.id;
+    if (!id || id === open) return;
+    if (editor.dirty || editor.saving) {
+      // Not yet: the open photo's address goes back until the question is answered.
+      if (open) history.pushState(null, '', editor.urlFor(open));
+      if (!editor.saving) openAsset(id);
+      return;
+    }
+    stackFor = null;
+    void editor.switchPhoto(id, 'none');
   }
 
   /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
@@ -463,7 +512,7 @@
       <div class="sub">
         {camera}
         {#if editor.status === 'ready'}
-          {#if editor.fullStatus === 'decoding'}· decoding full resolution…{/if}
+          {#if editor.fullStatus === 'decoding'}· decoding full resolution{fullLeft >= 1500 ? ` (about ${Math.round(fullLeft / 1000)} s)` : ''}…{/if}
           {#if editor.readOnly}· view only{/if}
           {#if editor.recipe.render && !editor.dirty}· saved{/if}
           {#if editor.dirty}· unsaved changes{/if}
@@ -610,12 +659,22 @@
 
       {#if editor.status === 'loading'}
         <div class="center-msg">
-          {#if editor.previewUrl}<img class="preview" src={editor.previewUrl} alt="" />{/if}
-          <div class="loading">
-            <div>{editor.loadingText}</div>
-            {#if editor.loadingProgress !== null}
-              <div class="bar"><i style:width="{Math.round(editor.loadingProgress * 100)}%"></i></div>
-            {/if}
+          {#if editor.previewUrl}
+            <img
+              class="preview"
+              class:sized={previewBox}
+              src={editor.previewUrl}
+              alt=""
+              style:width={previewBox ? `${previewBox.w}px` : null}
+              style:height={previewBox ? `${previewBox.h}px` : null}
+              onload={(e) => {
+                const img = e.currentTarget as HTMLImageElement;
+                if (img.naturalWidth && img.naturalHeight) previewAspect = img.naturalWidth / img.naturalHeight;
+              }}
+            />
+          {/if}
+          <div class="progress-over">
+            <OpenProgress steps={editor.openSteps} fallback={editor.loadingText} />
           </div>
         </div>
       {:else if editor.status === 'auth'}
@@ -678,18 +737,19 @@
         <div class="toast" class:err={!!editor.error}>
           <span>{editor.error ?? editor.notice ?? editor.warning}</span>
           {#if editor.notice && editor.recipe.render && !editor.error && !editor.dirty}
-            <button onclick={() => go(() => editor.backUrl(), true)}>Back to Immich</button>
+            <button onclick={() => toImmich(() => editor.backUrl())}>Back to Immich</button>
           {/if}
           <button class="icon" aria-label="Dismiss" onclick={() => ((editor.notice = null), (editor.error = null), (editor.warning = null))}>✕</button>
         </div>
       {/if}
     </main>
-    {#if editor.status === 'ready' && editor.asset}
+    <!-- Stays while the next photo loads, so it keeps its place and its list. -->
+    {#if editor.asset && editor.status !== 'auth'}
       <Filmstrip
         ctx={editor.ctx}
         current={editor.asset}
         onSelect={openAsset}
-        onNeighbours={(prev, next) => (neighbours = { prev, next })}
+        onNeighbours={(prev, next, nearby) => (neighbours = { prev, next, nearby })}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
         bind:stackFor
@@ -1041,16 +1101,24 @@
     justify-content: center;
     gap: 12px;
   }
+  /* Where the photo will be drawn, like .frame; hidden until its size is known. */
   .preview {
-    max-width: calc(100% - 48px);
-    max-height: calc(100% - 120px);
-    opacity: 0.55;
-    filter: blur(0.5px);
+    visibility: hidden;
+    box-shadow: 0 2px 18px rgba(0, 0, 0, 0.6);
   }
-  .loading {
-    color: var(--text);
-    text-align: center;
-    min-width: 260px;
+  .preview.sized {
+    visibility: visible;
+  }
+  .progress-over {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .progress-over > :global(*) {
+    pointer-events: auto;
   }
   .bar {
     height: 4px;
@@ -1184,10 +1252,6 @@
     .saving .card {
       min-width: 0;
       width: calc(100% - 48px);
-    }
-    .loading {
-      min-width: 0;
-      width: 80%;
     }
   }
 </style>

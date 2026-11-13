@@ -33,6 +33,8 @@ photos already uploaded; `deploy/demo/compose.build.yml` builds it from a checko
 - `node e2e/bench-export.mjs <out-dir> [mixed|xt30] [1,2,4,8,16] [preset] [format]`: times the batch
   export at several photos at once and samples the browser's memory
   ([Export speed](export-speed.md)); `format` changes the preset's file type (e.g. `avif`).
+- [Decoding speed](decode-speed.md): how fast a RAW opens and decodes, how to measure it, and what
+  could still be improved.
 - `node e2e/screenshots.mjs [section ...]`: regenerates the screenshots of the guides in `docs/`
   ([e2e/README.md](../e2e/README.md#screenshots)).
 - Culler:

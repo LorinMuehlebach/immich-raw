@@ -13,6 +13,7 @@ cd spikes/decode-bench
 node fetch-samples.mjs <samples-dir>           # ~320 MB of CC0 RAWs; keep this outside OneDrive
 node run-bench.mjs <samples-dir> <out-dir>     # decode timings, clip points, memory, previews
 Q=0,1,2 node run-bench.mjs <samples-dir> <out-dir> fuji   # compare demosaic quality levels
+Q= WARM=1 TILES=2 node run-bench.mjs <samples-dir> <out-dir>  # worker start-up, decodes split in stripes
 node run-gpu.mjs <samples-dir> <out-dir> sony-a7rv.ARW     # WebGL2 proxy frame times
 node run-page.mjs encode <samples-dir> <out-dir>           # color check + JPEG encode times
 ```
