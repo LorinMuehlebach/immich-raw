@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StripItem } from './cull-view.ts';
-import { NO_FACTS, NO_FILTER, factBadges, factsText, filterStrip, jumpTarget, normalizeFilter, passes, stripNeighbours, type PhotoFacts } from './strip-view.ts';
+import { NO_FACTS, NO_FILTER, compareCandidate, factBadges, factsText, filterStrip, jumpTarget, normalizeFilter, passes, stripNeighbours, type PhotoFacts } from './strip-view.ts';
 
 /** a, [s1 s2 s3] (a stack), b, [t1 t2], c */
 function strip(): StripItem<{ id: string }>[] {
@@ -36,8 +36,32 @@ describe('jumpTarget (↑ ↓)', () => {
 
 describe('stripNeighbours', () => {
   it('gives ← → ↑ ↓ and the photos to get ready, nearest first', () => {
-    expect(stripNeighbours(strip(), idx('s2'))).toEqual({ prev: 's1', next: 's3', prevStack: 'a', nextStack: 'b', nearby: ['s3', 's1', 'b', 'a'] });
-    expect(stripNeighbours(strip(), -1)).toEqual({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [] });
+    expect(stripNeighbours(strip(), idx('s2'))).toMatchObject({ prev: 's1', next: 's3', prevStack: 'a', nextStack: 'b', nearby: ['s3', 's1', 'b', 'a'] });
+    expect(stripNeighbours(strip(), idx('s2')).order).toEqual(ids(strip()));
+    expect(stripNeighbours(strip(), -1)).toMatchObject({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [] });
+  });
+});
+
+describe('compareCandidate', () => {
+  const n = { ...stripNeighbours(strip(), idx('b')), stack: [] as string[] };
+
+  it('starts with the next photo, and steps along the filmstrip past the open one', () => {
+    expect(compareCandidate(n, 'b', null, 1)).toBe('t1');
+    expect(compareCandidate(n, 'b', null, -1)).toBe('s3');
+    expect(compareCandidate(n, 'b', 's3', 1)).toBe('t1');
+    expect(compareCandidate(n, 'b', 'c', 1)).toBe('a');
+  });
+
+  it("stays within the open photo's stack", () => {
+    const inStack = { ...n, stack: ['s2', 's1', 's3'] };
+    expect(compareCandidate(inStack, 's1', null, 1)).toBe('s2');
+    expect(compareCandidate(inStack, 's1', 's2', 1)).toBe('s3');
+    expect(compareCandidate(inStack, 's1', 's3', 1)).toBe('s2');
+    expect(compareCandidate(inStack, 's1', 's2', -1)).toBe('s3');
+  });
+
+  it('has nothing to compare with in a filmstrip of one', () => {
+    expect(compareCandidate({ order: ['a'], stack: [], next: null, prev: null }, 'a', null, 1)).toBeNull();
   });
 });
 

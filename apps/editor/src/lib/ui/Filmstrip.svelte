@@ -231,7 +231,11 @@
 
   $effect(() => {
     const n = stripNeighbours(strip, index);
-    untrack(() => onNeighbours?.(n));
+    // The open photo's stack, best first, also when it is collapsed (compare steps through it).
+    const gid = cull[current.id]?.groupId;
+    const rank = (id: string) => cull[id]?.rank ?? Number.MAX_SAFE_INTEGER;
+    const stack = gid ? items.filter((a) => cull[a.id]?.groupId === gid).map((a) => a.id).sort((x, y) => rank(x) - rank(y)) : [];
+    untrack(() => onNeighbours?.({ ...n, stack }));
   });
 
   // Filtering by edits needs to know them for every photo, not just the ones scrolled to.

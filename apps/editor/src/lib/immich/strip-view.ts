@@ -73,12 +73,39 @@ export interface Neighbours {
   nextStack: string | null;
   /** The photos to get ready, nearest first: next, previous, then two either way. */
   nearby: string[];
+  /** Every photo shown, in order. */
+  order: string[];
+  /** The open photo's stack, best first (the filmstrip fills it in; empty outside a stack). */
+  stack: string[];
 }
 
 export function stripNeighbours<T extends { id: string }>(strip: StripItem<T>[], index: number): Neighbours {
   const at = (k: number) => (index >= 0 && k >= 0 && k < strip.length ? strip[k]!.asset.id : null);
   const nearby = [at(index + 1), at(index - 1), at(index + 2), at(index - 2)].filter((id): id is string => !!id);
-  return { prev: at(index - 1), next: at(index + 1), prevStack: jumpTarget(strip, index, -1), nextStack: jumpTarget(strip, index, 1), nearby };
+  return {
+    prev: at(index - 1),
+    next: at(index + 1),
+    prevStack: jumpTarget(strip, index, -1),
+    nextStack: jumpTarget(strip, index, 1),
+    nearby,
+    order: strip.map((s) => s.asset.id),
+    stack: [],
+  };
+}
+
+/**
+ * The photo to compare with, `step` places on from `candidate` (wrapping around): within the open
+ * photo's stack when it has one, else along the filmstrip. Never the open photo itself.
+ */
+export function compareCandidate(n: Pick<Neighbours, 'order' | 'stack' | 'next' | 'prev'>, openId: string, candidate: string | null, step: number): string | null {
+  const list = (n.stack.length > 1 ? n.stack : n.order).filter((id) => id !== openId);
+  if (!list.length) return null;
+  const at = candidate ? list.indexOf(candidate) : -1;
+  if (at < 0) {
+    if (n.stack.length > 1) return list[0]!;
+    return (step < 0 ? n.prev : n.next) ?? n.next ?? n.prev ?? list[0]!;
+  }
+  return list[(((at + step) % list.length) + list.length) % list.length]!;
 }
 
 /**

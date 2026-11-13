@@ -118,6 +118,13 @@ press starts selecting and taps add or remove photos. A click alone, or Esc, sel
   settings, such as a Fujifilm RAW's film look). **Save N drafts** then saves the selected photos'
   drafts to Immich.
 
+**Compare (C)** shows another photo next to the one you edit: the next shot of the open photo's
+stack, else the next photo of the filmstrip. ← and → show another one (within the stack), Enter
+opens it in the editor, C or Esc closes. Zoom and pan the photo you edit; the other one follows,
+with Immich's full-size image once you zoom in far enough, if Immich makes full-size images (an
+option in its image settings), else its preview. The photo you edit stays editable. Not on
+narrow screens.
+
 **Filters** in the filmstrip's header: at least so many stars, only picks (♥), no rejects (✕), and
 edited, not edited or with a draft. The photos they leave out are skipped by ← → ↑ ↓; the open photo
 always stays. The filmstrip remembers them.

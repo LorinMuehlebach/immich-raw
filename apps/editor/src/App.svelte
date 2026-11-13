@@ -8,7 +8,7 @@
   import { looks } from './lib/immich/looks.ts';
   import { factsOf, flag, flagStatus } from './lib/immich/photo-facts.svelte.ts';
   import type { FlagAction } from './lib/immich/shot-flags.ts';
-  import { factsText, type Neighbours } from './lib/immich/strip-view.ts';
+  import { compareCandidate, factsText, type Neighbours } from './lib/immich/strip-view.ts';
   import { drafts } from './lib/drafts/drafts.svelte.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
@@ -28,6 +28,7 @@
   import ColorMixerPanel from './lib/ui/ColorMixerPanel.svelte';
   import ConvertDngDialog from './lib/ui/ConvertDngDialog.svelte';
   import CopySettingsDialog from './lib/ui/CopySettingsDialog.svelte';
+  import CompareView from './lib/ui/CompareView.svelte';
   import CropOverlay from './lib/ui/CropOverlay.svelte';
   import CropPanel from './lib/ui/CropPanel.svelte';
   import DetailPanel from './lib/ui/DetailPanel.svelte';
@@ -54,7 +55,12 @@
   let stageH = $state(600);
   let apiKey = $state('');
   let copyOpen = $state(false);
-  let neighbours = $state<Neighbours>({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [] });
+  let neighbours = $state<Neighbours>({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [], order: [], stack: [] });
+  // Compare (C): the photo shown next to the one being edited (not on narrow screens).
+  let compareWith = $state<string | null>(null);
+  $effect(() => {
+    if (compareWith && (compareWith === editor.asset?.id || layout === 'stacked')) compareWith = null;
+  });
   // Photos picked in the filmstrip (Ctrl/Cmd-click, Shift-click, long press): stars, flags and
   // Sync Settings act on them.
   let selection = $state<string[]>([]);
@@ -283,6 +289,7 @@
     const key = e.key.toLowerCase();
     const onRange = (e.target as HTMLElement | null)?.tagName === 'INPUT';
     if (flagKey(e)) return;
+    if (!mod && !e.altKey && compareKey(e, key, onRange)) return;
     if (mod && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) editor.redo();
@@ -397,6 +404,33 @@
     } else if (e.key === 'Escape') {
       goBack();
     }
+  }
+
+  /**
+   * C opens and closes Compare; while it is open, ← → show another photo and Enter opens it.
+   * True when the key was used.
+   */
+  function compareKey(e: KeyboardEvent, key: string, onRange: boolean): boolean {
+    const open = editor.asset?.id;
+    if (!open || layout === 'stacked' || editor.tool !== 'edit') return false;
+    if (!compareWith) {
+      if (key !== 'c') return false;
+      compareWith = compareCandidate(neighbours, open, null, 1);
+      return true;
+    }
+    if (key === 'c' || e.key === 'Escape') {
+      compareWith = null;
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onRange) {
+      compareWith = compareCandidate(neighbours, open, compareWith, e.key === 'ArrowLeft' ? -1 : 1);
+    } else if (e.key === 'Enter') {
+      const id = compareWith;
+      compareWith = null;
+      openAsset(id);
+    } else {
+      return false;
+    }
+    e.preventDefault();
+    return true;
   }
 
   /**
@@ -661,6 +695,7 @@
   {/if}
 
   <section class="center">
+    <div class="views">
     <main class="stage" bind:this={stage}>
       <div
         class="frame"
@@ -804,6 +839,10 @@
         </div>
       {/if}
     </main>
+    {#if compareWith && editor.status === 'ready'}
+      <CompareView candidateId={compareWith} name={looks.hint(compareWith).asset?.originalFileName ?? ''} zoom={editor.zoom} frame={editor.frame} />
+    {/if}
+    </div>
     <!-- Stays while the next photo loads, so it keeps its place and its list. -->
     {#if editor.asset && editor.status !== 'auth'}
       <Filmstrip
@@ -881,6 +920,7 @@
             <div><kbd>0</kbd>–<kbd>5</kbd> stars</div>
             <div><kbd>P</kbd> pick, <kbd>X</kbd> reject, <kbd>U</kbd> neither</div>
             <div><kbd>Ctrl</kbd>/<kbd>⇧</kbd>+click: select in filmstrip</div>
+            <div><kbd>C</kbd> compare</div>
             <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
             <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
             <div><kbd>Ctrl</kbd>+<kbd>'</kbd> virtual copy</div>
@@ -1131,9 +1171,16 @@
     min-width: 0;
     min-height: 0;
   }
+  /* The photo, and Compare's photo next to it. */
+  .views {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   .stage {
     position: relative;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     background: var(--bg-view);
     display: flex;
