@@ -19,8 +19,18 @@ and no photo is sent anywhere else: the AI models are downloaded to the browser 
   To find out which photos are selected (Immich keeps only those on screen in the page), these
   buttons press Immich's download shortcut (Shift+D) and catch the request, so nothing is
   downloaded. Immich then clears its selection, as after a download.
-- **Stored data:** the edit settings live in Immich's asset metadata on the RAW. The original file
-  is cached in the browser (over HTTPS), so reopening a photo is fast.
+- **Stored data:** the edit settings live in Immich's asset metadata on the RAW. Over HTTPS the
+  browser keeps, in its private storage:
+  - the original files, so a reopened photo isn't downloaded again;
+  - their decoded half-size images (never a full-resolution one), so it isn't decoded again either;
+  - how long the last opens took, per camera, for the loading screen's estimates.
+
+  The originals and the decoded images share 800 MB, about 4–7 photos of 45–61 MP. The photos
+  opened longest ago go first; the open photo stays.
+
+  The photos before and after the open one in the filmstrip are downloaded and decoded into these
+  caches in the background ([Workflow → Filmstrip](workflow.md#filmstrip)). Nothing leaves the
+  browser: it is the same data Immich already serves.
 - **AI masks** run small models in a background worker (ONNX Runtime and MediaPipe):
   [Masks → How AI masks work](masks.md#how-ai-masks-work).
 - **AI Upscale** runs a super-resolution model the same way:

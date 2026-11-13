@@ -118,7 +118,10 @@ import {
 } from '@immich-raw/recipe';
 import { apiUrl, authHeaders, getServerVersionInfo, getSession, initApi, serverVersionWarning, setApiKey } from '../immich/api.ts';
 import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification } from '../dng/convert.ts';
-import { downloadOriginal } from '../immich/download.ts';
+import { hasDecoded, readDecoded, writeDecoded } from '../immich/decoded-cache.ts';
+import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
+import { pinPhoto } from '../immich/photo-cache.ts';
+import { canPrefetch, prefetchPhoto } from '../immich/prefetch.ts';
 import { cacheDng, convertBlocked, replaceWithDng, type DeleteMode, type ReplaceStep } from '../immich/replace.ts';
 import { canEdit, loadRecipe, saveRender, type SaveStep } from '../immich/save.ts';
 import { History, editable, editableJson, type HistoryStep } from './history.ts';
@@ -145,6 +148,22 @@ import { PATCH, UpscaleState } from './upscale.svelte.ts';
 import { UPSCALE_QUALITY, checkUpscale, formatDuration, upscaledDownloadName, type UpscaleCheck } from './upscale.ts';
 import { FUJI_DECLINED, fujiLooks } from '../fuji-looks.svelte.ts';
 import { photoDefaults, type PhotoDefaults } from '../photo-defaults.ts';
+import { OPEN_LABELS, beginStep, endStep, newOpenSteps, type OpenStep, type OpenStepId } from './open-progress.ts';
+import {
+  cameraKey,
+  estimateDecodeMs,
+  estimateDownloadMs,
+  estimateFullMs,
+  estimateInfoMs,
+  estimateReadMs,
+  estimateShowMs,
+  loadOpenTimes,
+  recordFull,
+  recordOpen,
+  saveOpenTimes,
+  type OpenSample,
+  type OpenTimes,
+} from './open-times.ts';
 
 export type Status = 'loading' | 'auth' | 'error' | 'ready';
 /**
@@ -214,6 +233,8 @@ export interface Snapshot {
 /** Shown while a zoomed view waits for the full-resolution decode; cleared when it is there. */
 const HALF_SIZE_NOTICE = 'Showing the half-size preview until the full-resolution decode finishes.';
 const FULL_FAILED_NOTICE = 'The full-resolution decode failed, so zooming in shows the half-size preview.';
+/** For estimates before Immich has said how big the RAW is. */
+const TYPICAL_RAW_BYTES = 50e6;
 
 export interface ZoomState {
   on: boolean;
@@ -359,7 +380,10 @@ export const ALT_VIEW: Partial<Record<string, MaskView>> = {
 export class Editor {
   status = $state<Status>('loading');
   loadingText = $state('Loading…');
-  loadingProgress = $state<number | null>(null);
+  /** The steps of opening the photo, for the loading screen (empty until the session is checked). */
+  openSteps = $state<OpenStep[]>([]);
+  /** The running full-resolution decode: when it started and how long it should take. */
+  fullEta = $state<{ startedAt: number; estimateMs: number } | null>(null);
   error = $state<string | null>(null);
   warning = $state<string | null>(null);
   notice = $state<string | null>(null);
@@ -469,6 +493,17 @@ export class Editor {
   private pastRenders = new Set<string>();
   /** The render made by a save in this session (Immich may still be making its preview). */
   private savedRenderId: string | null = null;
+  /** How long opens took in this browser (for the loading screen's estimates). */
+  private openTimes: OpenTimes = { cameras: {} };
+  /** The open photo's camera (open-times.ts) and the size of its RAW file. */
+  private cameraKey = '';
+  private fileBytes = 0;
+  /** Photos next to this one to get ready in the background, and those already done. */
+  private prefetchWanted: string[] = [];
+  private prefetchDone = new Set<string>();
+  private prefetchRunning = false;
+  /** When the download's progress was last shown. */
+  private lastBytesShown = 0;
 
   dirty = $derived(editableJson(this.recipe) !== this.savedJson);
 
@@ -486,7 +521,15 @@ export class Editor {
     initApi();
 
     try {
+      // From navigating here until the app runs (loading the page and its scripts).
+      try {
+        performance.measure('immich-raw:page start', { start: 0, end: performance.now() });
+      } catch {
+        // no User Timing: nothing to show in DevTools
+      }
+      const doneSession = startMeasure('session');
       this.me = await getSession();
+      doneSession();
       if (!this.me) {
         this.status = 'auth';
         return;
@@ -497,22 +540,57 @@ export class Editor {
         .catch(() => {});
       // The decoder's worker loads its WebAssembly while the photo info and the original arrive.
       prewarmDecoder();
+      const now = () => performance.now();
+      const times = (this.openTimes = loadOpenTimes());
+      this.openSteps = newOpenSteps({
+        info: estimateInfoMs(times),
+        original: estimateDownloadMs(times, TYPICAL_RAW_BYTES),
+        decode: estimateDecodeMs(times, '', TYPICAL_RAW_BYTES),
+        show: estimateShowMs(times, ''),
+      });
 
-      this.loadingText = 'Loading photo info…';
+      beginStep(this.openSteps, 'info', now());
       let done = startMeasure('asset info');
       const asset = await getAssetInfo({ id: assetId });
       done();
+      endStep(this.openSteps, 'info', now());
       if (!isRawFilename(asset.originalFileName)) throw new Error(`${asset.originalFileName} is not a RAW file.`);
       this.asset = asset;
       this.readOnly = !canEdit(asset, this.me);
       document.title = `${asset.originalFileName} · immich-raw`;
       this.showServerPreview(asset.id);
+      // The cache never pushes out the photo being edited while this page is open.
+      pinPhoto(asset.checksum);
+      const camera = (this.cameraKey = cameraKey(asset.exifInfo?.make, asset.exifInfo?.model, asset.originalFileName));
+      this.fileBytes = asset.exifInfo?.fileSizeInByte ?? 0;
+      const sizeGuess = this.fileBytes || TYPICAL_RAW_BYTES;
+      this.estimateStep('original', estimateDownloadMs(times, sizeGuess));
+      this.estimateStep('decode', estimateDecodeMs(times, camera, sizeGuess));
+      this.estimateStep('show', estimateShowMs(times, camera));
 
-      // The original downloads while the saved edit and the snapshots load.
-      this.loadingText = 'Downloading original…';
+      // The original downloads (or comes from this browser's cache) while the saved edit, the
+      // snapshots and a decoded copy of the photo kept from an earlier open load.
+      beginStep(this.openSteps, 'original', now());
       const doneDownload = startMeasure('download');
-      const bytesP = downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => (this.loadingProgress = f));
+      const original = { from: null as DownloadProgress['from'] | null, endedAt: 0 };
+      const bytesP = downloadOriginal({ id: asset.id, checksum: asset.checksum }, (_f, p) => {
+        original.from = p.from;
+        if (p.received >= p.total && p.total > 0) original.endedAt = now();
+        this.originalProgress(p);
+      });
       bytesP.then(doneDownload, () => {});
+      const doneCacheRead = startMeasure('decoded cache read');
+      const decodedP = readDecoded(asset.checksum).then((photo) => {
+        if (photo) doneCacheRead();
+        return photo;
+      });
+      const decodedKept = hasDecoded(asset.checksum);
+      decodedKept.then((kept) => {
+        // Say so before the step starts: it takes a fraction of a decode.
+        const s = this.openSteps.find((x) => x.id === 'decode');
+        if (kept && s && s.startedAt === null) Object.assign(s, { label: OPEN_LABELS.decodeCached, estimateMs: estimateReadMs(times, sizeGuess) });
+      });
+      const bothKept = Promise.all([decodedKept, hasOriginal(asset.checksum)]).then(([d, o]) => d && o);
       done = startMeasure('recipe and snapshots');
       const [stored, snapshots] = await Promise.all([loadRecipe(asset.id).catch(() => null), this.loadSnapshots(asset.id)]);
       done();
@@ -526,55 +604,172 @@ export class Editor {
         if (stored.render?.assetId) this.pastRenders.add(stored.render.assetId);
       }
 
-      const bytes = await bytesP;
-      this.loadingProgress = null;
-      this.loadingText = 'Decoding RAW…';
-      // The film simulation set in the camera (Fujifilm maker note); null for other files.
-      this.fujiSim = readFujiFilmSim(bytes);
-      const doneDecode = startMeasure('half decode');
-      const sessionP = RawSession.open(bytes);
-      sessionP.then(doneDecode, () => {});
-      // Compile the shaders while the worker decodes. The pause first lets the decode's
-      // promise chain hand the file to the worker; compiling blocks this thread.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      done = startMeasure('renderer');
-      const renderer = new Renderer(canvas);
-      renderer.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
-      done();
-      let session: RawSession;
+      // The shaders compile while this thread would otherwise wait: during the decode (in its
+      // worker), or, when both are cached, while the original and the kept decode are read. Not
+      // during a download: its chunks are read on this thread, and compiling blocks it.
+      let renderer: Renderer | null = null;
+      let compiledAt = 0;
+      const makeRenderer = async (): Promise<Renderer> => {
+        // The pause lets the promise chains started just before go on first.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        done = startMeasure('renderer');
+        const r = new Renderer(canvas);
+        r.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
+        done();
+        compiledAt = now();
+        return r;
+      };
       try {
-        session = await sessionP;
+        if (await bothKept) renderer = await makeRenderer();
+        const bytes = await bytesP;
+        endStep(this.openSteps, 'original', now());
+        this.fileBytes = bytes.length;
+        // The film simulation set in the camera (Fujifilm maker note); null for other files.
+        this.fujiSim = readFujiFilmSim(bytes);
+        const cached = await decodedP;
+        let session: RawSession;
+        let decodeMs: number | undefined;
+        if (cached) {
+          beginStep(this.openSteps, 'decode', now(), { label: OPEN_LABELS.decodeCached, estimateMs: estimateReadMs(times, bytes.length) });
+          session = RawSession.restore(bytes, cached.meta, cached.half);
+        } else {
+          const started = now();
+          beginStep(this.openSteps, 'decode', started, { estimateMs: estimateDecodeMs(times, camera, bytes.length) });
+          const doneDecode = startMeasure('half decode');
+          // The decode takes several round trips to its worker. Compile once the worker has the
+          // long one (unpacking), or a round trip waits for the compile.
+          let working!: () => void;
+          const workerBusy = new Promise<void>((resolve) => (working = resolve));
+          const sessionP = RawSession.open(bytes, () => working()).then((opened) => {
+            doneDecode();
+            // Right after a long compile (a new browser profile: seconds), the result waited for
+            // this thread, so the time says more about the compile than the decode.
+            if (now() - compiledAt > 30) decodeMs = now() - started;
+            return opened;
+          });
+          const settled = sessionP.then(
+            () => {},
+            () => {},
+          ); // the decode's error is thrown below, after the shaders
+          await Promise.race([workerBusy, settled]);
+          renderer ??= await makeRenderer();
+          session = await sessionP;
+        }
+        renderer ??= await makeRenderer();
+        endStep(this.openSteps, 'decode', now());
+        const showStarted = now();
+        beginStep(this.openSteps, 'show', showStarted);
+        this.session = session;
+        this.camera = cameraInfo(session.meta);
+        const looks = await looksP;
+        this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
+        if (!stored) {
+          this.recipe = cloneRecipe(this.defaults.recipe);
+          this.savedJson = editableJson(this.recipe);
+        }
+
+        this.renderer = renderer;
+        this.renderer.setSource(session.half, this.camera);
+        this.renderer.setProfileLooks(looks ?? {});
+        this.renderer.setPhotoDefaults(this.defaults.recipe);
+        this.ai.reset();
+        this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
+        this.loadLens(bytes);
+        this.syncHistory();
+        this.status = 'ready';
+        done = startMeasure('first render');
+        this.renderNow();
+        done();
+        endStep(this.openSteps, 'show', now());
+        this.learnOpen(original, { camera, bytes: bytes.length, decodeMs, showMs: now() - showStarted });
+        if (!cached) this.keepDecoded(asset.checksum, session);
       } catch (e) {
-        renderer.dispose();
+        if (renderer && this.renderer !== renderer) renderer.dispose();
         throw e;
       }
-      this.session = session;
-      this.camera = cameraInfo(session.meta);
-      const looks = await looksP;
-      this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
-      if (!stored) {
-        this.recipe = cloneRecipe(this.defaults.recipe);
-        this.savedJson = editableJson(this.recipe);
-      }
-
-      this.renderer = renderer;
-      this.renderer.setSource(session.half, this.camera);
-      this.renderer.setProfileLooks(looks ?? {});
-      this.renderer.setPhotoDefaults(this.defaults.recipe);
-      this.ai.reset();
-      this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
-      this.loadLens(bytes);
-      this.syncHistory();
-      this.status = 'ready';
-      done = startMeasure('first render');
-      this.renderNow();
-      done();
       // Full resolution is needed for saving and 1:1 zoom; start it in the background.
       this.startFullDecode();
       if (!stored) this.checkSidecar(asset.id);
       this.offerFujiLooks();
     } catch (e) {
       this.fail(e);
+    }
+  }
+
+  private estimateStep(id: OpenStepId, ms: number): void {
+    const s = this.openSteps.find((x) => x.id === id);
+    if (s && s.startedAt === null) s.estimateMs = ms;
+  }
+
+  /** Shows where the original comes from and how much of it has arrived (at most every 50 ms). */
+  private originalProgress(p: DownloadProgress): void {
+    const s = this.openSteps.find((x) => x.id === 'original');
+    if (!s || s.endedAt !== null) return;
+    if (p.from === 'cache') {
+      s.label = OPEN_LABELS.originalCached;
+      s.estimateMs = estimateReadMs(this.openTimes, p.total);
+      return;
+    }
+    const t = performance.now();
+    const last = p.total > 0 && p.received >= p.total;
+    if (!last && t - this.lastBytesShown < 50) return;
+    this.lastBytesShown = t;
+    const total = p.total || this.fileBytes;
+    s.label = OPEN_LABELS.download;
+    s.bytes = { received: p.received, total };
+    if (total) s.estimateMs = estimateDownloadMs(this.openTimes, total);
+  }
+
+  /** Adds this open's step times to the averages the next open's estimates come from. */
+  private learnOpen(original: { from: DownloadProgress['from'] | null; endedAt: number }, sample: Omit<OpenSample, 'infoMs' | 'download' | 'read'>): void {
+    const info = this.openSteps.find((x) => x.id === 'info');
+    const orig = this.openSteps.find((x) => x.id === 'original');
+    const s: OpenSample = { ...sample };
+    if (info?.startedAt != null && info.endedAt != null) s.infoMs = info.endedAt - info.startedAt;
+    if (orig?.startedAt != null && original.endedAt > orig.startedAt) {
+      const part = { bytes: sample.bytes, ms: original.endedAt - orig.startedAt };
+      if (original.from === 'network') s.download = part;
+      else if (original.from === 'cache') s.read = part;
+    }
+    // Read again: another tab may have added an open since this one started.
+    this.openTimes = recordOpen(loadOpenTimes(), s);
+    saveOpenTimes(this.openTimes);
+  }
+
+  /** Keeps the half-size image for the next open of this photo, once the browser has a moment. */
+  private keepDecoded(checksum: string, session: RawSession): void {
+    const write = () => {
+      const done = startMeasure('decoded cache write');
+      void writeDecoded(checksum, session.meta, session.half).then(done);
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(write, { timeout: 2000 });
+    else setTimeout(write, 500);
+  }
+
+  /**
+   * Gets the photos next to this one (the filmstrip's neighbours) ready to open, one at a time in
+   * the background: their originals and half-size images go into this browser's caches.
+   */
+  prefetch(ids: (string | null)[]): void {
+    this.prefetchWanted = ids.filter((id): id is string => !!id && id !== this.asset?.id);
+    if (this.prefetchRunning || !canPrefetch()) return;
+    this.prefetchRunning = true;
+    void this.runPrefetch().finally(() => (this.prefetchRunning = false));
+  }
+
+  private async runPrefetch(): Promise<void> {
+    for (;;) {
+      const id = this.prefetchWanted.find((x) => !this.prefetchDone.has(x));
+      if (!id) return;
+      this.prefetchDone.add(id);
+      // A save renders at full size: leave it the memory and the processor.
+      while (this.saving) await new Promise((resolve) => setTimeout(resolve, 1000));
+      const done = startMeasure('prefetch');
+      try {
+        if ((await prefetchPhoto(id)) === 'done') done();
+      } catch (e) {
+        console.warn('Could not get the next photo ready', e);
+      }
     }
   }
 
@@ -648,11 +843,20 @@ export class Editor {
   private startFullDecode(): void {
     if (!this.session || this.fullStatus === 'decoding' || this.fullStatus === 'ready') return;
     this.fullStatus = 'decoding';
+    const started = performance.now();
+    // A linear DNG's full image comes with the half-size decode: nothing to time.
+    const timed = !this.session.fullStarted;
+    this.fullEta = { startedAt: started, estimateMs: estimateFullMs(this.openTimes, this.cameraKey, this.fileBytes) };
     this.session
       .full()
       .then((img) => {
         this.fullImage = img;
         this.fullStatus = 'ready';
+        this.fullEta = null;
+        if (timed) {
+          this.openTimes = recordFull(loadOpenTimes(), this.cameraKey, this.fileBytes, performance.now() - started);
+          saveOpenTimes(this.openTimes);
+        }
         if (this.notice === HALF_SIZE_NOTICE) this.notice = null;
         // Fringes are a pixel or two wide: measure them again at full resolution.
         this.measureCA();
@@ -661,6 +865,7 @@ export class Editor {
       .catch((e) => {
         console.error('Full-resolution decode failed', e);
         this.fullStatus = 'error';
+        this.fullEta = null;
         if (this.notice === HALF_SIZE_NOTICE) this.notice = FULL_FAILED_NOTICE;
       });
   }

@@ -1,7 +1,7 @@
 # Decoding speed
 
 How fast the editor opens and decodes a RAW, what has been done about it, and what could still be
-improved. State on 2026-11-12. The measurements are in [spike-results.md](spike-results.md).
+improved. State on 2026-11-13. The measurements are in [spike-results.md](spike-results.md).
 
 ## Where the time goes
 
@@ -20,20 +20,67 @@ Opening a photo, on the dev machine (16 threads, test Immich on localhost):
   decode the unpacking is most of the time.
 - **The full-resolution decode** (1:1 zoom, Save, export) runs in the background after the photo
   shows: 5–7 s for Bayer files, about 15 s for X-Trans, on one thread.
+- **A photo opened before, or prefetched, skips the download and the decode.** Then the time goes
+  to the page itself (0.1–0.14 s until the editor's code runs), the Immich calls (60–90 ms), reading
+  the two cached files (0.2–0.3 s), compiling the shaders (0.1 s) and the first render (40–70 ms).
+- **In a new browser profile, compiling the shaders takes 2.7–3.7 s** instead of 0.1 s, the first
+  time only. The decode runs alongside it.
 
 ## What is done
 
 Two branches, neither merged yet:
 
-- **`feature/decode-speed`: the steps around the decode overlap.**
-  - The original downloads while the saved edit and the snapshots load.
-  - The decoder's worker and its WebAssembly start before the file arrives (`prewarmDecoder()`).
-  - The shaders compile while the worker decodes.
-  - A cache hit no longer waits for the cache index to be written.
+- **`feature/decode-speed`: fewer decodes, overlapping steps, and a loading screen that says what
+  it is doing.**
+  - **The steps around the decode overlap.**
+    - The original downloads while the saved edit and the snapshots load.
+    - The decoder's worker and its WebAssembly start before the file arrives (`prewarmDecoder()`).
+    - The shaders compile while the worker decodes, not during the download: the download's chunks
+      are read on the page's thread, which compiling blocks.
+    - A cache hit no longer waits for the cache index to be written.
 
-  Together this saves 0.1–0.3 s per open here; more on a slow network. The branch also adds the
-  measuring tools: the editor's `immich-raw:*` timings, `e2e/probe-open-speed.mjs`, and the bench's
-  `WARM` and `TILES` options.
+    Together this saves 0.1–0.3 s per open here; more on a slow network.
+  - **A reopened photo skips the decode.** Its half-size image and LibRaw's metadata are kept in the
+    browser's storage (OPFS), next to the cached originals
+    (`apps/editor/src/lib/immich/decoded-cache.ts`). A full-resolution image is never kept.
+    - **Size:** about 36 MB per 24 MP photo, 67 MB at 45 MP and 92 MB at 61 MP.
+    - **One limit for both:** originals and decoded images share 800 MB
+      (`apps/editor/src/lib/immich/photo-cache.ts`; the originals had 2 GB of their own before),
+      about 4–7 photos of 45–61 MP.
+      - The least recently opened go first.
+      - The photo being edited and the prefetched neighbours stay while the page is open.
+      - A file that would only fit by pushing them out isn't kept.
+    - **Validity:** keyed by Immich's checksum of the original. A file written by another `DECODER`
+      or file format is ignored and replaced.
+    - **Where it works:** on HTTPS and localhost, like the cache of originals.
+
+    **Gain:** a photo opened before shows after 0.84–1.1 s instead of 2.0–3.6 s. The original and
+    the kept image are read side by side in 0.2–0.3 s.
+  - **The filmstrip's next and previous photo get ready in the background**
+    (`apps/editor/src/lib/immich/prefetch.ts`).
+    - **What happens:** once the full-resolution decode is done, the editor downloads both
+      neighbours and decodes them at half size into the two caches, one at a time. It waits while a
+      save runs.
+    - **Skipped:** on plain HTTP (no caches), with Data Saver on, on a mobile network, and when the
+      browser reports less than 4 GB of memory.
+    - **Only what fits:** a neighbour is fetched only if it fits in the cache next to the photos
+      the page keeps. Its size is estimated from Immich's file size and sensor size.
+    - **Gain:** → and ← then open the photo from the caches, in 0.84–1.0 s instead of 3.4–4.1 s.
+      Getting one 45 MP photo ready took about 3 s in the background.
+  - **The loading screen lists the steps:** photo info, the original, the decode and the first
+    render. Each step shows how long it took or should take, and the bar shows the time left
+    (`apps/editor/src/lib/ui/OpenProgress.svelte`).
+    - **Estimates** are moving averages of earlier opens in this browser, kept in `localStorage`
+      (`apps/editor/src/lib/state/open-times.ts`).
+      - **Decode times:** per camera (make, model, file type); a camera seen for the first time is
+        estimated per MB of RAW file.
+      - **Downloads:** the screen shows the megabytes and the speed, and the estimate follows the
+        actual speed.
+    - **Full resolution:** the title line counts down to the full-resolution image the same way.
+  - **Measuring tools:**
+    - the editor's `immich-raw:*` timings;
+    - `e2e/probe-open-speed.mjs`, with a `next` case for the prefetched neighbour;
+    - the bench's `WARM` and `TILES` options.
 - **`feature/libraw-threaded`: a second LibRaw build with OpenMP threads** (Emscripten 6.0.4,
   [packages/libraw](../packages/libraw/README.md)). It decodes to the same bytes as the build
   without threads.
@@ -79,30 +126,37 @@ Roughly by gain for the effort.
      metadata says 8190×5462.
    - Expect little for X-Trans: 0.83× the time, and 130 rows differed at the seam with 24 rows of
      overlap.
-4. **Keep the decoded half-size image** in the browser's storage (OPFS, keyed by checksum and
-   `DECODER`), next to the cached originals. Reopening a photo would then skip the 1–2.7 s decode.
-   It costs about 36 MB per 24 MP photo and 92 MB at 61 MP.
-5. **Start the full decode's worker early too**, like the half decode's. That saves 40–120 ms.
-6. **Tune the thread counts.**
+4. **Get the photo ready from Immich's own viewer.** The buttons script runs on Immich's pages, at
+   the same address as the editor, so it shares the editor's storage. While a RAW is shown in
+   Immich, it could download the original into the cache, so that Edit RAW skips the download.
+   Decoding there too would need the decoder in Immich's page, which is heavier.
+5. **Compile the shaders without blocking the page** (`KHR_parallel_shader_compile`). In a new
+   browser profile the shaders took 2.7–3.7 s to compile, blocking the page's thread (0.1 s once
+   the browser has them cached). The first open after installing or updating the browser waits for
+   it. With the extension, the compile runs in the GPU process and the renderer checks for
+   completion later, so the compile no longer blocks the page.
+6. **Batch export could use the kept half-size images** for the photos opened before (see 2.).
+7. **Start the full decode's worker early too**, like the half decode's. That saves 40–120 ms.
+8. **Tune the thread counts.**
    - More than 4 threads per decode wasn't measured on our files.
    - A batch export started from the editor uses the editor's 4 threads per photo, with 4 photos at
      once.
    - `e2e/bench-export.mjs` can measure both.
-7. **Limits inside LibRaw:**
+9. **Limits inside LibRaw:**
    - The X-Trans demosaic stays on one thread, because LibRaw's OpenMP version of it has threads
      reading pixels that others are writing.
    - The Sony ARW and Nikon NEF decoders unpack on one thread.
 
    Both would need changes in LibRaw itself.
-8. **One compiler for both builds.** The single-threaded build uses Emscripten 5.0.7, the threaded
-   one 6.0.4. Their output is identical today. Building both with 6.x would simplify the Docker build;
-   check it with `e2e/probe-decoder-compare.mjs` and bump `DECODER` if anything changes.
-9. **Robustness:**
-   - One long probe run, all five files in one tab, crashed the tab while the PC was short of
-     memory. It didn't happen again in 24 decodes in one tab or in the smoke runs.
-   - The threaded build may grow to 4 GB; nothing has tested more than about 2.4 GB.
-   - Killing the `docker build` client doesn't stop the build, so a memory watchdog for the LibRaw
-     builds has to cancel the build itself.
+10. **One compiler for both builds.** The single-threaded build uses Emscripten 5.0.7, the threaded
+    one 6.0.4. Their output is identical today. Building both with 6.x would simplify the Docker build;
+    check it with `e2e/probe-decoder-compare.mjs` and bump `DECODER` if anything changes.
+11. **Robustness:**
+    - One long probe run, all five files in one tab, crashed the tab while the PC was short of
+      memory. It didn't happen again in 24 decodes in one tab or in the smoke runs.
+    - The threaded build may grow to 4 GB; nothing has tested more than about 2.4 GB.
+    - Killing the `docker build` client doesn't stop the build, so a memory watchdog for the LibRaw
+      builds has to cancel the build itself.
 
 Outside decoding, [Export speed](export-speed.md#possible-speed-ups-with-more-cores) lists moving
 the export's resize, sharpen and encode into workers.
@@ -112,6 +166,10 @@ the export's resize, sharpen and encode into workers.
 - **Opening in the editor:** `node e2e/probe-open-speed.mjs <out-dir> [sony,canon,fuji]` gives the
   median time until the photo shows and the editor's own step timings. `IMMICH_URLS=a,b` compares
   two editor builds ([e2e/README.md](../e2e/README.md)).
+  - It opens each RAW three ways: in a fresh browser profile, again (from the caches), and its
+    filmstrip neighbour after the prefetch (`canon-lr` and the `DSCF…` series have one).
+  - The browser it starts keeps its shader cache across the runs, so only the first open of a run
+    pays for compiling the shaders (2.7–3.7 s in a new profile).
   - In the browser, the steps are the `immich-raw:*` entries in the DevTools Performance panel.
   - `e2e/smoke.mjs` prints them after opening.
 - **One decode at a time, by LibRaw build:**

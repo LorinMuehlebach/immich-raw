@@ -233,6 +233,60 @@ The editor's own timings (`immich-raw:*` measures, after):
 saves 0.1–0.3 s on this machine and network, mostly on downloads. Making the half decode itself
 faster takes a faster unpack, i.e. threads in the decoder.
 
+### Opening from the browser's cache and prefetching (2026-11-13)
+
+`e2e/probe-open-speed.mjs`, 3 runs per file and case, alternating between two builds on the same
+test Immich:
+- **before:** the `testing` build, with none of the open speed-ups;
+- **after:** `feature/decode-speed`.
+
+The second case keeps the half-size image in the browser's storage, and the third case prefetches
+the filmstrip's neighbours.
+
+| File | Open | Before | After |
+|---|---|---|---|
+| Sony A7R V ARW (61 MP) | first | 4715 | 3884 |
+| | again | 3601 | 1097 |
+| Canon R5 CR3 (45 MP) | first | 2609 | 2235 |
+| | again | 2023 | 841 |
+| | → next (`canon-r5`) | 3372 | 997 |
+| Fuji RAF (`DSCF7860`) | first | 2920 | 2808 |
+| | again | 2710 | 851 |
+| | → next | 4125 | 840 |
+
+Median ms until the photo shows.
+- **first:** a fresh browser profile.
+- **again:** the same photo once more.
+- **→ next:** the neighbour, after the editor had prefetched it.
+
+The probe's browser keeps its shader cache between runs.
+
+The editor's timings on a reopened or prefetched photo (`immich-raw:*`, medians):
+
+| Step | Time |
+|---|---|
+| page start (navigation until the editor's code runs) | 100–140 ms |
+| session, photo info, saved edit and snapshots | 60–90 ms |
+| original from the cache | 170–260 ms |
+| decoded image from the cache, at the same time | 190–270 ms |
+| renderer (shader compiling), at the same time | 90–120 ms |
+| first render | 40–70 ms |
+
+- **The kept image is larger than the RAW:** 67 MB for the 45 MP Canon (its CR3 is 41 MB), and about
+  92 MB at 61 MP. Reading it at 250–300 MB/s still beats decoding by 0.9–1.6 s.
+- **Writing it** takes 0.14–0.27 s, after the photo shows.
+- **Prefetching one 45 MP CR3** (download and half-size decode) took 3 s.
+- **In a new browser profile, the shaders took 2.7–3.7 s to compile.**
+  - Compiling while the original downloaded stalled the download, whose chunks are read on the
+    page's thread: 41 MB took 3.1 s instead of 0.6 s.
+  - Compiling right after the decode started stalled the decode between its round trips to the
+    worker.
+  - The editor now compiles once the worker has started unpacking, or, when both files are
+    cached, while they are read.
+- **Smoke test (`e2e/smoke.mjs`, Sony):** 13/13 passed on both builds.
+  - Opening took 5.3 s after and 10.5 s before.
+  - Saving took 7.6 s after and 14.0 s before, with the PC short of memory.
+
 ### AI masks: model choice (2026-11-11)
 
 Candidates had to have a permissive licence (MIT, Apache-2.0, BSD; no non-commercial weights),

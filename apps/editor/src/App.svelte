@@ -1,6 +1,6 @@
 <script lang="ts">
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
@@ -28,6 +28,7 @@
   import DngPanel from './lib/ui/DngPanel.svelte';
   import Filmstrip from './lib/ui/Filmstrip.svelte';
   import Histogram from './lib/ui/Histogram.svelte';
+  import OpenProgress from './lib/ui/OpenProgress.svelte';
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
@@ -58,6 +59,22 @@
     if (cullInfo.role === 'runner-up') return `${badge.icon} runner-up (${cullInfo.rank} of ${cullInfo.groupSize})`;
     return `${badge.icon} ${badge.label.toLowerCase()}`;
   });
+
+  // Once the full-resolution decode is done, the photos next to this one get ready to open.
+  $effect(() => {
+    const { prev, next } = neighbours;
+    if (editor.status === 'ready' && (editor.fullStatus === 'ready' || editor.fullStatus === 'error')) untrack(() => editor.prefetch([next, prev]));
+  });
+
+  // The title line counts down to the full-resolution image.
+  let fullNow = $state(0);
+  $effect(() => {
+    if (!editor.fullEta) return;
+    fullNow = performance.now();
+    const timer = setInterval(() => (fullNow = performance.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  const fullLeft = $derived(editor.fullEta ? editor.fullEta.estimateMs - (fullNow - editor.fullEta.startedAt) : 0);
   const presetStore = new PresetStore();
   // Built by apps/editor/vite.config.ts: our licence, the third-party notices and the source link.
   const LICENSES_URL = `${import.meta.env.BASE_URL}licenses.txt`;
@@ -430,7 +447,7 @@
       <div class="sub">
         {camera}
         {#if editor.status === 'ready'}
-          {#if editor.fullStatus === 'decoding'}· decoding full resolution…{/if}
+          {#if editor.fullStatus === 'decoding'}· decoding full resolution{fullLeft >= 1500 ? ` (about ${Math.round(fullLeft / 1000)} s)` : ''}…{/if}
           {#if editor.readOnly}· view only{/if}
           {#if editor.recipe.render && !editor.dirty}· saved{/if}
           {#if editor.dirty}· unsaved changes{/if}
@@ -569,12 +586,7 @@
       {#if editor.status === 'loading'}
         <div class="center-msg">
           {#if editor.previewUrl}<img class="preview" src={editor.previewUrl} alt="" />{/if}
-          <div class="loading">
-            <div>{editor.loadingText}</div>
-            {#if editor.loadingProgress !== null}
-              <div class="bar"><i style:width="{Math.round(editor.loadingProgress * 100)}%"></i></div>
-            {/if}
-          </div>
+          <OpenProgress steps={editor.openSteps} fallback={editor.loadingText} />
         </div>
       {:else if editor.status === 'auth'}
         <div class="center-msg card">
@@ -990,14 +1002,9 @@
   }
   .preview {
     max-width: calc(100% - 48px);
-    max-height: calc(100% - 120px);
+    max-height: calc(100% - 200px);
     opacity: 0.55;
     filter: blur(0.5px);
-  }
-  .loading {
-    color: var(--text);
-    text-align: center;
-    min-width: 260px;
   }
   .bar {
     height: 4px;
@@ -1131,10 +1138,6 @@
     .saving .card {
       min-width: 0;
       width: calc(100% - 48px);
-    }
-    .loading {
-      min-width: 0;
-      width: 80%;
     }
   }
 </style>

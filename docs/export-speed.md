@@ -66,8 +66,9 @@ the browser. Too many at once can crash the browser tab or make Windows move mem
 The export runs on plain HTTP too, and the photos-at-once speed-up works there as well: it uses Web Workers,
 which need no special page. HTTPS (or `localhost`) gives the browser more to work with:
 
-- **RAW cache.** Downloaded originals are kept in the browser's private storage (up to 2 GB) and reused by
-  the editor and later exports. Browsers only allow this storage on HTTPS. Over plain HTTP every export
+- **RAW cache.** Downloaded originals are kept in the browser's private storage (800 MB, shared with the
+  editor's decoded images; it was 2 GB when these exports were measured) and reused by the editor and later
+  exports. Browsers only allow this storage on HTTPS. Over plain HTTP every export
   downloads every original again, 450 MB for the 8 RAWs above. Even with Immich on the same computer, 4 at
   once took 10 % longer over HTTP (56.5 s instead of 51.3 s; 1 at once: 139.4 s against 139.0 s). Over a
   network the gap grows with the download time: about 36 s more per export at 100 Mbit/s.

@@ -75,9 +75,14 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   can log in with the test password; run the same command without `E2E_BIND` to close it again.
 - Decoder build: `node e2e/probe-decoder-compare.mjs <samples-dir>` decodes the samples with
   `packages/libraw/lib` and the npm libraw-wasm 1.6.0 it replaced, and checks the output is the same.
-- Opening speed: `node e2e/probe-open-speed.mjs <out-dir> [sony,canon,fuji]` opens each RAW in the
-  editor, once downloading the original and once from the browser's cache, and reports the median
-  time until the photo shows plus the editor's own `immich-raw:*` step timings. Nothing is saved.
+- Opening speed: `node e2e/probe-open-speed.mjs <out-dir> [sony,canon,fuji]` reports the median
+  time until the photo shows, plus the editor's own `immich-raw:*` step timings. Nothing is saved.
+  Each RAW is opened three ways:
+  - `download`: in a fresh browser profile;
+  - `cached`: again, so the original (and the decoded image, in builds that keep it) comes from the
+    browser's cache;
+  - `next`: the filmstrip's next photo, with →, after the editor got it ready in the background.
+    Only RAWs with a neighbour have this; `canon-lr` and the `DSCF…` series do.
   To compare two editor builds, serve the second one at another address (for example a second
   nginx container on the e2e network with `-p 127.0.0.1:8087:80` and that build mounted at
   `/usr/share/nginx/immich-raw`), then pass both:

@@ -43,6 +43,12 @@ Below the photo: the RAWs of the album or person you opened the photo from, othe
 taken within 12 hours of it. ← and → go to the previous and next photo. With the culler it also
 shows stacks ([Stacking](stacking.md)).
 
+Over HTTPS the editor gets the previous and next photo ready while you edit: once the open photo
+is decoded at full resolution, it downloads and decodes them in the background, one at a time, so
+← and → open them from the browser's cache (800 MB, shared with the photos opened before). It
+doesn't do this with Data Saver on, on a mobile network, or on a device with less than 4 GB of
+memory.
+
 ![The filmstrip of an album](images/workflow/filmstrip.jpg)
 
 ## Lightroom import

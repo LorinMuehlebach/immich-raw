@@ -139,8 +139,12 @@ function toMeta(m: RawWasmMeta): RawMeta {
   };
 }
 
-/** `label` names the timing measures: `immich-raw:<label> open`, `… metadata`, `… imageData`. */
-async function decode(bytes: Uint8Array, settings: Record<string, unknown>, withMeta: boolean, label: string) {
+/**
+ * `label` names the timing measures: `immich-raw:<label> open`, `… metadata`, `… imageData`.
+ * `onWorking` is called once the worker has the long part (unpacking and processing): from then
+ * on the page's thread can be busy without holding up the decode.
+ */
+async function decode(bytes: Uint8Array, settings: Record<string, unknown>, withMeta: boolean, label: string, onWorking?: () => void) {
   const raw = await takeLibRaw();
   try {
     // open() transfers (detaches) the buffer it gets, so always hand it a copy. It also waits
@@ -155,7 +159,9 @@ async function decode(bytes: Uint8Array, settings: Record<string, unknown>, with
       done();
     }
     done = startMeasure(`${label} imageData`);
-    const img = await raw.imageData();
+    const imgP = raw.imageData();
+    onWorking?.();
+    const img = await imgP;
     done();
     if (!img || !(img.data instanceof Uint16Array) || img.colors !== 3) {
       throw new Error('The decoder returned no 16-bit RGB image.');
@@ -317,9 +323,12 @@ export class RawSession {
     this.decoder = { ...DECODER, demosaic: demosaicFor(meta.isXTrans).name };
   }
 
-  /** Decodes at half size (no demosaic, ~2 s) so editing can start right away. */
-  static async open(bytes: Uint8Array): Promise<RawSession> {
-    const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true, 'half decode');
+  /**
+   * Decodes at half size (no demosaic, ~2 s) so editing can start right away. `onWorking`: called
+   * when the worker starts the long part of the decode (see decode()).
+   */
+  static async open(bytes: Uint8Array, onWorking?: () => void): Promise<RawSession> {
+    const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true, 'half decode', onWorking);
     const m = toMeta(meta!);
     // LibRaw only shrinks mosaic images; a demosaiced (linear, e.g. lossy) DNG comes back at
     // full size. Keep it as the full image and halve it for editing.
@@ -329,6 +338,14 @@ export class RawSession {
       return session;
     }
     return new RawSession(bytes, m, { ...img, halfSize: true });
+  }
+
+  /**
+   * A session from an earlier open() of the same file (e.g. its half image kept in the
+   * browser's storage), so the half-size decode is skipped. full() decodes as usual.
+   */
+  static restore(bytes: Uint8Array, meta: RawMeta, half: LinearImage): RawSession {
+    return new RawSession(bytes, meta, { ...half, halfSize: true });
   }
 
   /** Full-resolution decode (5-10 s, X-Trans ~17 s). Started once, shared by all callers. */
