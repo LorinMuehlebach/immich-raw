@@ -130,6 +130,8 @@ Code: [services/culler/](../services/culler/).
 - **Tags** on every file of each capture, under `Culling/` (the root can be changed): `Best`,
   `Runner-up`, `Rejected/Lighting`, `Rejected/Blur`, `Rejected/Eyes closed` or `Bracket`. The best of
   a close call also gets `Close call`, so search for that tag to find the stacks worth a look.
+  - `Culling/Rejected` itself, without a reason after it, is yours: the editor's X sets it (see
+    [Workflow → Filmstrip](workflow.md#filmstrip)), and the culler never removes it.
   - When a photo's tag changes (say Runner-up becomes Best), Immich 3.4 sometimes loses the new tag a
     moment later. It writes tags to the photo's sidecar file in a background job and reads them back.
   - So after applying or undoing, the culler waits a few seconds, reads the tags again and sets any
@@ -152,6 +154,8 @@ A run that finds nothing new changes nothing.
 |---|---|
 | Put another shot in front of a stack (Immich), or ★ **Make best** (filmstrip) | Keeps your choice and moves the `Best` tag to it; it also notes what it would have picked (see [Your picks](#your-picks)). When the stack is later split into moments, your pick stays in front of its own |
 | Give a rejected photo stars, or remove its reject flag | Never sets the flag on it again |
+| Reject a shot yourself (X in the editor, or the tag `Culling/Rejected`) | Never removes that tag, and never makes that shot the best |
+| Take one of its reject tags off (U or P in the editor, or in Immich) | Leaves that shot a runner-up from then on |
 | Take a photo out of a stack | Leaves that photo alone from then on |
 | Delete a whole stack | Doesn't stack that group again (only **Include them** on the auto-stack page, or a run with `--force`, does) |
 | Save an edit of a shot that isn't in front | The edit joins the stack without taking the front |

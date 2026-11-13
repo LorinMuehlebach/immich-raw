@@ -139,6 +139,12 @@ import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification
 import { hasDecoded, readDecoded, writeDecoded } from '../immich/decoded-cache.ts';
 import { keepView, readView, type KeptView } from '../immich/view-cache.ts';
 import { editStates } from '../immich/edit-state.ts';
+import { DraftKeeper, canvasJpeg, thumbnailJpeg } from '../drafts/draft-keeper.ts';
+import { draftKey, savedShows, withDraft, type Draft } from '../drafts/draft-store.ts';
+import { drafts } from '../drafts/drafts.svelte.ts';
+import { describeDraftsSaved, saveDraftPhoto, saveEach } from '../drafts/save-drafts.ts';
+import { syncInto } from '../drafts/sync.ts';
+import { RawRenderer } from '../export/raw-render.ts';
 import { looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
 import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
@@ -575,6 +581,26 @@ export class Editor {
   private viewKept = '';
   /** Which picture `previewUrl` shows (looks.ts), so the same one isn't fetched and swapped in again. */
   private previewSource: string | null = null;
+  /** The open photo's draft, kept in this browser while it has unsaved changes (drafts/). */
+  private draftKeeper = new DraftKeeper(
+    {
+      current: () => (this.status === 'ready' && this.asset ? { assetId: this.asset.id, checksum: this.asset.checksum, copyId: this.copyId } : null),
+      dirty: () => this.dirty,
+      blocked: () => this.readOnly || !!this.saving,
+      recipe: () => $state.snapshot(this.recipe) as Recipe,
+      savedBase: () => (this.storedEdit || this.savedRenderId ? this.savedJson : 'unedited'),
+      plainCanvas: () => {
+        if (!this.canvas || !this.plainView()) return null;
+        this.renderNow();
+        return this.canvas;
+      },
+    },
+    { store: drafts, keepView, snapshot: canvasJpeg, thumbnail: thumbnailJpeg },
+  );
+  /** The photo opened with a draft made before its saved edit changed (saved in another tab or browser). */
+  draftConflict = $state<{ at: number } | null>(null);
+  /** Undo histories of the edits opened in this page, by draftKey(), with the state each ends on. */
+  private histories = new Map<string, { history: History; json: string }>();
   /** The same for the background work on the photos around it. */
   private prefetchStop = new AbortController();
 
@@ -634,7 +660,9 @@ export class Editor {
     if (this.saving) return;
     if (url === 'push') history.pushState(null, '', this.urlFor(id));
     this.readUrl();
-    this.forgetChangedLook();
+    const kept = this.draftKeeper.keep();
+    this.forgetChangedLook(kept);
+    this.keepHistory();
     this.closePhoto();
     // The filmstrip moves on at once (and ← → count from this photo), its look shows.
     if (hint.asset?.id === id) this.asset = hint.asset;
@@ -656,11 +684,41 @@ export class Editor {
    * The photo being left looks different from what the filmstrip got ready for it, if it was
    * saved here (its stored edit changed) or the editor kept a new look of it (view-cache.ts).
    */
-  private forgetChangedLook(): void {
+  private forgetChangedLook(draftKept: Promise<void>): void {
     const id = this.asset?.id;
     if (!id) return;
     if (this.savedRenderId) editStates.forget(id);
     if (this.savedRenderId || this.viewKept) looks.forget(id);
+    // Its draft (and the picture of it) is being written: forget the look once it is.
+    if (this.dirty) void draftKept.finally(() => looks.forget(id));
+  }
+
+  /** Keeps the undo history of the edit being left, for when it is opened again in this page. */
+  private keepHistory(): void {
+    if (this.status !== 'ready' || !this.asset) return;
+    const key = draftKey(this.asset.id, this.copyId);
+    this.histories.delete(key);
+    this.histories.set(key, { history: this.history, json: editableJson(this.recipe) });
+    // The oldest go: up to 200 steps of a few kB each per edit.
+    if (this.histories.size > 40) this.histories.delete(this.histories.keys().next().value!);
+    this.history = new History();
+  }
+
+  /**
+   * Starts the undo history of the edit just opened: the one it had earlier in this page if that
+   * ends where the edit is now, else the saved state (`saved`) with the draft as one step on top.
+   */
+  private startHistory(saved: Recipe, label: string, draft: Draft | null): void {
+    const key = this.asset ? draftKey(this.asset.id, this.copyId) : '';
+    const kept = this.histories.get(key);
+    const now = $state.snapshot(this.recipe) as Recipe;
+    if (kept && kept.json === editableJson(now)) {
+      this.history = kept.history;
+    } else {
+      this.history.reset(saved, label);
+      if (draft) this.history.commit(now, 'Draft');
+    }
+    this.draftKeeper.opened(draft ? now : null);
   }
 
   /**
@@ -682,6 +740,8 @@ export class Editor {
     if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
     this.previewUrl = null;
     this.previewSource = null;
+    this.draftConflict = null;
+    this.draftKeeper.opened(null);
     this.recipe = defaultRecipe();
     this.savedJson = editableJson(this.recipe);
     this.history.reset($state.snapshot(this.recipe) as Recipe, 'Open');
@@ -778,6 +838,9 @@ export class Editor {
       document.title = `${asset.originalFileName} · immich-raw`;
       // What the photo looked like here last time; whether it still applies depends on the saved edit.
       const viewP = readView(asset.checksum);
+      // Unsaved changes kept in this browser (drafts/), for the edit in the address bar.
+      const urlCopy = new URLSearchParams(location.search).get('copy');
+      const draftP = this.readOnly ? Promise.resolve(null) : drafts.get(asset.id, urlCopy);
       // The cache never pushes out the photo being edited while it is open.
       unpinPhotos();
       pinPhoto(asset.checksum);
@@ -835,13 +898,17 @@ export class Editor {
       }
       this.copyId = copyId;
       const stored = storedEdit(items, copyId);
-      void this.showPreview(asset, stored, viewP, gen);
+      const draft = this.readOnly ? null : copyId === urlCopy ? await draftP : await drafts.get(asset.id, copyId);
+      live();
+      void this.showPreview(asset, stored, viewP, gen, draft?.recipe ?? null);
       this.snapshots = snapshotsIn(items, historyKeyFor(copyId));
       this.storedEdit = !!stored;
+      // Synced settings (draft.patch) go on whatever is saved; a draft from the editor may be older than the save.
+      if (draft && !draft.patch && draft.base !== savedShows(stored)) this.draftConflict = { at: draft.updatedAt };
       // Film looks kept in this browser (never downloads here).
       const looksP = fujiLooks.load();
       if (stored) {
-        this.recipe = stored;
+        this.recipe = draft ? withDraft(stored, draft) : stored;
         this.savedJson = editableJson(stored);
         if (stored.render?.assetId) this.pastRenders.add(stored.render.assetId);
       }
@@ -911,9 +978,10 @@ export class Editor {
         const looks = await looksP;
         live();
         this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
+        const saved = stored ?? cloneRecipe(this.defaults.recipe);
         if (!stored) {
-          this.recipe = cloneRecipe(this.defaults.recipe);
-          this.savedJson = editableJson(this.recipe);
+          this.recipe = draft ? withDraft(saved, draft) : cloneRecipe(saved);
+          this.savedJson = editableJson(saved);
         }
 
         this.renderer = renderer;
@@ -921,7 +989,7 @@ export class Editor {
         this.renderer.setProfileLooks(looks ?? {});
         this.renderer.setPhotoDefaults(this.defaults.recipe);
         this.ai.reset();
-        this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
+        this.startHistory(saved, stored ? 'Open (saved edit)' : 'Open', draft);
         this.loadLens(bytes);
         this.syncHistory();
         this.status = 'ready';
@@ -937,7 +1005,7 @@ export class Editor {
       }
       // Full resolution is needed for saving and 1:1 zoom; start it in the background.
       this.startFullDecode();
-      if (!stored) this.checkSidecar(asset.id);
+      if (!stored && !draft) this.checkSidecar(asset.id);
       this.offerFujiLooks();
     }
   }
@@ -1134,7 +1202,7 @@ export class Editor {
    * - Immich's preview of the RAW (its own conversion: brighter, more saturated, without the edit).
    * The filmstrip's look of it (switchPhoto) may show already: the same picture isn't fetched again.
    */
-  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number): Promise<void> {
+  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number, draft: Recipe | null): Promise<void> {
     const show = (b: Blob, source: string) => {
       if (gen !== this.photoGen || this.status === 'ready' || source === this.previewSource) return;
       if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
@@ -1142,7 +1210,7 @@ export class Editor {
       this.previewSource = source;
     };
     const view = await viewP;
-    const shows = viewShows(stored);
+    const shows = viewShows(stored, draft);
     if (view && view.shows === shows) return show(view.image, viewSource(shows));
     for (const id of [stored?.render?.assetId, asset.id]) {
       if (!id || gen !== this.photoGen) continue;
@@ -1163,15 +1231,129 @@ export class Editor {
   private keepViewIfPlain(): void {
     const a = this.asset;
     const canvas = this.canvas;
-    if (!a || !canvas || this.dirty || this.previewRecipe || this.before || this.clipping || this.maskView !== 'none') return;
-    if (this.overlayMask || this.wholeView || this.zoom.on) return;
-    if (this.lensInfo.searching || Object.values(this.ai.status).some((s) => s.state === 'working')) return;
+    if (!a || !canvas || this.dirty || !this.plainView()) return;
     const key = `${a.checksum}|${this.savedJson}`;
     if (key === this.viewKept) return;
     this.viewKept = key;
     const shows = this.storedEdit || this.savedRenderId ? this.savedJson : 'unedited';
     const checksum = a.checksum;
     canvas.toBlob((b) => b && void keepView(checksum, shows, b), 'image/jpeg', 0.85);
+  }
+
+  /** The canvas shows the whole photo as edited: no before view, overlay, zoom, or work still to come in. */
+  private plainView(): boolean {
+    if (this.previewRecipe || this.before || this.clipping || this.maskView !== 'none') return false;
+    if (this.overlayMask || this.wholeView || this.zoom.on) return false;
+    return !this.lensInfo.searching && !Object.values(this.ai.status).some((s) => s.state === 'working');
+  }
+
+  // ---------------------------------------------------------------- drafts
+
+  /** Writes the open edit's draft now (leaving it, or the page); resolves once it is stored. */
+  keepDraft(): Promise<void> {
+    return this.draftKeeper.keep();
+  }
+
+  /** Edits made in the last moments aren't in the draft yet. */
+  get draftDue(): boolean {
+    return this.draftKeeper.due;
+  }
+
+  /** Back to the saved edit (or the photo's defaults): the draft goes. */
+  discardDraft(): void {
+    this.draftConflict = null;
+    if (this.dirty) {
+      this.applyEditable(JSON.parse(this.savedJson) as ReturnType<typeof editable>);
+      this.pendingLabel = 'Discard draft';
+      this.commit();
+    }
+    void this.draftKeeper.drop();
+  }
+
+  /** The draft stays, though the saved edit changed since it was made (draftConflict). */
+  keepOlderDraft(): void {
+    this.draftConflict = null;
+    void this.draftKeeper.rewrite();
+  }
+
+  /**
+   * Sync Settings: the chosen groups of the open edit's settings go onto these other photos as
+   * drafts (drafts/sync.ts); Save drafts puts them in Immich.
+   */
+  async syncSettings(assetIds: readonly string[], groups: GroupId[]): Promise<void> {
+    const open = this.asset?.id;
+    const targets = assetIds.filter((id) => id !== open);
+    if (!targets.length || !groups.length || this.readOnly) return;
+    this.commit();
+    const patch = pickGroups($state.snapshot(this.recipe) as Recipe, groups);
+    const deps = { draft: (id: string) => drafts.get(id, null), put: (d: Omit<Draft, 'key'>) => drafts.put(d) };
+    let synced = 0;
+    const failed: string[] = [];
+    for (const id of targets) {
+      try {
+        await syncInto(id, patch, deps);
+        looks.forget(id);
+        synced++;
+      } catch (e) {
+        failed.push(errorMessage(e));
+      }
+    }
+    const photos = (n: number) => `${n} ${n === 1 ? 'photo' : 'photos'}`;
+    this.notice = `Settings synced to ${photos(synced)} as drafts; Save drafts in the filmstrip puts them in Immich.${failed.length ? ` ${photos(failed.length)} failed: ${failed[0]}` : ''}`;
+  }
+
+  /**
+   * Saves the drafts of these photos to Immich: the open photo's with save(), the others one at a
+   * time like an album export, while the editor waits (each needs a full-resolution decode).
+   */
+  async saveDrafts(assetIds: ReadonlySet<string>): Promise<void> {
+    if (this.saving || this.readOnly || this.status !== 'ready') return;
+    await this.keepDraft();
+    const open = this.asset?.id;
+    if (open && assetIds.has(open) && this.dirty && !(await this.save())) return;
+    const others = (await drafts.list()).filter((d) => assetIds.has(d.assetId) && !(d.assetId === open && d.copyId === this.copyId));
+    if (!others.length) return;
+    const stop = new AbortController();
+    const cancel = () => stop.abort();
+    const total = others.length;
+    let at = 0;
+    let name = '';
+    const show = (label: string, fraction: number) => (this.saving = { label: `Saving drafts, ${at + 1} of ${total}: ${name}${label ? ` (${label})` : ''}`, fraction: (at + fraction) / total, cancel });
+    show('', 0);
+    const raws = new RawRenderer();
+    try {
+      // Never two big decodes at once: the open photo's full resolution and the neighbours' first.
+      while (this.fullStatus === 'decoding' || this.decoding) await new Promise((resolve) => setTimeout(resolve, 500));
+      const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
+      const settings = $state.snapshot(this.exportSettings.save) as SaveSettings;
+      const result = await saveEach(
+        others,
+        async (draft, i) => {
+          at = i;
+          name = '';
+          const warnings = await saveDraftPhoto(draft, {
+            raws,
+            preset,
+            settings,
+            copyright: this.exportSettings.copyright,
+            fallbackOwner: this.ownerName(),
+            onStep: (s, f, n) => {
+              name = n;
+              show(STEP_LABEL[s as keyof typeof STEP_LABEL] ?? '', s === 'download' || s === 'queued' ? 0 : f);
+            },
+          });
+          await drafts.remove(draft.assetId, draft.copyId);
+          editStates.forget(draft.assetId);
+          looks.forget(draft.assetId);
+          return warnings;
+        },
+        stop.signal,
+      );
+      this.notice = describeDraftsSaved(result);
+    } finally {
+      raws.dispose();
+      this.saving = null;
+    }
   }
 
   private startFullDecode(): void {
@@ -1274,6 +1456,7 @@ export class Editor {
   // ---------------------------------------------------------------- rendering
 
   requestRender(): void {
+    this.draftKeeper.changed();
     if (this.renderQueued) return;
     this.renderQueued = true;
     requestAnimationFrame(() => {
@@ -2643,8 +2826,12 @@ export class Editor {
     history.replaceState(history.state, '', `${location.pathname}?${q}`);
   }
 
-  /** Puts the original edit or a virtual copy in the editor; the photo stays decoded. */
-  private enterEdit(copyId: string | null, stored: Recipe | null, snapshots: Snapshot[]): void {
+  /**
+   * Puts the original edit or a virtual copy in the editor, with its draft if it has one; the photo
+   * stays decoded.
+   */
+  private enterEdit(copyId: string | null, stored: Recipe | null, snapshots: Snapshot[], draft: Draft | null = null): void {
+    this.keepHistory();
     this.endTargeted();
     this.maskDraft = null;
     this.aiPicker = null;
@@ -2653,22 +2840,28 @@ export class Editor {
     this.autoApplied = null;
     this.copyId = copyId;
     this.setUrlCopy(copyId);
-    this.recipe = stored ?? cloneRecipe(this.defaults!.recipe);
-    this.savedJson = editableJson(this.recipe);
+    const saved = stored ?? cloneRecipe(this.defaults!.recipe);
+    this.recipe = draft ? withDraft(saved, draft) : saved;
+    this.savedJson = editableJson(saved);
     this.storedEdit = !!stored;
     this.snapshots = snapshots;
+    this.draftConflict = draft && !draft.patch && draft.base !== savedShows(stored) ? { at: draft.updatedAt } : null;
     // "Back" may lead to any of this RAW's JPEGs; it goes to the one of the edit open last.
     if (stored?.render?.assetId) this.pastRenders.add(stored.render.assetId);
-    this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
+    this.startHistory(saved, stored ? 'Open (saved edit)' : 'Open', draft);
     this.syncHistory();
     this.syncLens();
     this.requestRender();
   }
 
-  /** Opens the original edit (null) or a virtual copy as stored now; unsaved changes are dropped. */
+  /**
+   * Opens the original edit (null) or a virtual copy, with its draft if it has one. The edit being
+   * left keeps its unsaved changes as a draft.
+   */
   async openEdit(copyId: string | null): Promise<void> {
     const asset = this.asset;
     if (!asset || this.status !== 'ready' || copyId === this.copyId) return;
+    void this.draftKeeper.keep();
     let items: { key: string; value: unknown }[];
     try {
       items = await getAssetMetadata({ id: asset.id });
@@ -2681,7 +2874,8 @@ export class Editor {
       this.notice = 'That virtual copy no longer exists.';
       return;
     }
-    this.enterEdit(copyId, storedEdit(items, copyId), snapshotsIn(items, historyKeyFor(copyId)));
+    const draft = this.readOnly ? null : await drafts.get(asset.id, copyId);
+    this.enterEdit(copyId, storedEdit(items, copyId), snapshotsIn(items, historyKeyFor(copyId)), draft);
   }
 
   /**
@@ -2702,6 +2896,8 @@ export class Editor {
       return;
     }
     this.copies = [...this.copies, copyInfo(c)];
+    // The unsaved changes went into the copy: the edit it was made from has no draft any more.
+    void this.draftKeeper.drop();
     this.enterEdit(c.id, c.recipe, []);
     this.notice = `${c.name} made from ${changed ? `the current settings; ${from} keeps its last saved state` : from}. Save it to put its own JPEG in the stack.`;
   }
@@ -2737,6 +2933,7 @@ export class Editor {
       if (renderId) await deleteAssets({ assetBulkDeleteDto: { ids: [renderId] } }).catch((e) => console.warn('Could not move the copy to trash', e));
       this.copies = this.copies.filter((c) => c.id !== id);
       if (this.copyId === id) await this.openEdit(null);
+      void drafts.remove(asset.id, id);
       this.notice = `${copy.name} deleted${renderId ? "; its JPEG is in Immich's trash" : ''}.`;
     } catch (e) {
       this.error = `Couldn't delete the copy: ${errorMessage(e)}`;
@@ -2804,6 +3001,8 @@ export class Editor {
       this.recipe.decoder = saved.decoder;
       delete this.recipe.pending;
       this.savedJson = editableJson(saved);
+      this.draftConflict = null;
+      void this.draftKeeper.drop();
       // A render now keeps the saved look for the next open's loading screen.
       this.requestRender();
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));

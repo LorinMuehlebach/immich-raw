@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from culler.models import Asset, Frame, Stack
+from culler.models import Asset, Frame, Stack, manual_reject_tag
 
 PAIR_SECONDS = 2.0
 
@@ -64,9 +64,11 @@ def build_frames(
     stacks: dict[str, Stack],
     render_sources: dict[str, str],
     culler_stack_ids: set[str],
+    tag_root: str = "Culling",
 ) -> FrameSet:
     """`assets`: the photos in scope plus the other members of their stacks (no trash, images only).
-    `render_sources`: render asset id -> source RAW id. `culler_stack_ids`: stacks this service made."""
+    `render_sources`: render asset id -> source RAW id. `culler_stack_ids`: stacks this service made.
+    `tag_root`: the culler's tags (a shot with the user's own reject tag under it is never the best)."""
     by_id = {a.id: a for a in assets}
     uf = _Union(by_id)
     excluded: dict[str, str] = {}
@@ -116,7 +118,7 @@ def build_frames(
     frames: list[Frame] = []
     frame_of: dict[str, str] = {}
     for root, members in members_of.items():
-        frame = _make_frame(members, renders, capture_primary.get(root))
+        frame = _make_frame(members, renders, capture_primary.get(root), manual_reject_tag(tag_root))
         frames.append(frame)
         for m in members:
             frame_of[m.id] = frame.id
@@ -124,7 +126,7 @@ def build_frames(
     return FrameSet(frames=frames, frame_of=frame_of, excluded=excluded)
 
 
-def _make_frame(members: list[Asset], renders: set[str], capture_primary: str | None) -> Frame:
+def _make_frame(members: list[Asset], renders: set[str], capture_primary: str | None, user_reject: str) -> Frame:
     raws = sorted((a for a in members if a.is_raw and a.id not in renders), key=lambda a: (a.taken, a.name))
     others = sorted((a for a in members if not a.is_raw and a.id not in renders), key=lambda a: (a.taken, a.name))
     rendered = sorted((a for a in members if a.id in renders), key=lambda a: a.uploaded, reverse=True)
@@ -147,6 +149,7 @@ def _make_frame(members: list[Asset], renders: set[str], capture_primary: str | 
         name=anchor.name,
         favorite=any(m.is_favorite for m in members),
         starred=any(m.rating is not None and 1 <= m.rating <= 5 for m in members),
+        user_rejected=any(t.value == user_reject for m in members for t in m.tags),
         duplicate_ids=frozenset(m.duplicate_id for m in members if m.duplicate_id),
         exposure_ev=exposed.exposure_ev if exposed else None,
         exposure_time=exposed.exposure_time if exposed else None,

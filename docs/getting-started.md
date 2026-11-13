@@ -48,9 +48,10 @@ The JPEG's size, quality and sharpening come from one of the [Export](export.md)
 full resolution. A new choice applies from the next save. The copy in Immich is always a JPEG
 without watermark and keeps the RAW's own metadata.
 
-Leaving with unsaved changes asks whether to save them:
-
-![The question when leaving with unsaved changes](images/getting-started/unsaved.jpg)
+Unsaved changes never hold you up. Going to another photo or back to Immich keeps them in this
+browser as a draft: the title line says "unsaved changes" (with **Discard** to go back to the saved
+edit), the filmstrip marks the photo with a blue dot, and the photo opens with its draft next time.
+See [Workflow → Drafts](workflow.md#drafts).
 
 ## 4. Back in Immich
 
