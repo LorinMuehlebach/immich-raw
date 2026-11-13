@@ -145,7 +145,7 @@ import { drafts } from '../drafts/drafts.svelte.ts';
 import { describeDraftsSaved, saveDraftPhoto, saveEach } from '../drafts/save-drafts.ts';
 import { syncInto } from '../drafts/sync.ts';
 import { RawRenderer } from '../export/raw-render.ts';
-import { looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
+import { draftSource, looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
 import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
 import { canPrefetch, decodeNeighbour, fetchNeighbour, resetPrefetch } from '../immich/prefetch.ts';
@@ -595,7 +595,7 @@ export class Editor {
         return this.canvas;
       },
     },
-    { store: drafts, keepView, snapshot: canvasJpeg, thumbnail: thumbnailJpeg },
+    { store: drafts, snapshot: canvasJpeg, thumbnail: thumbnailJpeg },
   );
   /** The photo opened with a draft made before its saved edit changed (saved in another tab or browser). */
   draftConflict = $state<{ at: number } | null>(null);
@@ -900,7 +900,7 @@ export class Editor {
       const stored = storedEdit(items, copyId);
       const draft = this.readOnly ? null : copyId === urlCopy ? await draftP : await drafts.get(asset.id, copyId);
       live();
-      void this.showPreview(asset, stored, viewP, gen, draft?.recipe ?? null);
+      void this.showPreview(asset, stored, viewP, gen, draft);
       this.snapshots = snapshotsIn(items, historyKeyFor(copyId));
       this.storedEdit = !!stored;
       // Synced settings (draft.patch) go on whatever is saved; a draft from the editor may be older than the save.
@@ -1197,20 +1197,22 @@ export class Editor {
 
   /**
    * The picture that stands in for the photo while it loads, the first of:
+   * - the picture of its draft (drafts/), when it has one;
    * - what the editor showed last time, if the saved edit is still the same (keepViewIfPlain);
    * - the saved JPEG's preview in Immich, for a photo with a saved edit;
    * - Immich's preview of the RAW (its own conversion: brighter, more saturated, without the edit).
    * The filmstrip's look of it (switchPhoto) may show already: the same picture isn't fetched again.
    */
-  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number, draft: Recipe | null): Promise<void> {
+  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number, draft: Draft | null): Promise<void> {
     const show = (b: Blob, source: string) => {
       if (gen !== this.photoGen || this.status === 'ready' || source === this.previewSource) return;
       if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
       this.previewUrl = URL.createObjectURL(b);
       this.previewSource = source;
     };
+    if (draft?.look) return show(draft.look, draftSource(draft.recipe));
     const view = await viewP;
-    const shows = viewShows(stored, draft);
+    const shows = viewShows(stored);
     if (view && view.shows === shows) return show(view.image, viewSource(shows));
     for (const id of [stored?.render?.assetId, asset.id]) {
       if (!id || gen !== this.photoGen) continue;
@@ -1252,11 +1254,6 @@ export class Editor {
   /** Writes the open edit's draft now (leaving it, or the page); resolves once it is stored. */
   keepDraft(): Promise<void> {
     return this.draftKeeper.keep();
-  }
-
-  /** Edits made in the last moments aren't in the draft yet. */
-  get draftDue(): boolean {
-    return this.draftKeeper.due;
   }
 
   /** Back to the saved edit (or the photo's defaults): the draft goes. */
@@ -1305,14 +1302,17 @@ export class Editor {
   /**
    * Saves the drafts of these photos to Immich: the open photo's with save(), the others one at a
    * time like an album export, while the editor waits (each needs a full-resolution decode).
+   * True when every one of them was saved.
    */
-  async saveDrafts(assetIds: ReadonlySet<string>): Promise<void> {
-    if (this.saving || this.readOnly || this.status !== 'ready') return;
+  async saveDrafts(assetIds: ReadonlySet<string>): Promise<boolean> {
+    if (this.saving) return false;
+    // A photo still opening: once it is open (or failed), so its decode and the saves don't overlap.
+    while (this.status === 'loading') await new Promise((resolve) => setTimeout(resolve, 250));
     await this.keepDraft();
-    const open = this.asset?.id;
-    if (open && assetIds.has(open) && this.dirty && !(await this.save())) return;
+    const open = this.status === 'ready' ? this.asset?.id : undefined;
+    if (open && assetIds.has(open) && this.dirty && !this.readOnly && !(await this.save())) return false;
     const others = (await drafts.list()).filter((d) => assetIds.has(d.assetId) && !(d.assetId === open && d.copyId === this.copyId));
-    if (!others.length) return;
+    if (!others.length) return true;
     const stop = new AbortController();
     const cancel = () => stop.abort();
     const total = others.length;
@@ -1350,6 +1350,7 @@ export class Editor {
         stop.signal,
       );
       this.notice = describeDraftsSaved(result);
+      return !result.cancelled && !result.failed.length;
     } finally {
       raws.dispose();
       this.saving = null;
