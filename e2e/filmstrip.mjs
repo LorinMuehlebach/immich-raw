@@ -56,6 +56,14 @@ try {
   // ------------------------------------------------ → shows the next photo's look at once
   // The filmstrip gets the looks of the photos around this one ready in the background.
   await page.waitForTimeout(2500);
+  // Its thumbnails (the photos as edited) have loaded.
+  const thumbs = await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('.filmstrip .cell img')];
+    return { all: imgs.length, loaded: imgs.filter((i) => i.complete && i.naturalWidth > 0).length };
+  });
+  results.thumbs = thumbs;
+  console.log(`thumbnails: ${thumbs.loaded} of ${thumbs.all} loaded`);
+  if (thumbs.loaded < Math.min(5, thumbs.all)) fail('the filmstrip thumbnails did not load');
   const before = assetInUrl();
   const t0 = Date.now();
   await page.keyboard.press('ArrowRight');
@@ -95,10 +103,15 @@ try {
   // ------------------------------------------------ unsaved changes stay as a draft
   const exposure = () => page.locator('.row', { has: page.locator('input[aria-label="Exposure"]') }).locator('.value').textContent().then((t) => t?.trim());
   const unsaved = () => page.locator('.sub', { hasText: 'unsaved changes' }).count().then((n) => n > 0);
-  const draftMarks = () => page.locator('.filmstrip .draft').count();
+  const draftMarks = () => page.locator('.filmstrip .fact.draft').count();
+  // Typed into the field, then out of it (the keys don't move the photo while typing).
+  const setExposure = async (v) => {
+    await page.locator('input[aria-label="Exposure"]').fill(v);
+    await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+  };
   await page.waitForTimeout(800);
   const marksBefore = await draftMarks();
-  await page.locator('input[aria-label="Exposure"]').fill('0.7');
+  await setExposure('0.7');
   await page.waitForTimeout(300);
   if (!(await unsaved())) fail('the edit did not mark the photo unsaved');
   // → right away: the draft is written on the way out, nothing asks.
@@ -106,7 +119,7 @@ try {
   const left = await page.waitForURL((u) => new URL(u).searchParams.get('asset') !== second, { timeout: 5000 }).then(() => true, () => false);
   if (!left) fail('→ with unsaved changes did not move on (a dialog?)');
   await shown();
-  await page.waitForFunction((n) => document.querySelectorAll('.filmstrip .draft').length > n, marksBefore, { timeout: 5000 }).catch(() => {});
+  await page.waitForFunction((n) => document.querySelectorAll('.filmstrip .fact.draft').length > n, marksBefore, { timeout: 5000 }).catch(() => {});
   const marked = (await draftMarks()) > marksBefore;
   await page.keyboard.press('ArrowLeft');
   await page.waitForURL((u) => new URL(u).searchParams.get('asset') === second, { timeout: 5000 });
@@ -223,10 +236,15 @@ try {
   await page.keyboard.press('0');
   await settle();
   // Sync the open photo's Exposure onto the others.
-  await page.locator('input[aria-label="Exposure"]').fill('0.3');
+  await setExposure('0.3');
   await page.waitForTimeout(300);
   await page.locator('.filmstrip .headbtn', { hasText: 'Sync settings' }).click();
-  await page.getByRole('button', { name: 'Sync', exact: true }).click();
+  const syncButton = page.getByRole('button', { name: 'Sync', exact: true });
+  if (!(await syncButton.waitFor({ timeout: 5000 }).then(() => true, () => false))) {
+    await page.screenshot({ path: join(outDir, 'sync-failed.png') });
+    fail('Sync settings… opened no dialog');
+  }
+  await syncButton.click();
   await page.waitForTimeout(1000);
   const syncedMarks = await page.locator('.filmstrip .slot:has(.cell.selected) .fact.draft').count();
   await page.keyboard.press('Escape');
@@ -280,7 +298,7 @@ try {
     for (const a of targets) {
       await page.goto(`${base}/immich-raw/?asset=${a.id}`);
       await shown();
-      await page.locator('input[aria-label="Exposure"]').fill('0.4');
+      await setExposure('0.4');
       await page.waitForTimeout(2600);
     }
     await page.goto(`${base}/immich-raw/?asset=${raws[6].id}`);

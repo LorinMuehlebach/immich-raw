@@ -336,6 +336,8 @@
     let objectUrl: string | null = null;
     let io: IntersectionObserver | null = null;
     let wanted = p;
+    /** What the picture is of: the strip passes a new object on every redraw. */
+    let shownFor: typeof p | null = null;
     const show = (url: string, own: boolean) => {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = own ? url : null;
@@ -355,6 +357,7 @@
     };
     const load = (q: typeof p) => {
       wanted = q;
+      shownFor = q;
       io?.disconnect();
       io = new IntersectionObserver(
         (entries) => {
@@ -368,7 +371,10 @@
     };
     load(p);
     return {
-      update: load,
+      update: (q: typeof p) => {
+        if (shownFor && q.id === shownFor.id && q.draft === shownFor.draft && q.render === shownFor.render) return;
+        load(q);
+      },
       destroy() {
         io?.disconnect();
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -637,6 +643,8 @@
     max-height: 100%;
     object-fit: contain;
     display: block;
+    /* Clicks go to the cell: the browser's own handling of images (Ctrl-click, dragging) stays out. */
+    pointer-events: none;
   }
   .badge {
     position: absolute;

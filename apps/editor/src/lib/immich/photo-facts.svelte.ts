@@ -19,7 +19,10 @@ export function factsOf(id: string): PhotoFacts {
 }
 
 export function noteFacts(id: string, patch: Partial<PhotoFacts>): void {
-  facts.set(id, { ...(facts.get(id) ?? NO_FACTS), ...patch });
+  const was = facts.get(id) ?? NO_FACTS;
+  // Only a real change: the filmstrip redraws on every one.
+  if ((Object.keys(patch) as (keyof PhotoFacts)[]).every((k) => patch[k] === was[k]) && facts.has(id)) return;
+  facts.set(id, { ...was, ...patch });
 }
 
 /** The culler's tag root (CullerStatus.tagRoot): reject tags live under it. */

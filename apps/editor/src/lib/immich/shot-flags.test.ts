@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyFlag, flagged, rejectTagIds, shotFileIds, type FlagDeps } from './shot-flags.ts';
+import { FlagChanges, applyFlag, flagged, rejectTagIds, shotFileIds, type FlagDeps } from './shot-flags.ts';
 import { NO_FACTS, type PhotoFacts } from './strip-view.ts';
 
 const file = (id: string, originalFileName: string, isTrashed = false) => ({ id, originalFileName, isTrashed });
@@ -74,5 +74,15 @@ describe('applyFlag', () => {
       'untag rej a,a.jpg',
       'untag rej-blur a,a.jpg',
     ]);
+  });
+});
+
+describe('FlagChanges', () => {
+  it('lets a late re-check put a tag back only where nothing changed since', () => {
+    const c = new FlagChanges();
+    const tagged = c.note(['a', 'b']);
+    expect(c.untouchedSince(tagged, ['a', 'b'])).toEqual(['a', 'b']);
+    c.note(['b']);
+    expect(c.untouchedSince(tagged, ['a', 'b'])).toEqual(['a']);
   });
 });

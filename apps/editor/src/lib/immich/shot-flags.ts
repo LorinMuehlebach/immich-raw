@@ -83,8 +83,29 @@ export async function applyFlag(rawIds: readonly string[], action: FlagAction, f
   }
 }
 
+/**
+ * Which flag change of each file is the latest: a late re-check (settleTag) only puts a tag back
+ * when nothing changed the file's flags since.
+ */
+export class FlagChanges {
+  private last = new Map<string, number>();
+  private n = 0;
+
+  /** A change of these files; its number. */
+  note(ids: readonly string[]): number {
+    const at = ++this.n;
+    for (const id of ids) this.last.set(id, at);
+    return at;
+  }
+
+  /** The files no change touched after change `at`. */
+  untouchedSince(at: number, ids: readonly string[]): string[] {
+    return ids.filter((id) => (this.last.get(id) ?? 0) <= at);
+  }
+}
+
 /** Immich's side. `root`: the culler's tag root (CullerStatus.tagRoot), or 'Culling'. */
-export function immichFlags(root: () => string): FlagDeps {
+export function immichFlags(root: () => string, changes = new FlagChanges()): FlagDeps {
   return {
     async files(rawId) {
       const raw = await getAssetInfo({ id: rawId });
@@ -93,6 +114,7 @@ export function immichFlags(root: () => string): FlagDeps {
       return shotFileIds(raw, stack.assets);
     },
     async update(ids, patch) {
+      changes.note(ids);
       await updateAssets({ assetBulkUpdateDto: { ids, ...patch } });
     },
     async rejectTag() {
@@ -106,25 +128,30 @@ export function immichFlags(root: () => string): FlagDeps {
       return rejectTagIds(root(), await getAllTags());
     },
     async tag(tagId, ids) {
+      const at = changes.note(ids);
       await tagAssets({ id: tagId, bulkIdsDto: { ids } });
       // Immich 3.4 sometimes loses a new tag a moment later (it writes the photo's sidecar in a
-      // background job and reads it back): look again, and put back what went missing.
-      setTimeout(() => void settleTag(tagId, ids), 4000);
+      // background job and reads it back): look again, and put back what went missing, unless
+      // the flags changed since (U or P took the reject off).
+      setTimeout(() => void settleTag(tagId, () => changes.untouchedSince(at, ids)), 4000);
     },
     async untag(tagId, ids) {
+      changes.note(ids);
       await untagAssets({ id: tagId, bulkIdsDto: { ids } });
     },
   };
 }
 
-async function settleTag(tagId: string, ids: string[]): Promise<void> {
+async function settleTag(tagId: string, stillWanted: () => string[]): Promise<void> {
   try {
     const missing: string[] = [];
-    for (const id of ids) {
+    for (const id of stillWanted()) {
       const a = await getAssetInfo({ id });
       if (!a.tags?.some((t) => t.id === tagId)) missing.push(id);
     }
-    if (missing.length) await tagAssets({ id: tagId, bulkIdsDto: { ids: missing } });
+    const still = new Set(stillWanted());
+    const put = missing.filter((id) => still.has(id));
+    if (put.length) await tagAssets({ id: tagId, bulkIdsDto: { ids: put } });
   } catch {
     // best effort
   }
