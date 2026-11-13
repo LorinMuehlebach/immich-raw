@@ -1,11 +1,14 @@
 // The picture that stands in for a photo while it opens, got ready ahead for the photos around the
 // open one (the filmstrip asks), so switching to one of them shows it at once instead of after
 // three requests. The choice is the editor's (showPreview()), the first of:
-// - what the editor showed last time, if the saved edit is still the same (view-cache.ts);
+// - what the editor showed last time, if the saved edit (or the photo's draft) is still the same
+//   (view-cache.ts);
 // - the saved JPEG's preview in Immich;
 // - Immich's preview of the RAW.
 import type { AssetResponseDto } from '@immich/sdk';
 import type { Recipe } from '@immich-raw/recipe';
+import { savedShows } from '../drafts/draft-store.ts';
+import { drafts } from '../drafts/drafts.svelte.ts';
 import { editableJson } from '../state/history.ts';
 import { apiUrl, authHeaders } from './api.ts';
 import { editStates, type EditState } from './edit-state.ts';
@@ -17,22 +20,28 @@ export interface Look {
   source: string;
 }
 
-/** What a kept view has to show to stand in for the photo: its saved edit, or 'unedited'. */
-export const viewShows = (stored: Recipe | null): string => (stored ? editableJson(stored) : 'unedited');
+/** What a kept view has to show to stand in for the photo: its draft, else its saved edit, else 'unedited'. */
+export const viewShows = (stored: Recipe | null, draft: Recipe | null = null): string => (draft ? editableJson(draft) : savedShows(stored));
 export const viewSource = (shows: string): string => `view:${shows}`;
 export const previewSource = (assetId: string): string => `preview:${assetId}`;
 
 export interface LookDeps {
   readView(checksum: string): Promise<KeptView | null>;
   editState(id: string): Promise<EditState>;
+  /** The photo's draft in this browser (of its original edit), or null. */
+  draft(id: string): Promise<Recipe | null>;
   /** Immich's preview of an asset, or null. */
   preview(id: string): Promise<Blob | null>;
 }
 
 /** The picture to show while the photo opens, or null when there is none. */
 export async function resolveLook(asset: Pick<AssetResponseDto, 'id' | 'checksum'>, deps: LookDeps): Promise<Look | null> {
-  const [view, state] = await Promise.all([deps.readView(asset.checksum).catch(() => null), deps.editState(asset.id)]);
-  const shows = viewShows(state.stored);
+  const [view, state, draft] = await Promise.all([
+    deps.readView(asset.checksum).catch(() => null),
+    deps.editState(asset.id),
+    deps.draft(asset.id).catch(() => null),
+  ]);
+  const shows = viewShows(state.stored, draft);
   if (view && view.shows === shows) return { image: view.image, source: viewSource(shows) };
   // The saved JPEG may be gone (deleted in Immich): then the RAW's preview.
   for (const id of [state.renderId, asset.id]) {
@@ -136,4 +145,9 @@ function fetchPreview(id: string): Promise<Blob | null> {
   return fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), init).then((r) => (r.ok ? r.blob() : null));
 }
 
-export const looks = new LookCache({ readView, editState: (id) => editStates.get(id), preview: fetchPreview });
+export const looks = new LookCache({
+  readView,
+  editState: (id) => editStates.get(id),
+  draft: async (id) => (await drafts.get(id, null))?.recipe ?? null,
+  preview: fetchPreview,
+});

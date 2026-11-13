@@ -9,6 +9,7 @@
   import { arrangeGroups, badgeFor, tooltipFor } from '../immich/cull-view.ts';
   import { cullerStatus, lookupCull, makeBest, waitForRun, type CullInfo, type CullerStatus } from '../immich/culler.ts';
   import { looks } from '../immich/looks.ts';
+  import { draftPhotos } from '../drafts/drafts.svelte.ts';
   import type { StackFrame } from '../immich/stack-view.ts';
   import CullPanel from './CullPanel.svelte';
   import StackViewer from './StackViewer.svelte';
@@ -32,6 +33,8 @@
     unsaved?: boolean;
     /** "Delete others" in the stack window moved the photo being edited to the trash. */
     onCurrentDeleted?: (kept: StackFrame) => void;
+    /** Saves the drafts of these photos to Immich (absent: the user can't save here). */
+    onSaveDrafts?: (assetIds: Set<string>) => void;
   }
 
   let {
@@ -45,6 +48,7 @@
     stackFor = $bindable(null),
     unsaved = false,
     onCurrentDeleted,
+    onSaveDrafts,
   }: Props = $props();
 
   const COLLAPSED_KEY = 'raw-editor.filmstrip.collapsed';
@@ -81,6 +85,8 @@
   const collapsedGroups = $derived(new Set(stacksCollapsed ? groupIds : []));
   const strip = $derived(arrangeGroups(items, cull, collapsedGroups, current.id));
   const index = $derived(strip.findIndex((s) => s.asset.id === current.id));
+  /** Photos of the filmstrip with a draft, the open one also with changes not in its draft yet. */
+  const withDrafts = $derived(new Set(items.filter((a) => draftPhotos.has(a.id) || (a.id === current.id && unsaved)).map((a) => a.id)));
 
   // Load once per context; reload only if the current asset is not in the list.
   $effect(() => {
@@ -247,6 +253,11 @@
         <button class="headbtn" class:active={panelOpen} onclick={() => (panelOpen = !panelOpen)} title="Stack similar photos and pick the best of each">Auto-stack…</button>
       {/if}
     {/if}
+    {#if onSaveDrafts && withDrafts.size && !collapsed}
+      <button class="headbtn" onclick={() => onSaveDrafts(withDrafts)} title="Render the drafts of these photos and save them to Immich, one photo at a time">
+        Save {withDrafts.size} {withDrafts.size === 1 ? 'draft' : 'drafts'}
+      </button>
+    {/if}
     {#if cullError}<span class="err" title={cullError}>{cullError}</span>{/if}
     <span class="count">
       {#if loading}loading…{:else if index >= 0}{index + 1} of {strip.length}{:else}{strip.length}{/if}
@@ -276,6 +287,9 @@
           </button>
           {#if badge}
             <span class="badge {badge.tone}" aria-label={badge.label}>{badge.icon}</span>
+          {/if}
+          {#if draftPhotos.has(a.id)}
+            <span class="draft" title="Unsaved changes, kept in this browser" aria-label="Unsaved draft">●</span>
           {/if}
           {#if g?.first}
             <button class="gcount" onclick={() => (stackFor = a.id)} title={`Compare the ${g.size} photos of this stack`}>
@@ -454,6 +468,16 @@
   .badge.rejected {
     color: #fff;
     background: rgba(200, 50, 50, 0.85);
+  }
+  .draft {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    font-size: 10px;
+    line-height: 1;
+    color: #6db3ff;
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
   }
   .gcount {
     position: absolute;

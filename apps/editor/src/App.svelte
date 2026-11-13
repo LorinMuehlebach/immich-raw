@@ -6,6 +6,7 @@
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
   import { looks } from './lib/immich/looks.ts';
+  import { drafts } from './lib/drafts/drafts.svelte.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
@@ -34,7 +35,6 @@
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
-  import UnsavedDialog from './lib/ui/UnsavedDialog.svelte';
   import CopyMenu from './lib/ui/CopyMenu.svelte';
   import UpscaleOverlay from './lib/ui/UpscaleOverlay.svelte';
   import UprightOverlay from './lib/ui/UprightOverlay.svelte';
@@ -164,74 +164,60 @@
     // Not passive: Ctrl + wheel must not also zoom the browser page.
     stage.addEventListener('wheel', onWheel, { passive: false });
     editor.load(canvas);
+    // Unsaved changes stay as a draft (drafts/), so leaving never asks. Only a save still running,
+    // or edits from the last moments not stored yet, make the browser ask.
     const beforeUnload = (e: BeforeUnloadEvent) => {
-      if (!discarding && (editor.dirty || editor.saving)) e.preventDefault();
+      if (unloading) return;
+      const late = editor.draftDue || drafts.pending > 0;
+      void editor.keepDraft();
+      if (editor.saving || late) e.preventDefault();
+    };
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') void editor.keepDraft();
     };
     addEventListener('beforeunload', beforeUnload);
+    addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onHide);
     addEventListener('popstate', onPopState);
     return () => {
       ro.disconnect();
       stage.removeEventListener('wheel', onWheel);
       removeEventListener('beforeunload', beforeUnload);
+      removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onHide);
       removeEventListener('popstate', onPopState);
     };
   });
 
-  // Leaving the photo (or this edit of it) with unsaved changes asks first: Yes saves, No
-  // discards, Cancel stays. go: what happens after the answer (another photo or a virtual copy
-  // opens in this page, or the page goes back to Immich). unload: it leaves the page, so the
-  // browser's own "leave page?" question mustn't ask again.
-  let leaving = $state<{ go: () => unknown; unload: boolean } | null>(null);
-  let leaveSaving = $state(false);
-  let discarding = false;
+  /** The page is being left on purpose, with the draft stored: the browser mustn't ask. */
+  let unloading = false;
 
   /** Back to Immich. The target is a function: after saving, it points at the new render. */
   async function toImmich(target: () => string) {
     await editor.waitForRender();
+    unloading = true;
     location.href = target();
   }
 
-  function leave(go: () => unknown, unload: boolean) {
-    if (!editor.dirty) void go();
-    else leaving = { go, unload };
-  }
-
-  async function leaveSave() {
-    const l = leaving;
-    if (!l) return;
-    leaveSaving = true;
-    const ok = await editor.save();
-    leaveSaving = false;
-    leaving = null;
-    // A failed save keeps the editor open; the error is shown.
-    if (ok) await l.go();
-  }
-
-  function leaveDiscard() {
-    const l = leaving;
-    leaving = null;
-    if (!l) return;
-    if (l.unload) discarding = true;
-    void l.go();
-  }
-
-  /** The original edit (null) or a virtual copy of this RAW, asking first about unsaved changes. */
+  /** The original edit (null) or a virtual copy of this RAW; the edit left keeps its draft. */
   function switchEdit(copyId: string | null) {
-    leave(() => editor.openEdit(copyId), false);
+    void editor.openEdit(copyId);
   }
 
-  function goBack() {
-    leave(() => toImmich(() => editor.backUrl()), true);
+  async function goBack() {
+    await editor.keepDraft();
+    await toImmich(() => editor.backUrl());
   }
 
-  /** Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again. */
+  /**
+   * Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again.
+   * The photo left keeps its unsaved changes as a draft.
+   */
   function openAsset(id: string, asset?: AssetResponseDto) {
     if (id === editor.asset?.id) return;
-    leave(() => {
-      stackFor = null;
-      // The filmstrip's look of it shows at once (looks.ts).
-      return editor.switchPhoto(id, 'push', looks.hint(id, asset));
-    }, false);
+    stackFor = null;
+    // The filmstrip's look of it shows at once (looks.ts).
+    void editor.switchPhoto(id, 'push', looks.hint(id, asset));
   }
 
   /** Back and Forward between photos opened in this page. */
@@ -239,10 +225,9 @@
     const id = new URLSearchParams(location.search).get('asset');
     const open = editor.asset?.id;
     if (!id || id === open) return;
-    if (editor.dirty || editor.saving) {
-      // Not yet: the open photo's address goes back until the question is answered.
+    if (editor.saving) {
+      // Not while saving: the open photo's address goes back.
       if (open) history.pushState(null, '', editor.urlFor(open));
-      if (!editor.saving) openAsset(id);
       return;
     }
     stackFor = null;
@@ -251,7 +236,8 @@
 
   /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
   function afterCurrentDeleted(kept: StackFrame) {
-    discarding = true;
+    editor.discardDraft();
+    unloading = true;
     if (kept.raw) {
       location.href = editor.urlFor(kept.raw.id);
       return;
@@ -273,7 +259,7 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving || stackFor) return;
+    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || stackFor) return;
     if (editor.saving) return;
     if (editor.status !== 'ready') {
       if (editor.status === 'loading' || editor.status === 'error') onKeyWhileOpening(e);
@@ -533,7 +519,10 @@
           {#if editor.fullStatus === 'decoding'}· decoding full resolution{fullLeft >= 1500 ? ` (about ${Math.round(fullLeft / 1000)} s)` : ''}…{/if}
           {#if editor.readOnly}· view only{/if}
           {#if editor.recipe.render && !editor.dirty}· saved{/if}
-          {#if editor.dirty}· unsaved changes{/if}
+          {#if editor.dirty}
+            · unsaved changes
+            {#if !editor.readOnly}<button class="discard" onclick={() => editor.discardDraft()} title="Back to the saved edit; the draft kept in this browser goes">Discard</button>{/if}
+          {/if}
           {#if cullText}
             {#if (cullInfo?.groupSize ?? 0) > 1}
               <button class="cull" class:rejected={cullInfo?.role === 'rejected'} onclick={() => (stackFor = editor.asset?.id ?? null)} title="Compare the photos of this stack">· {cullText}</button>
@@ -713,7 +702,16 @@
         </div>
       {/if}
 
-      {#if editor.sidecarOffer}
+      {#if editor.draftConflict}
+        <div class="banner">
+          <div>
+            <strong>This draft is older than the saved edit.</strong>
+            Your unsaved changes from {new Date(editor.draftConflict.at).toLocaleString()} were kept in this browser; the edit was saved again since (in another tab or browser).
+          </div>
+          <button class="primary" onclick={() => editor.keepOlderDraft()}>Keep draft</button>
+          <button onclick={() => editor.discardDraft()}>Use saved</button>
+        </div>
+      {:else if editor.sidecarOffer}
         <div class="banner">
           <div>
             <strong>Lightroom settings found.</strong>
@@ -773,6 +771,7 @@
         bind:stackFor
         unsaved={editor.dirty}
         onCurrentDeleted={afterCurrentDeleted}
+        onSaveDrafts={editor.readOnly ? undefined : (ids) => void editor.saveDrafts(ids)}
         startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
@@ -858,10 +857,6 @@
   <BatchExportDialog onClose={() => (editor.exportDialog = null)} />
 {/if}
 
-{#if leaving}
-  <UnsavedDialog fileName={editor.asset?.originalFileName ?? 'This photo'} busy={leaveSaving} onSave={leaveSave} onDiscard={leaveDiscard} onCancel={() => (leaving = null)} />
-{/if}
-
 {#if copyOpen}
   <CopySettingsDialog title="Copy Settings" confirmLabel="Copy" initial={DEFAULT_GROUPS} onConfirm={confirmCopy} onCancel={() => (copyOpen = false)} />
 {/if}
@@ -916,6 +911,18 @@
   .cull.rejected,
   button.cull.rejected:hover {
     color: var(--danger);
+  }
+  button.discard {
+    background: none;
+    border: none;
+    padding: 0 0 0 4px;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  button.discard:hover {
+    color: var(--text-bright);
   }
   .sub {
     color: var(--text-dim);

@@ -15,6 +15,7 @@ function deps(over: Partial<LookDeps> = {}): LookDeps & { previews: string[] } {
     previews,
     readView: async () => null,
     editState: async () => NO_EDIT,
+    draft: async () => null,
     preview: async (id) => (previews.push(id), jpeg(id)),
     ...over,
   };
@@ -39,6 +40,14 @@ describe('resolveLook', () => {
     const gone = deps({ editState: async () => edited, preview: async (id) => (id === 'jpg' ? null : jpeg(id)) });
     expect((await resolveLook(asset('a'), gone))?.source).toBe(previewSource('a'));
     expect((await resolveLook(asset('b'), deps()))?.source).toBe(previewSource('b'));
+  });
+
+  it("takes the kept view of the photo's draft, not of its saved edit", async () => {
+    const draft = { ...defaultRecipe(), basic: { ...defaultRecipe().basic, exposure: 1 } };
+    const saved = deps({ readView: async () => ({ shows: viewShows(edited.stored), image: jpeg('saved') }), editState: async () => edited, draft: async () => draft });
+    expect((await resolveLook(asset('a'), saved))?.source).toBe(previewSource('jpg'));
+    const kept = deps({ readView: async () => ({ shows: viewShows(null, draft), image: jpeg('draft') }), editState: async () => edited, draft: async () => draft });
+    expect(await (await resolveLook(asset('a'), kept))?.image.text()).toBe('draft');
   });
 
   it('takes the kept view of an unedited photo', async () => {

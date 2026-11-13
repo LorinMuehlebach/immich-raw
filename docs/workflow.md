@@ -32,6 +32,25 @@ Tools around the edit: seeing it, going back, reusing it and moving between phot
 
 ![History and snapshots in the left panel](images/workflow/history-snapshots.jpg)
 
+## Drafts
+
+Unsaved changes are kept in this browser as a draft, one per photo and per virtual copy, so going
+to another photo, another copy or back to Immich never asks.
+- **When:** a moment after you stop editing, and whenever you leave the photo.
+- **Opening a photo with a draft** opens the draft: the title line says "unsaved changes", and the
+  filmstrip marks the photo with a blue dot. One undo step goes back to the saved edit; within one
+  visit to the editor, each photo keeps its whole undo history.
+- **Save** stores it in Immich as usual, and the draft goes. **Discard** in the title line goes back
+  to the saved edit (or the photo's defaults).
+- **Save N drafts**, in the filmstrip's header, saves the drafts of the photos in the filmstrip,
+  one photo after another, like a Save of each (a full-resolution render with the Immich copy's
+  preset). The editor waits meanwhile; Cancel stops after the photo being saved.
+- **Only in this browser** (its IndexedDB): another browser or device doesn't see the draft. If the
+  photo was saved somewhere else after the draft was made, a banner asks whether to keep the draft
+  or use the saved edit.
+- The browser only asks before closing the tab while a save is running, or right after an edit,
+  before its draft is written.
+
 ## Virtual copies
 
 Several edits of one RAW, like Lightroom's virtual copies: a colour and a black-and-white version,
@@ -42,7 +61,8 @@ say, or two crops.
 - Each copy saves its own JPEG into the RAW's stack, called `<name>.copy-2.edit.jpg`. The
   original's JPEG stays in front; **Show in front in Immich** puts the open edit's JPEG there
   instead.
-- The menu switches between the original and the copies (asking first about unsaved changes),
+- The menu switches between the original and the copies (each keeps its unsaved changes as a
+  [draft](#drafts)),
   renames the open copy or deletes it, with its JPEG going to Immich's trash. Each copy has its
   own history and snapshots.
 - Immich's Edit RAW button on a copy's JPEG opens that copy. An album export includes each copy
@@ -72,8 +92,8 @@ taken within 12 hours of it. ← and → go to the previous and next photo. With
 shows stacks ([Stacking](stacking.md)).
 
 The next photo opens in the same page, without loading the editor again, and the address bar
-follows: the browser's Back and Forward go through the photos you opened. Unsaved changes ask
-first, as when going back to Immich.
+follows: the browser's Back and Forward go through the photos you opened. Unsaved changes stay
+as a [draft](#drafts).
 
 It shows at once, as it looked in the editor last time (or as its saved JPEG, or Immich's
 preview), until it can be edited: the filmstrip gets that picture ready for the photos on either

@@ -138,15 +138,17 @@ try {
   await page.waitForTimeout(300);
   check('Escape closes the menu, and stays in the editor', (await page.locator('.copies .menu').count()) === 0 && page.url().includes('/immich-raw/'), { url: page.url() });
 
-  // ---- unsaved changes are asked about
+  // ---- unsaved changes stay as the copy's draft
   await setExposure(-0.5);
   await pick('Original');
-  const asked = await page.getByRole('alertdialog').count();
-  check('switching with unsaved changes asks first', asked === 1);
-  if (asked) await page.getByRole('button', { name: 'No', exact: true }).click();
-  await page.waitForTimeout(800);
-  check('No drops them and opens the original', !(await state()).copyId);
+  check('switching with unsaved changes opens the original without asking', (await page.getByRole('alertdialog').count()) === 0 && !(await state()).copyId);
   check('the copy kept its stored settings', (await value(`raw-editor.copy.${c2.id}`))?.recipe?.basic?.exposure === 1.2);
+  await pick('Warm version');
+  check('the copy opens with its draft', (await state()).copyId === c2.id && (await state()).exposure === -0.5 && (await state()).dirty);
+  await page.locator('.sub button.discard').click();
+  await page.waitForTimeout(500);
+  check('Discard goes back to its stored settings', (await state()).exposure === 1.2 && !(await state()).dirty);
+  await pick('Original');
 
   // ---- delete both copies (the menu's two-step Delete)
   for (const c of [c2, copy1]) {

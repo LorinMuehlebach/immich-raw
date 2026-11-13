@@ -93,15 +93,8 @@ async function gettingStarted() {
   await page.keyboard.press('Control+s');
   await page.locator('.toast', { hasText: 'Saved to Immich' }).waitFor({ timeout: 300000 });
   await shot('getting-started', 'saved');
-  // One more change, then Esc asks whether to save it.
-  await setSlider('Vibrance', 35);
-  await blur();
-  await page.keyboard.press('Escape');
-  const ask = page.getByRole('alertdialog');
-  await ask.waitFor({ timeout: 10000 });
-  await shot('getting-started', 'unsaved', ask);
   // Back in Immich: the edited JPEG on top of the RAW's stack.
-  await ask.getByRole('button', { name: 'No', exact: true }).click();
+  await page.keyboard.press('Escape');
   await page.waitForURL((u) => !u.pathname.startsWith('/immich-raw/'), { timeout: 60000 });
   await page.waitForTimeout(4000);
   await shot('getting-started', 'immich-result');
