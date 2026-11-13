@@ -107,3 +107,59 @@ def test_undo_puts_both_tags_back():
     assert tag_ops(ops, AddTag) == {("Culling/Close call", ("a",))}
     assert tag_ops(ops, RemoveTag) == set()
     assert notes == []
+
+
+def rejected_group() -> DesiredGroup:
+    results = {
+        "a": FrameResult("a", "best", None, 1, 0.90),
+        "b": FrameResult("b", "rejected", "blur", 2, 0.50),
+    }
+    return DesiredGroup("g1", [mk_frame("a"), mk_frame("b")], GroupResult(["a", "b"], results))
+
+
+def state(tags: tuple[str, ...], **kw) -> AssetState:
+    return AssetState("g1", "b", tags, False, False, None, **kw)
+
+
+def test_the_users_own_reject_tag_is_never_taken_off():
+    live = Live(
+        {"a": mk_asset("a", ("Culling/Best",)), "b": mk_asset("b", ("Culling/Rejected", "Culling/Runner-up"))}, {}
+    )
+    p = plan(rejected_group(), live)
+    assert tag_ops(p.ops, RemoveTag) == {("Culling/Runner-up", ("b",))}
+    assert tag_ops(p.ops, AddTag) == {("Culling/Rejected/Blur", ("b",))}
+    # Released from every group: the culler's tags go, the user's stays.
+    released = plan_changes([], [mk_frame("b")], live, {"b": state(("Culling/Runner-up",))}, set(), ROOT, "run", "now")
+    assert tag_ops(released.ops, RemoveTag) == {("Culling/Runner-up", ("b",))}
+
+
+def test_a_reject_the_user_took_off_stays_off():
+    # The last run tagged b Rejected/Blur; the user took it off (Immich, or U in the editor).
+    live = Live({"a": mk_asset("a", ("Culling/Best",)), "b": mk_asset("b")}, {})
+    p = plan(rejected_group(), live, {"b": state(("Culling/Rejected/Blur",))})
+    assert tag_ops(p.ops, AddTag) == {("Culling/Runner-up", ("b",))}
+    assert p.states["b"].reject_blocked
+    assert p.states["b"].meta["role"] == "runner-up" and p.states["b"].meta["reason"] is None
+    # And on the next run, although its tags are the culler's again.
+    live2 = Live({"a": mk_asset("a", ("Culling/Best",)), "b": mk_asset("b", ("Culling/Runner-up",))}, {})
+    p2 = plan(rejected_group(), live2, {"b": p.states["b"]})
+    assert tag_ops(p2.ops, AddTag) == set() and p2.states["b"].reject_blocked
+
+
+def test_a_reject_still_on_is_kept():
+    live = Live({"a": mk_asset("a", ("Culling/Best",)), "b": mk_asset("b", ("Culling/Rejected/Blur",))}, {})
+    p = plan(rejected_group(), live, {"b": state(("Culling/Rejected/Blur",))})
+    assert p.ops == [] or tag_ops(p.ops, AddTag) == set()
+    assert not p.states["b"].reject_blocked
+
+
+def test_state_stored_before_reject_blocking_still_loads():
+    old = {
+        "group_id": "g",
+        "frame_id": "f",
+        "tags": ["Culling/Best"],
+        "rating_set": False,
+        "rating_blocked": False,
+        "meta": None,
+    }
+    assert AssetState.from_json(old).reject_blocked is False

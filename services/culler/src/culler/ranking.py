@@ -67,15 +67,21 @@ def rank_group(
         return (-smiles(c), -score[c.frame_id], c.taken, c.frame.name)
 
     best_id: str | None = None
-    if pinned in by_id:
+    if pinned in by_id and not by_id[pinned].frame.user_rejected:
         best_id = pinned
     elif cfg.ranking.respect_favorites:
-        favourites = [c for c in cands if c.frame.favorite]
+        favourites = [c for c in cands if c.frame.favorite and not c.frame.user_rejected]
         if len(favourites) == 1:
             best_id = favourites[0].frame_id
     is_pinned = best_id is not None
     if best_id is None:
-        best_id = sorted(survivors, key=order_key)[0].frame_id
+        # A shot the user rejected themselves is never the best (unless every shot is one).
+        pool = (
+            [c for c in survivors if not c.frame.user_rejected]
+            or [c for c in cands if not c.frame.user_rejected]
+            or survivors
+        )
+        best_id = sorted(pool, key=order_key)[0].frame_id
     rejected.pop(best_id, None)
 
     runner_ups = sorted((c for c in survivors if c.frame_id != best_id), key=order_key)

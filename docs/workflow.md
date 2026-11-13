@@ -88,8 +88,29 @@ another photo; **Previous** (Ctrl+Alt+V) applies the settings of the photo you e
 ## Filmstrip
 
 Below the photo: the RAWs of the album or person you opened the photo from, otherwise the RAWs
-taken within 12 hours of it. ← and → go to the previous and next photo. With the culler it also
+taken within 12 hours of it. ← and → go to the previous and next photo, ↑ and ↓ to the previous
+and next stack (past the rest of the open photo's stack) or single photo. With the culler it also
 shows stacks ([Stacking](stacking.md)).
+
+Each thumbnail shows the photo as edited: its draft's picture, else its saved JPEG, else the RAW.
+Along its bottom: ✕ rejected, ♥ picked, its stars, ● a draft or ✎ a saved edit. Drag the strip's
+top edge to make the thumbnails bigger.
+
+**Stars, pick and reject** go on the open photo with the keys, also while it is still opening:
+- 0 to 5: its stars in Immich (0 takes them off).
+- P: pick, which is Immich's favourite; a reject goes.
+- X: reject, with the tag `Culling/Rejected` (under the culler's tag root, if it has another one).
+  It also takes the favourite off, and sets Immich's reject flag on a photo without stars. In the
+  crop tool X still turns the crop.
+- U: neither picked nor rejected; it also takes the culler's reject tags off, and the culler leaves
+  the photo a runner-up from then on ([Culler → Your changes win](culler.md#your-changes-win)).
+
+They go on the whole shot: the RAW, its camera JPEG and its edits, so Immich shows them whichever
+file is in front of the stack.
+
+**Filters** in the filmstrip's header: at least so many stars, only picks (♥), no rejects (✕), and
+edited, not edited or with a draft. The photos they leave out are skipped by ← → ↑ ↓; the open photo
+always stays. The filmstrip remembers them.
 
 The next photo opens in the same page, without loading the editor again, and the address bar
 follows: the browser's Back and Forward go through the photos you opened. Unsaved changes stay

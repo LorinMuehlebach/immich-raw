@@ -6,6 +6,9 @@
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
   import { looks } from './lib/immich/looks.ts';
+  import { factsOf, flag, flagStatus } from './lib/immich/photo-facts.svelte.ts';
+  import type { FlagAction } from './lib/immich/shot-flags.ts';
+  import { factsText, type Neighbours } from './lib/immich/strip-view.ts';
   import { drafts } from './lib/drafts/drafts.svelte.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
@@ -51,7 +54,9 @@
   let stageH = $state(600);
   let apiKey = $state('');
   let copyOpen = $state(false);
-  let neighbours = $state<{ prev: string | null; next: string | null; nearby: string[] }>({ prev: null, next: null, nearby: [] });
+  let neighbours = $state<Neighbours>({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [] });
+  // Stars, pick and reject of the open photo (shown in the title line).
+  const flagsText = $derived(editor.asset ? factsText(factsOf(editor.asset.id)) : '');
   // What the culler decided for this photo (shown in the title line).
   let cullInfo = $state<CullInfo | null>(null);
   // The stack window is open on the stack of this photo.
@@ -268,6 +273,7 @@
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     const onRange = (e.target as HTMLElement | null)?.tagName === 'INPUT';
+    if (flagKey(e)) return;
     if (mod && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) editor.redo();
@@ -356,6 +362,10 @@
     } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onRange) {
       const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
       if (id) openAsset(id);
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !onRange) {
+      e.preventDefault();
+      const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
+      if (id) openAsset(id);
     } else if (e.key === 'Escape') {
       if (editor.maskDraft) editor.cancelMaskDraft();
       else if (editor.tool !== 'edit') editor.setTool('edit');
@@ -364,15 +374,39 @@
     }
   }
 
-  /** While a photo opens (or failed to): moving on to another photo, and back to Immich. */
+  /** While a photo opens (or failed to): moving on to another photo, its flags, and back to Immich. */
   function onKeyWhileOpening(e: KeyboardEvent) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (flagKey(e)) return;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
+      if (id) openAsset(id);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
       if (id) openAsset(id);
     } else if (e.key === 'Escape') {
       goBack();
     }
+  }
+
+  /**
+   * 0-5 (stars), P (pick), X (reject; in the crop tool it turns the crop), U (neither) on the
+   * open photo's shot. True when the key was one of them.
+   */
+  function flagKey(e: KeyboardEvent): boolean {
+    const id = editor.asset?.id;
+    if (!id || editor.readOnly || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const k = e.key.toLowerCase();
+    let action: FlagAction | null = null;
+    if (/^[0-5]$/.test(e.key)) action = { kind: 'rate', rating: Number(e.key) };
+    else if (k === 'p') action = { kind: 'pick' };
+    else if (k === 'x' && editor.tool !== 'crop') action = { kind: 'reject' };
+    else if (k === 'u') action = { kind: 'clear' };
+    if (!action) return false;
+    e.preventDefault();
+    void flag([id], action);
+    return true;
   }
 
   // ------------------------------------------------------- view: tap / double-tap / pan
@@ -523,6 +557,8 @@
             · unsaved changes
             {#if !editor.readOnly}<button class="discard" onclick={() => editor.discardDraft()} title="Back to the saved edit; the draft kept in this browser goes">Discard</button>{/if}
           {/if}
+          {#if flagsText}<span class="flags" class:rejected={flagsText.startsWith('rejected')}>· {flagsText}</span>{/if}
+          {#if flagStatus.error}<span class="cull rejected" title={flagStatus.error}>· {flagStatus.error}</span>{/if}
           {#if cullText}
             {#if (cullInfo?.groupSize ?? 0) > 1}
               <button class="cull" class:rejected={cullInfo?.role === 'rejected'} onclick={() => (stackFor = editor.asset?.id ?? null)} title="Compare the photos of this stack">· {cullText}</button>
@@ -765,13 +801,14 @@
         ctx={editor.ctx}
         current={editor.asset}
         onSelect={openAsset}
-        onNeighbours={(prev, next, nearby) => (neighbours = { prev, next, nearby })}
+        onNeighbours={(n) => (neighbours = n)}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
         bind:stackFor
         unsaved={editor.dirty}
         onCurrentDeleted={afterCurrentDeleted}
         onSaveDrafts={editor.readOnly ? undefined : (ids) => void editor.saveDrafts(ids)}
+        currentRenderId={editor.recipe.render?.assetId ?? null}
         startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
@@ -829,7 +866,9 @@
             <div><kbd>W</kbd> WB picker</div>
             <div><kbd>Z</kbd> / double-click: 1:1</div>
             <div><kbd>Ctrl</kbd>+wheel: zoom</div>
-            <div><kbd>←</kbd><kbd>→</kbd> filmstrip</div>
+            <div><kbd>←</kbd><kbd>→</kbd> filmstrip, <kbd>↑</kbd><kbd>↓</kbd> stacks</div>
+            <div><kbd>0</kbd>–<kbd>5</kbd> stars</div>
+            <div><kbd>P</kbd> pick, <kbd>X</kbd> reject, <kbd>U</kbd> neither</div>
             <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
             <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
             <div><kbd>Ctrl</kbd>+<kbd>'</kbd> virtual copy</div>
@@ -910,6 +949,12 @@
   }
   .cull.rejected,
   button.cull.rejected:hover {
+    color: var(--danger);
+  }
+  .flags {
+    color: #ffd54a;
+  }
+  .flags.rejected {
     color: var(--danger);
   }
   button.discard {
