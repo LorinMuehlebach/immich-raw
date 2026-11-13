@@ -108,10 +108,17 @@ Two branches, neither merged yet:
     (`apps/editor/src/lib/ui/OpenProgress.svelte`).
     - **Only for slow opens:** the list shows when an open should take more than a second, or
       after a second when it takes longer than expected. A quick switch shows none of it.
-    - **Over Immich's preview:** the preview sits where the photo will appear and at its size, so
-      nothing moves when the photo is ready (unless the edit crops it). It doesn't look like the
-      editor's render: Immich converts the RAW its own way (or shows the camera's JPEG), in
-      Display P3, and without the saved edit.
+    - **Over a picture of the photo,** which sits where the photo will appear and at its size, so
+      nothing moves when the photo is ready. The picture is the first of these
+      (`Editor.showPreview`):
+      1. **What the editor showed last time,** if the saved edit is still the same: a JPEG of the
+         canvas, kept in the photo cache (`apps/editor/src/lib/immich/view-cache.ts`; 0.2–0.8 MB).
+         It is taken right after a render that shows the saved edit plainly: no before view,
+         clipping, mask overlay, zoom or crop tool, with the lens profile and the AI masks in place.
+      2. **The saved JPEG's preview in Immich,** for a photo with a saved edit.
+      3. **Immich's preview of the RAW.** It looks different from the editor's render: Immich
+         converts the RAW its own way, brightening it automatically (or shows the camera's JPEG),
+         in Display P3, and without the saved edit.
     - **Estimates** are moving averages of earlier opens in this browser, kept in `localStorage`
       (`apps/editor/src/lib/state/open-times.ts`).
       - **Decode times:** per camera (make, model, file type); a camera seen for the first time is

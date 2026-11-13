@@ -119,6 +119,7 @@ import {
 import { apiUrl, authHeaders, getServerVersionInfo, getSession, initApi, serverVersionWarning, setApiKey } from '../immich/api.ts';
 import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification } from '../dng/convert.ts';
 import { hasDecoded, readDecoded, writeDecoded } from '../immich/decoded-cache.ts';
+import { keepView, readView, type KeptView } from '../immich/view-cache.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
 import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
 import { canPrefetch, decodeNeighbour, fetchNeighbour, resetPrefetch } from '../immich/prefetch.ts';
@@ -520,6 +521,8 @@ export class Editor {
   private photoGen = 0;
   /** Stops the running open's download and half-size decode when another photo is opened. */
   private openStop = new AbortController();
+  /** The photo and saved state whose look was last kept for the loading screen (keepViewIfPlain). */
+  private viewKept = '';
   /** The same for the background work on the photos around it. */
   private prefetchStop = new AbortController();
 
@@ -648,6 +651,7 @@ export class Editor {
     this.pastRenders = new Set();
     this.savedRenderId = null;
     this.decodedKept = Promise.resolve();
+    this.viewKept = '';
     this.previewRun++;
     this.upscale.preview = null;
     this.upscale.previewStatus = null;
@@ -696,7 +700,8 @@ export class Editor {
       this.asset = asset;
       this.readOnly = !canEdit(asset, this.me!);
       document.title = `${asset.originalFileName} · immich-raw`;
-      this.showServerPreview(asset.id);
+      // What the photo looked like here last time; whether it still applies depends on the saved edit.
+      const viewP = readView(asset.checksum);
       // The cache never pushes out the photo being edited while it is open.
       unpinPhotos();
       pinPhoto(asset.checksum);
@@ -741,6 +746,7 @@ export class Editor {
       const [stored, snapshots] = await Promise.all([loadRecipe(asset.id).catch(() => null), this.loadSnapshots(asset.id)]);
       done();
       live();
+      void this.showPreview(asset, stored, viewP, gen);
       this.snapshots = snapshots;
       this.storedEdit = !!stored;
       // Film looks kept in this browser (never downloads here).
@@ -1032,13 +1038,47 @@ export class Editor {
     this.requestRender();
   }
 
-  private showServerPreview(id: string): void {
-    fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), { headers: authHeaders(), credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.blob() : null))
-      .then((b) => {
-        if (b && this.status !== 'ready' && this.asset?.id === id) this.previewUrl = URL.createObjectURL(b);
-      })
-      .catch(() => {});
+  /**
+   * The picture that stands in for the photo while it loads, the first of:
+   * - what the editor showed last time, if the saved edit is still the same (keepViewIfPlain);
+   * - the saved JPEG's preview in Immich, for a photo with a saved edit;
+   * - Immich's preview of the RAW (its own conversion: brighter, more saturated, without the edit).
+   */
+  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number): Promise<void> {
+    const show = (b: Blob) => {
+      if (gen !== this.photoGen || this.status === 'ready') return;
+      if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
+      this.previewUrl = URL.createObjectURL(b);
+    };
+    const view = await viewP;
+    if (view && view.shows === (stored ? editableJson(stored) : 'unedited')) return show(view.image);
+    for (const id of [stored?.render?.assetId, asset.id]) {
+      if (!id || gen !== this.photoGen) continue;
+      const b = await fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), { headers: authHeaders(), credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.blob() : null))
+        .catch(() => null);
+      // The saved JPEG may be gone (deleted in Immich): then the RAW's preview.
+      if (b) return show(b);
+    }
+  }
+
+  /**
+   * Keeps what the photo looks like for the loading screen of its next open. Called right after
+   * a render, while the canvas still holds it (it is cleared once shown). Only a plain view of the
+   * saved edit counts, with the lens profile and any AI masks in place, and only once per state.
+   */
+  private keepViewIfPlain(): void {
+    const a = this.asset;
+    const canvas = this.canvas;
+    if (!a || !canvas || this.dirty || this.previewRecipe || this.before || this.clipping || this.maskView !== 'none') return;
+    if (this.overlayMask || this.tool === 'crop' || this.zoom.on) return;
+    if (this.lensInfo.searching || Object.values(this.ai.status).some((s) => s.state === 'working')) return;
+    const key = `${a.checksum}|${this.savedJson}`;
+    if (key === this.viewKept) return;
+    this.viewKept = key;
+    const shows = this.storedEdit || this.savedRenderId ? this.savedJson : 'unedited';
+    const checksum = a.checksum;
+    canvas.toBlob((b) => b && void keepView(checksum, shows, b), 'image/jpeg', 0.85);
   }
 
   private startFullDecode(): void {
@@ -1176,6 +1216,7 @@ export class Editor {
       } else {
         const f = renderer.render(recipe, { mode: this.tool === 'crop' ? 'crop' : 'edit', ...opts });
         if (f.width !== this.frame.width || f.height !== this.frame.height) this.frame = { width: f.width, height: f.height };
+        this.keepViewIfPlain();
       }
       this.viewVersion++;
       this.scheduleHistogram();
@@ -2397,6 +2438,8 @@ export class Editor {
       this.recipe.decoder = saved.decoder;
       delete this.recipe.pending;
       this.savedJson = editableJson(saved);
+      // A render now keeps the saved look for the next open's loading screen.
+      this.requestRender();
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
       this.notice = `Saved to Immich, stacked on top of the RAW.${fallback ? ` ${COLOR_FALLBACK}` : ''}`;

@@ -1,6 +1,7 @@
-// The editor's cache of photos in the browser's storage: each RAW's original (download.ts) and its
-// decoded half-size image (decoded-cache.ts), in one folder with one size limit. Files are named
-// after Immich's checksum of the original.
+// The editor's cache of photos in the browser's storage: each RAW's original (download.ts), its
+// decoded half-size image (decoded-cache.ts) and a JPEG of how it looked in the editor
+// (view-cache.ts), in one folder with one size limit. Files are named after Immich's checksum of
+// the original.
 import { OpfsLru } from './opfs-lru.ts';
 
 /**
@@ -18,10 +19,11 @@ const safe = (checksum: string) => checksum.replace(/\+/g, '-').replace(/\//g, '
 
 export const originalName = (checksum: string) => `${safe(checksum)}.raw`;
 export const decodedName = (checksum: string) => `${safe(checksum)}.half`;
+export const viewName = (checksum: string) => `${safe(checksum)}.view`;
 
 /** Keeps a photo's files while this page is open (the photo being edited, a prefetched one). */
 export function pinPhoto(checksum: string): void {
-  photoCache.pin(originalName(checksum), decodedName(checksum));
+  photoCache.pin(originalName(checksum), decodedName(checksum), viewName(checksum));
 }
 
 /** Lets go of the pinned photos: another photo was opened in the page. */

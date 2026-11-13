@@ -24,6 +24,7 @@ and no photo is sent anywhere else: the AI models are downloaded to the browser 
   - the original files, so a reopened photo isn't downloaded again;
   - their decoded half-size images, packed (never a full-resolution one), so it isn't decoded
     again either;
+  - a JPEG of how each looked in the editor, shown while the photo opens again;
   - how long the last opens took, per camera, for the loading screen's estimates.
 
   The originals and the decoded images share 800 MB, about 5–10 photos of 45–61 MP. The photos
