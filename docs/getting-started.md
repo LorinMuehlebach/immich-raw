@@ -48,10 +48,11 @@ The JPEG's size, quality and sharpening come from one of the [Export](export.md)
 full resolution. A new choice applies from the next save. The copy in Immich is always a JPEG
 without watermark and keeps the RAW's own metadata.
 
-Unsaved changes never hold you up. Going to another photo or back to Immich keeps them in this
-browser as a draft: the title line says "unsaved changes" (with **Discard** to go back to the saved
-edit), the filmstrip marks the photo with a blue dot, and the photo opens with its draft next time.
-See [Workflow → Drafts](workflow.md#drafts).
+Unsaved changes don't hold you up while you edit: going to another photo keeps them as a draft.
+The title line says "unsaved changes" (with **Discard** to go back to the saved edit), the
+filmstrip marks the photo with a blue dot, and the photo opens with its draft again. Going back to
+Immich with drafts asks whether to save them, since they only live while the editor is open. See
+[Workflow → Drafts](workflow.md#drafts).
 
 ## 4. Back in Immich
 
@@ -64,6 +65,7 @@ opens the RAW again.
 ## Next
 
 - [Editing](editing.md), [Masks](masks.md), [Workflow](workflow.md): what the editor can do.
+- [Lightroom import](lightroom.md): bringing your Lightroom edits along.
 - [Export](export.md), [AI Upscale](upscale.md), [Convert to DNG](dng.md): what you can make from
   an edit.
 - [Stacking and best pick](stacking.md): sorting bursts, with the optional culler.

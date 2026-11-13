@@ -9,7 +9,7 @@
   import { factsOf, flag, flagStatus } from './lib/immich/photo-facts.svelte.ts';
   import type { FlagAction } from './lib/immich/shot-flags.ts';
   import { compareCandidate, factsText, type Neighbours } from './lib/immich/strip-view.ts';
-  import { drafts } from './lib/drafts/drafts.svelte.ts';
+  import { draftPhotos } from './lib/drafts/drafts.svelte.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
@@ -29,6 +29,7 @@
   import ConvertDngDialog from './lib/ui/ConvertDngDialog.svelte';
   import CopySettingsDialog from './lib/ui/CopySettingsDialog.svelte';
   import CompareView from './lib/ui/CompareView.svelte';
+  import LeaveDialog from './lib/ui/LeaveDialog.svelte';
   import CropOverlay from './lib/ui/CropOverlay.svelte';
   import CropPanel from './lib/ui/CropPanel.svelte';
   import DetailPanel from './lib/ui/DetailPanel.svelte';
@@ -180,13 +181,12 @@
     // Not passive: Ctrl + wheel must not also zoom the browser page.
     stage.addEventListener('wheel', onWheel, { passive: false });
     editor.load(canvas);
-    // Unsaved changes stay as a draft (drafts/), so leaving never asks. Only a save still running,
-    // or edits from the last moments not stored yet, make the browser ask.
+    // Drafts (drafts/) live only while the page is open: closing or reloading it with drafts, or
+    // while a save runs, makes the browser ask. Going back to Immich asks with LeaveDialog.
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (unloading) return;
-      const late = editor.draftDue || drafts.pending > 0;
       void editor.keepDraft();
-      if (editor.saving || late) e.preventDefault();
+      if (editor.saving || editor.dirty || draftPhotos.size > 0) e.preventDefault();
     };
     const onHide = () => {
       if (document.visibilityState === 'hidden') void editor.keepDraft();
@@ -205,8 +205,10 @@
     };
   });
 
-  /** The page is being left on purpose, with the draft stored: the browser mustn't ask. */
+  /** The page is being left on purpose (after LeaveDialog): the browser mustn't ask. */
   let unloading = false;
+  /** Leaving for Immich while photos have drafts: where to, and which photos (LeaveDialog). */
+  let leaving = $state<{ target: () => string; ids: Set<string> } | null>(null);
 
   /** Back to Immich. The target is a function: after saving, it points at the new render. */
   async function toImmich(target: () => string) {
@@ -220,9 +222,28 @@
     void editor.openEdit(copyId);
   }
 
-  async function goBack() {
+  /** Leaves the editor for Immich; with drafts, asks first whether to save them (they'd be lost). */
+  async function leave(target: () => string) {
     await editor.keepDraft();
-    await toImmich(() => editor.backUrl());
+    if (draftPhotos.size) leaving = { target, ids: new Set(draftPhotos) };
+    else await toImmich(target);
+  }
+
+  function goBack() {
+    void leave(() => editor.backUrl());
+  }
+
+  async function leaveSaving() {
+    const l = leaving;
+    leaving = null;
+    // A save that fails or is cancelled keeps the editor open; the notice says what happened.
+    if (l && (await editor.saveDrafts(l.ids))) await toImmich(l.target);
+  }
+
+  function leaveDiscarding() {
+    const l = leaving;
+    leaving = null;
+    if (l) void toImmich(l.target);
   }
 
   /**
@@ -250,17 +271,21 @@
     void editor.switchPhoto(id, 'none', looks.hint(id));
   }
 
-  /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
+  /**
+   * "Delete others" in the stack window trashed this photo: go on with the shot that was kept, in
+   * this page (the other photos' drafts stay), or back to Immich when it has no RAW.
+   */
   function afterCurrentDeleted(kept: StackFrame) {
     editor.discardDraft();
-    unloading = true;
     if (kept.raw) {
-      location.href = editor.urlFor(kept.raw.id);
+      // In place of the trashed photo in the browser's history.
+      history.replaceState(null, '', editor.urlFor(kept.raw.id));
+      void editor.switchPhoto(kept.raw.id, 'none');
       return;
     }
     const gone = editor.asset?.id;
     const back = editor.returnPath;
-    location.href = back && gone && back.includes(gone) ? back.replaceAll(gone, kept.face.id) : `/photos/${kept.face.id}`;
+    void leave(() => (back && gone && back.includes(gone) ? back.replaceAll(gone, kept.face.id) : `/photos/${kept.face.id}`));
   }
 
   function isTyping(target: EventTarget | null): boolean {
@@ -275,7 +300,7 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || syncFor || editor.dngDialog || editor.exportDialog || stackFor) return;
+    if (isTyping(e.target) || copyOpen || syncFor || leaving || editor.dngDialog || editor.exportDialog || stackFor) return;
     if (e.key === 'Escape' && selection.length) {
       selection = [];
       return;
@@ -778,7 +803,7 @@
         <div class="center-msg card">
           <h2>Can't open this photo</h2>
           <p>{editor.error}</p>
-          <button onclick={() => (location.href = editor.backUrl())}>Back to Immich</button>
+          <button onclick={goBack}>Back to Immich</button>
         </div>
       {/if}
 
@@ -833,7 +858,7 @@
         <div class="toast" class:err={!!editor.error}>
           <span>{editor.error ?? editor.notice ?? editor.warning}</span>
           {#if editor.notice && editor.recipe.render && !editor.error && !editor.dirty}
-            <button onclick={() => toImmich(() => editor.backUrl())}>Back to Immich</button>
+            <button onclick={goBack}>Back to Immich</button>
           {/if}
           <button class="icon" aria-label="Dismiss" onclick={() => ((editor.notice = null), (editor.error = null), (editor.warning = null))}>✕</button>
         </div>
@@ -946,6 +971,16 @@
   <ExportSettingsDialog />
 {:else if editor.exportDialog === 'album'}
   <BatchExportDialog onClose={() => (editor.exportDialog = null)} />
+{/if}
+
+{#if leaving}
+  <LeaveDialog
+    count={leaving.ids.size}
+    fileName={leaving.ids.size === 1 && editor.asset && leaving.ids.has(editor.asset.id) ? editor.asset.originalFileName : null}
+    onSave={leaveSaving}
+    onDiscard={leaveDiscarding}
+    onCancel={() => (leaving = null)}
+  />
 {/if}
 
 {#if syncFor}

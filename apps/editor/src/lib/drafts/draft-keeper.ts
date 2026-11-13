@@ -1,7 +1,7 @@
 // Keeps the open photo's draft up to date (draft-store.ts): written a moment after the edits
 // pause and whenever the photo is left, removed once the edit is back to its saved state. With
-// it goes a picture of the canvas: the look shown while the photo opens next time
-// (view-cache.ts), and a small one for the filmstrip.
+// it go pictures of the canvas: the look shown while the photo opens again, and a small one for
+// the filmstrip.
 import type { Recipe } from '@immich-raw/recipe';
 import { editableJson } from '../state/history.ts';
 import type { DraftStore } from './draft-store.ts';
@@ -22,8 +22,6 @@ export interface DraftHost {
 
 export interface DraftKeeperDeps {
   store: DraftStore;
-  /** Keeps a picture of the photo for its next open (view-cache.ts keepView). */
-  keepView(checksum: string, shows: string, jpeg: Blob): Promise<void>;
   /** A JPEG of the canvas, taken now. */
   snapshot(canvas: HTMLCanvasElement): Promise<Blob | null>;
   /** A small JPEG for the filmstrip. */
@@ -83,8 +81,9 @@ export class DraftKeeper {
     const picture = canvas ? this.deps.snapshot(canvas).catch(() => null) : Promise.resolve(null);
     return picture.then(async (jpeg) => {
       const thumb = jpeg ? await this.deps.thumbnail(jpeg).catch(() => undefined) : undefined;
-      if (jpeg) await this.deps.keepView(cur.checksum, json, jpeg).catch(() => {});
-      await this.deps.store.put({ assetId: cur.assetId, copyId: cur.copyId, recipe, base, updatedAt: Date.now(), ...(thumb ? { thumb } : {}) }).catch(() => {});
+      await this.deps.store
+        .put({ assetId: cur.assetId, copyId: cur.copyId, recipe, base, updatedAt: Date.now(), ...(thumb ? { thumb } : {}), ...(jpeg ? { look: jpeg } : {}) })
+        .catch(() => {});
     });
   }
 
