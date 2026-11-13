@@ -138,6 +138,8 @@ import { apiUrl, authHeaders, getServerVersionInfo, getSession, initApi, serverV
 import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification } from '../dng/convert.ts';
 import { hasDecoded, readDecoded, writeDecoded } from '../immich/decoded-cache.ts';
 import { keepView, readView, type KeptView } from '../immich/view-cache.ts';
+import { editStates } from '../immich/edit-state.ts';
+import { looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
 import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
 import { canPrefetch, decodeNeighbour, fetchNeighbour, resetPrefetch } from '../immich/prefetch.ts';
@@ -571,6 +573,8 @@ export class Editor {
   private openStop = new AbortController();
   /** The photo and saved state whose look was last kept for the loading screen (keepViewIfPlain). */
   private viewKept = '';
+  /** Which picture `previewUrl` shows (looks.ts), so the same one isn't fetched and swapped in again. */
+  private previewSource: string | null = null;
   /** The same for the background work on the photos around it. */
   private prefetchStop = new AbortController();
 
@@ -623,13 +627,21 @@ export class Editor {
    * Opens another photo in this page: the filmstrip, the arrow keys, and the browser's Back and
    * Forward. The page, the renderer with its compiled shaders, the filmstrip and the decoder stay.
    * `url`: 'push' adds the photo to the browser's history; 'none' when the address already
-   * changed (Back and Forward).
+   * changed (Back and Forward). `hint`: what the filmstrip has of the photo (looks.ts), shown
+   * before anything is asked of Immich.
    */
-  async switchPhoto(id: string, url: 'push' | 'none' = 'push'): Promise<void> {
+  async switchPhoto(id: string, url: 'push' | 'none' = 'push', hint: LookHint = {}): Promise<void> {
     if (this.saving) return;
     if (url === 'push') history.pushState(null, '', this.urlFor(id));
     this.readUrl();
+    this.forgetChangedLook();
     this.closePhoto();
+    // The filmstrip moves on at once (and ← → count from this photo), its look shows.
+    if (hint.asset?.id === id) this.asset = hint.asset;
+    if (hint.look) {
+      this.previewUrl = URL.createObjectURL(hint.look.image);
+      this.previewSource = hint.look.source;
+    }
     const gen = ++this.photoGen;
     // This photo's step timings only (DevTools, the probes).
     performance.clearMeasures?.();
@@ -638,6 +650,17 @@ export class Editor {
     } catch (e) {
       if (e !== SUPERSEDED && gen === this.photoGen) this.fail(e);
     }
+  }
+
+  /**
+   * The photo being left looks different from what the filmstrip got ready for it, if it was
+   * saved here (its stored edit changed) or the editor kept a new look of it (view-cache.ts).
+   */
+  private forgetChangedLook(): void {
+    const id = this.asset?.id;
+    if (!id) return;
+    if (this.savedRenderId) editStates.forget(id);
+    if (this.savedRenderId || this.viewKept) looks.forget(id);
   }
 
   /**
@@ -658,6 +681,7 @@ export class Editor {
     this.fullEta = null;
     if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
     this.previewUrl = null;
+    this.previewSource = null;
     this.recipe = defaultRecipe();
     this.savedJson = editableJson(this.recipe);
     this.history.reset($state.snapshot(this.recipe) as Recipe, 'Open');
@@ -796,9 +820,12 @@ export class Editor {
       const bothKept = Promise.all([decodedKept, hasOriginal(asset.checksum)]).then(([d, o]) => d && o);
       done = startMeasure('recipe and snapshots');
       // One listing holds the edit, its snapshots and the virtual copies.
-      const items = await getAssetMetadata({ id: asset.id }).catch(() => []);
+      const listed = await getAssetMetadata({ id: asset.id }).catch(() => null);
       done();
       live();
+      // The filmstrip's looks and badges go by the same listing.
+      if (listed) editStates.remember(asset.id, listed);
+      const items = listed ?? [];
       this.copies = copiesIn(items).map(copyInfo);
       let copyId = new URLSearchParams(location.search).get('copy');
       if (copyId && !this.copies.some((c) => c.id === copyId)) {
@@ -1105,22 +1132,26 @@ export class Editor {
    * - what the editor showed last time, if the saved edit is still the same (keepViewIfPlain);
    * - the saved JPEG's preview in Immich, for a photo with a saved edit;
    * - Immich's preview of the RAW (its own conversion: brighter, more saturated, without the edit).
+   * The filmstrip's look of it (switchPhoto) may show already: the same picture isn't fetched again.
    */
   private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number): Promise<void> {
-    const show = (b: Blob) => {
-      if (gen !== this.photoGen || this.status === 'ready') return;
+    const show = (b: Blob, source: string) => {
+      if (gen !== this.photoGen || this.status === 'ready' || source === this.previewSource) return;
       if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
       this.previewUrl = URL.createObjectURL(b);
+      this.previewSource = source;
     };
     const view = await viewP;
-    if (view && view.shows === (stored ? editableJson(stored) : 'unedited')) return show(view.image);
+    const shows = viewShows(stored);
+    if (view && view.shows === shows) return show(view.image, viewSource(shows));
     for (const id of [stored?.render?.assetId, asset.id]) {
       if (!id || gen !== this.photoGen) continue;
+      if (this.previewSource === previewSource(id)) return;
       const b = await fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), { headers: authHeaders(), credentials: 'same-origin' })
         .then((r) => (r.ok ? r.blob() : null))
         .catch(() => null);
       // The saved JPEG may be gone (deleted in Immich): then the RAW's preview.
-      if (b) return show(b);
+      if (b) return show(b, previewSource(id));
     }
   }
 
