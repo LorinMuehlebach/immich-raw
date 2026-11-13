@@ -28,7 +28,7 @@ Each feature has a guide with screenshots.
   objects. Edges can be grown, feathered and smoothed.
 - **[Workflow](docs/workflow.md):** histogram, waveform and vectorscope, clipping, before/after,
   zoom to 800 %, history, snapshots, virtual copies, presets, copy and paste, a filmstrip, keyboard
-  shortcuts, and [Lightroom import](docs/workflow.md#lightroom-import) of XMP sidecars and presets.
+  shortcuts, and [Lightroom import](docs/lightroom.md) of XMP sidecars and presets.
 - **[Export](docs/export.md):** JPEG, PNG, TIFF, WebP, AVIF or JPEG XL in sRGB, Display P3,
   Adobe RGB or ProPhoto RGB, 8 or 16 bits, at a size of your choice, with sharpening, a text or
   logo watermark, metadata and file name settings; one photo, a whole album, or the photos selected
@@ -42,6 +42,23 @@ Each feature has a guide with screenshots.
 
 Your photos stay with you: decoding, editing, AI masks and AI Upscale run in your browser, and only
 the optional culler looks at photos on your own server ([Under the hood](docs/under-the-hood.md)).
+
+## Lightroom import
+
+Your Lightroom edits come along. When you open a RAW you haven't edited yet and Immich has its
+Lightroom XMP sidecar, the editor offers to apply the settings, including:
+- white balance, tone, the profile, curves, Color Mixer and B&W, and Color Grading;
+- Calibration, Detail, Lens Corrections, Transform, Effects and the crop;
+- masks, with AI masks found again in the photo.
+
+Lightroom `.xmp` presets can be imported too.
+
+The sidecar has to reach Immich together with the RAW:
+- **Bring it along:** the Immich CLI, immich-go and external libraries.
+- **Leave it behind:** Immich's web upload, its phone app and the Lightroom plugins for Immich.
+
+[Lightroom import](docs/lightroom.md) explains what comes across, and gives the steps for each way of
+getting your photos and sidecars into Immich.
 
 ## Try it
 

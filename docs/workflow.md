@@ -74,8 +74,8 @@ say, or two crops.
 ## Presets
 
 **+** saves the current settings (or a part of them) as a preset; **Import** reads Lightroom
-`.xmp` presets. Hover over a preset to preview it on the photo, click to apply it. Presets are kept
-in the browser.
+`.xmp` presets ([Lightroom import](lightroom.md#presets)). Hover over a preset to preview it on the
+photo, click to apply it. Presets are kept in the browser.
 
 ![A Lightroom preset, imported](images/workflow/presets.jpg)
 
@@ -150,13 +150,10 @@ out). It doesn't do this with Data Saver on, on a mobile network, or on a device
 
 ## Lightroom import
 
-When a RAW is opened for the first time and Immich has a Lightroom XMP sidecar for it, the editor
-offers to apply it: basic, curves, colour mixer, B&W, colour grading, calibration, detail, lens
-corrections, transform, effects, crop and masks.
-- AI masks (Subject, Sky, Background, People parts, Landscape) are found again in the photo.
-- AI Objects and one person's parts can't be told apart in the file: objects are skipped, and a
-  part of one person applies to everyone.
-- Lightroom presets with AI masks (Adaptive presets) work the same.
+When you open a RAW you haven't edited yet and Immich has a Lightroom XMP sidecar for it, the
+editor offers to apply its settings, masks included.
+- [Lightroom import](lightroom.md) lists what comes across.
+- It also explains how to get the sidecars into Immich with your RAWs.
 
 ## Keyboard shortcuts
 
