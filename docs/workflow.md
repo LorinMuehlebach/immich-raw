@@ -75,6 +75,11 @@ The next photo opens in the same page, without loading the editor again, and the
 follows: the browser's Back and Forward go through the photos you opened. Unsaved changes ask
 first, as when going back to Immich.
 
+It shows at once, as it looked in the editor last time (or as its saved JPEG, or Immich's
+preview), until it can be edited: the filmstrip gets that picture ready for the photos on either
+side and for the rest of the open photo's stack. ← and → (and Esc) work while a photo is still
+opening, so you can flip through a stack without waiting for each photo.
+
 Over HTTPS the editor gets the photos around the open one ready while you edit: the next and
 previous photo, then the two after those. It downloads them as soon as the open photo shows, and
 decodes them once the open photo is decoded at full resolution. Then ← and → open them from the

@@ -1,9 +1,11 @@
 <script lang="ts">
+  import type { AssetResponseDto } from '@immich/sdk';
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
   import { onMount, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
+  import { looks } from './lib/immich/looks.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
@@ -223,11 +225,12 @@
   }
 
   /** Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again. */
-  function openAsset(id: string) {
+  function openAsset(id: string, asset?: AssetResponseDto) {
     if (id === editor.asset?.id) return;
     leave(() => {
       stackFor = null;
-      return editor.switchPhoto(id);
+      // The filmstrip's look of it shows at once (looks.ts).
+      return editor.switchPhoto(id, 'push', looks.hint(id, asset));
     }, false);
   }
 
@@ -243,7 +246,7 @@
       return;
     }
     stackFor = null;
-    void editor.switchPhoto(id, 'none');
+    void editor.switchPhoto(id, 'none', looks.hint(id));
   }
 
   /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
@@ -271,7 +274,11 @@
       return;
     }
     if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving || stackFor) return;
-    if (editor.status !== 'ready' || editor.saving) return;
+    if (editor.saving) return;
+    if (editor.status !== 'ready') {
+      if (editor.status === 'loading' || editor.status === 'error') onKeyWhileOpening(e);
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     const onRange = (e.target as HTMLElement | null)?.tagName === 'INPUT';
@@ -368,6 +375,17 @@
       else if (editor.tool !== 'edit') editor.setTool('edit');
       else if (editor.zoom.on) editor.setZoom(false);
       else goBack();
+    }
+  }
+
+  /** While a photo opens (or failed to): moving on to another photo, and back to Immich. */
+  function onKeyWhileOpening(e: KeyboardEvent) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
+      if (id) openAsset(id);
+    } else if (e.key === 'Escape') {
+      goBack();
     }
   }
 

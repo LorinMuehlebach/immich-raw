@@ -8,6 +8,7 @@
   import { captureTime, loadFilmstrip } from '../immich/context.ts';
   import { arrangeGroups, badgeFor, tooltipFor } from '../immich/cull-view.ts';
   import { cullerStatus, lookupCull, makeBest, waitForRun, type CullInfo, type CullerStatus } from '../immich/culler.ts';
+  import { looks } from '../immich/looks.ts';
   import type { StackFrame } from '../immich/stack-view.ts';
   import CullPanel from './CullPanel.svelte';
   import StackViewer from './StackViewer.svelte';
@@ -15,7 +16,8 @@
   interface Props {
     ctx: string | null;
     current: AssetResponseDto;
-    onSelect: (id: string) => void;
+    /** `asset`: the photo's info from the filmstrip's list, when it has it. */
+    onSelect: (id: string, asset?: AssetResponseDto) => void;
     /** prev, next: for ← and →. nearby: the photos to get ready, nearest first (next, previous, then two either way). */
     onNeighbours?: (prev: string | null, next: string | null, nearby: string[]) => void;
     /** The user may change stacks (owner of the photo). */
@@ -117,6 +119,18 @@
     const next = at(i + 1);
     const nearby = [next, prev, at(i + 2), at(i - 2)].filter((id): id is string => !!id);
     untrack(() => onNeighbours?.(prev, next, nearby));
+  });
+
+  // What the photos around this one and the rest of its stack look like gets ready (looks.ts),
+  // so switching to one of them shows it at once, also to the photos of a collapsed stack.
+  $effect(() => {
+    const i = index;
+    if (i < 0) return;
+    const near = [i + 1, i - 1, i + 2, i - 2].map((k) => strip[k]?.asset).filter((a): a is AssetResponseDto => !!a);
+    const gid = cull[current.id]?.groupId;
+    const mates = gid ? items.filter((a) => a.id !== current.id && cull[a.id]?.groupId === gid) : [];
+    const wanted = new Map([...near, ...mates].map((a) => [a.id, $state.snapshot(a) as AssetResponseDto]));
+    untrack(() => looks.prefetch([...wanted.values()]));
   });
 
   $effect(() => {
@@ -255,7 +269,7 @@
             role="option"
             aria-selected={a.id === current.id}
             title={tooltipFor(label(a), s.info)}
-            onclick={() => a.id !== current.id && onSelect(a.id)}
+            onclick={() => a.id !== current.id && onSelect(a.id, $state.snapshot(a) as AssetResponseDto)}
             use:centreIf={a.id === current.id}
           >
             <img alt={a.originalFileName} use:thumb={a.id} draggable="false" />
