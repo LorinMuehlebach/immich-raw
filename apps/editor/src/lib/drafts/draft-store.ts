@@ -1,8 +1,9 @@
-// Drafts: unsaved edits kept in this browser, one per photo (and per virtual copy of it), so
-// switching to another photo or leaving the editor never has to ask. A photo with a draft opens
-// with the draft instead of its saved edit, until the draft is saved or discarded. The draft
-// remembers which saved edit it was made from, so a newer save (another tab or device) can be
-// pointed out when the photo opens. Kept in IndexedDB; in memory only, when the browser has none.
+// Drafts: unsaved edits of the photos opened from the filmstrip, one per photo (and per virtual
+// copy of it), so switching to another photo never has to ask. They live in memory while the
+// editor page is open: going back to Immich asks to save them, and closing or reloading the page
+// drops them (the browser asks first). A photo with a draft opens with the draft instead of its
+// saved edit. The draft remembers which saved edit it was made from, so a save in another tab
+// meanwhile can be pointed out when the photo opens again.
 import { applyPatch, type Recipe, type SettingsPatch } from '@immich-raw/recipe';
 import { editable, editableJson } from '../state/history.ts';
 
@@ -18,6 +19,8 @@ export interface Draft {
   updatedAt: number;
   /** A small picture of it for the filmstrip (JPEG), if one could be taken. */
   thumb?: Blob;
+  /** The picture shown while the photo opens again (JPEG of the canvas), if one could be taken. */
+  look?: Blob;
   /**
    * Only these settings (Sync Settings on a photo without a saved edit, whose starting settings
    * aren't known until it opens): they go on top of its defaults then.
@@ -61,85 +64,6 @@ export class MemoryDraftBackend implements DraftBackend {
 
   async delete(key: string): Promise<void> {
     this.items.delete(key);
-  }
-}
-
-/** IndexedDB, falling back to memory (this page only) when it is missing or blocked. */
-export class IndexedDbDraftBackend implements DraftBackend {
-  private dbPromise: Promise<IDBDatabase> | null = null;
-  private fallback: MemoryDraftBackend | null = null;
-
-  constructor(
-    private readonly dbName = 'raw-editor-drafts',
-    private readonly storeName = 'drafts',
-  ) {}
-
-  private open(): Promise<IDBDatabase> {
-    this.dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open(this.dbName, 1);
-      req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains(this.storeName)) req.result.createObjectStore(this.storeName, { keyPath: 'key' });
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
-      req.onblocked = () => reject(new Error('IndexedDB blocked'));
-    });
-    return this.dbPromise;
-  }
-
-  private async run<T>(mode: IDBTransactionMode, op: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-    const db = await this.open();
-    return new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(this.storeName, mode);
-      const req = op(tx.objectStore(this.storeName));
-      tx.oncomplete = () => resolve(req.result);
-      tx.onerror = () => reject(tx.error ?? req.error ?? new Error('IndexedDB request failed'));
-      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
-    });
-  }
-
-  private async withFallback<T>(idb: () => Promise<T>, mem: (m: MemoryDraftBackend) => Promise<T>): Promise<T> {
-    if (this.fallback) return mem(this.fallback);
-    try {
-      if (typeof indexedDB === 'undefined') throw new Error('no IndexedDB');
-      return await idb();
-    } catch (e) {
-      console.warn('Drafts: IndexedDB unavailable, keeping drafts for this page only.', e);
-      this.fallback = new MemoryDraftBackend();
-      return mem(this.fallback);
-    }
-  }
-
-  all(): Promise<Draft[]> {
-    return this.withFallback(
-      () => this.run('readonly', (s) => s.getAll() as IDBRequest<Draft[]>),
-      (m) => m.all(),
-    );
-  }
-
-  get(key: string): Promise<Draft | undefined> {
-    return this.withFallback(
-      () => this.run('readonly', (s) => s.get(key) as IDBRequest<Draft | undefined>),
-      (m) => m.get(key),
-    );
-  }
-
-  put(draft: Draft): Promise<void> {
-    return this.withFallback(
-      async () => {
-        await this.run('readwrite', (s) => s.put(draft));
-      },
-      (m) => m.put(draft),
-    );
-  }
-
-  delete(key: string): Promise<void> {
-    return this.withFallback(
-      async () => {
-        await this.run('readwrite', (s) => s.delete(key));
-      },
-      (m) => m.delete(key),
-    );
   }
 }
 

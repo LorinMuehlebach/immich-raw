@@ -1,8 +1,8 @@
-// The drafts kept in this browser (draft-store.ts), and which photos have one, for the filmstrip.
+// The drafts of this editor page (draft-store.ts), and which photos have one, for the filmstrip.
 import { SvelteSet } from 'svelte/reactivity';
-import { DraftStore, IndexedDbDraftBackend } from './draft-store.ts';
+import { DraftStore, MemoryDraftBackend } from './draft-store.ts';
 
-export const drafts = new DraftStore(new IndexedDbDraftBackend());
+export const drafts = new DraftStore(new MemoryDraftBackend());
 
 /** Photos with a draft (of the original edit or of a virtual copy). */
 export const draftPhotos = new SvelteSet<string>();

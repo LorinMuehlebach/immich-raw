@@ -34,8 +34,8 @@ Tools around the edit: seeing it, going back, reusing it and moving between phot
 
 ## Drafts
 
-Unsaved changes are kept in this browser as a draft, one per photo and per virtual copy, so going
-to another photo, another copy or back to Immich never asks.
+Unsaved changes are kept as a draft while the editor is open, one per photo and per virtual copy,
+so going to another photo (in the filmstrip, with the keys) or another copy never asks.
 - **When:** a moment after you stop editing, and whenever you leave the photo.
 - **Opening a photo with a draft** opens the draft: the title line says "unsaved changes", and the
   filmstrip marks the photo with a blue dot. One undo step goes back to the saved edit; within one
@@ -45,11 +45,12 @@ to another photo, another copy or back to Immich never asks.
 - **Save N drafts**, in the filmstrip's header, saves the drafts of the photos in the filmstrip,
   one photo after another, like a Save of each (a full-resolution render with the Immich copy's
   preset). The editor waits meanwhile; Cancel stops after the photo being saved.
-- **Only in this browser** (its IndexedDB): another browser or device doesn't see the draft. If the
-  photo was saved somewhere else after the draft was made, a banner asks whether to keep the draft
-  or use the saved edit.
-- The browser only asks before closing the tab while a save is running, or right after an edit,
-  before its draft is written.
+- **Going back to Immich** with drafts asks whether to save them: **Save** saves them as Save N
+  drafts does and then goes back (if one fails, the editor stays open and says why), **Discard**
+  goes back without them, **Cancel** stays.
+- **Only while the editor is open:** drafts live in the page. Closing or reloading it drops them;
+  the browser asks first. If a photo was saved in another tab after its draft was made, a banner
+  asks whether to keep the draft or use the saved edit.
 
 ## Virtual copies
 

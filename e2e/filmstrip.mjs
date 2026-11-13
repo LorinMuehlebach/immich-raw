@@ -1,7 +1,7 @@
 // The filmstrip: switching photos with the keys shows the next photo's look at once and keeps the
 // page, and the keys work while a photo is still opening. Unsaved changes stay as a draft: no
-// question on the way out, a mark in the filmstrip, back with its undo history (also after a
-// reload), gone with Discard. Stars, pick, reject and clear land in Immich; the reject filter
+// question when switching, a mark in the filmstrip, back with its undo history, gone with Discard,
+// and gone after a reload (which asks first). Stars, pick, reject and clear land in Immich; the reject filter
 // hides a rejected photo; three selected photos all get stars, and Sync settings puts Exposure on
 // them; Compare shows another photo. What it sets is put back; nothing is saved (except SAVE=1).
 // Usage: node e2e/filmstrip.mjs <out-dir> [file name part]   (default: DSCF, a series with neighbours)
@@ -139,33 +139,32 @@ try {
   if (!restored) fail('going back did not restore the draft');
   if (undone !== '0.00' || redone !== '+0.70') fail('the undo history did not survive the switch');
 
-  // A reload opens the draft too, with the saved state one undo step back.
-  await page.waitForTimeout(2500);
-  await page.reload();
-  await shown();
-  await page.waitForTimeout(500);
-  const reloaded = (await exposure()) === '+0.70' && (await unsaved());
-  await page.keyboard.press('Control+z');
-  await page.waitForTimeout(300);
-  const reloadUndo = await exposure();
-  await page.keyboard.press('Control+Shift+z');
-  await page.waitForTimeout(300);
-  results.reload = { reloaded, reloadUndo };
-  console.log(`reload: draft opened ${reloaded}, undo → ${reloadUndo}`);
-  if (!reloaded) fail('the draft did not survive a reload');
-  if (reloadUndo !== '0.00') fail('after a reload, undo did not go back to the saved state');
-
   // Discard: back to the saved state, and the draft is gone.
   await page.locator('.sub button.discard').click();
   await page.waitForTimeout(800);
   const discarded = (await exposure()) === '0.00' && !(await unsaved());
+  const unmarked = (await draftMarks()) === marksBefore;
+  results.discard = { discarded, unmarked };
+  console.log(`discard: back to saved ${discarded}, mark gone ${unmarked}`);
+  if (!discarded || !unmarked) fail('Discard did not drop the draft');
+
+  // Drafts live only while the page is open: a reload asks first (the browser's own question),
+  // and the photo opens without them.
+  await setExposure('0.7');
+  await page.waitForTimeout(2500);
+  let asked = null;
+  page.once('dialog', (d) => {
+    asked = d.type();
+    void d.accept();
+  });
   await page.reload();
   await shown();
   await page.waitForTimeout(500);
-  const stillGone = (await exposure()) === '0.00' && !(await unsaved());
-  results.discard = { discarded, stillGone };
-  console.log(`discard: back to saved ${discarded}, gone after reload ${stillGone}`);
-  if (!discarded || !stillGone) fail('Discard did not drop the draft');
+  const dropped = (await exposure()) === '0.00' && !(await unsaved());
+  results.reload = { asked, dropped };
+  console.log(`reload: the browser asked ${asked}, the draft is gone ${dropped}`);
+  if (asked !== 'beforeunload') fail('a reload with a draft did not ask first');
+  if (!dropped) fail('a draft survived a reload');
 
   const api = async (method, path, data) => {
     const res = await context.request.fetch(`${base}/api${path}`, { method, data });
@@ -262,13 +261,20 @@ try {
   if (syncedExposure !== '+0.30') fail('Sync settings did not put the Exposure on the next photo');
   if (!selectionGone) fail('Esc did not select none');
   // Clean up: the drafts of this photo, the next one and the one we synced from.
-  await page.locator('.sub button.discard').click();
+  const discardHere = async () => {
+    await shown();
+    if (await page.locator('.sub button.discard').count()) await page.locator('.sub button.discard').click();
+  };
+  await discardHere();
   await page.keyboard.press('ArrowRight');
+  await discardHere();
+  await page.keyboard.press('ArrowLeft');
   await shown();
-  if (await page.locator('.sub button.discard').count()) await page.locator('.sub button.discard').click();
-  await page.goto(`${base}/immich-raw/?asset=${photo}`);
-  await shown();
-  if (await page.locator('.sub button.discard').count()) await page.locator('.sub button.discard').click();
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForURL((u) => new URL(u).searchParams.get('asset') === photo, { timeout: 5000 });
+  await discardHere();
+  await page.waitForTimeout(300);
+  if ((await draftMarks()) !== 0) fail('drafts were left after the selection checks');
 
   // ------------------------------------------------ compare
   await page.keyboard.press('c');
@@ -295,14 +301,18 @@ try {
     const recipeOf = async (id) => (await api('GET', `/assets/${id}/metadata`))?.find((i) => i.key === 'raw-editor.recipe')?.value ?? null;
     const before = await Promise.all(targets.map((a) => recipeOf(a.id)));
     if (before.some(Boolean)) fail('the photos for SAVE=1 have a saved edit already');
-    for (const a of targets) {
-      await page.goto(`${base}/immich-raw/?asset=${a.id}`);
+    // Drafts only live in this page: the photos are opened from the filmstrip.
+    const openCell = async (a) => {
+      await page.locator('.filmstrip .cell', { has: page.locator(`img[alt="${a.originalFileName}"]`) }).click();
+      await page.waitForURL((u) => new URL(u).searchParams.get('asset') === a.id, { timeout: 5000 });
       await shown();
+    };
+    for (const a of targets) {
+      await openCell(a);
       await setExposure('0.4');
       await page.waitForTimeout(2600);
     }
-    await page.goto(`${base}/immich-raw/?asset=${raws[6].id}`);
-    await shown();
+    await openCell(raws[6]);
     const button = page.locator('.filmstrip .headbtn', { hasText: /Save \d+ drafts?/ });
     const label = (await button.textContent())?.trim();
     const t0 = Date.now();

@@ -2,7 +2,7 @@ import type { AssetResponseDto } from '@immich/sdk';
 import { defaultRecipe } from '@immich-raw/recipe';
 import { describe, expect, it } from 'vitest';
 import { NO_EDIT, type EditState } from './edit-state.ts';
-import { LookCache, previewSource, resolveLook, viewShows, viewSource, type LookDeps } from './looks.ts';
+import { LookCache, draftSource, previewSource, resolveLook, viewShows, viewSource, type LookDeps } from './looks.ts';
 import type { KeptView } from './view-cache.ts';
 
 const asset = (id: string) => ({ id, checksum: `sum-${id}` }) as AssetResponseDto;
@@ -48,12 +48,14 @@ describe('resolveLook', () => {
     expect((await resolveLook(asset('b'), deps()))?.source).toBe(previewSource('b'));
   });
 
-  it("takes the kept view of the photo's draft, not of its saved edit", async () => {
+  it("takes the picture of the photo's draft, else the saved edit's look", async () => {
     const draft = { ...defaultRecipe(), basic: { ...defaultRecipe().basic, exposure: 1 } };
-    const saved = deps({ readView: async () => ({ shows: viewShows(edited.stored), image: jpeg('saved') }), editState: async () => edited, draft: async () => draft });
-    expect((await resolveLook(asset('a'), saved))?.source).toBe(previewSource('jpg'));
-    const kept = deps({ readView: async () => ({ shows: viewShows(null, draft), image: jpeg('draft') }), editState: async () => edited, draft: async () => draft });
-    expect(await (await resolveLook(asset('a'), kept))?.image.text()).toBe('draft');
+    const savedView = async () => ({ shows: viewShows(edited.stored), image: jpeg('saved') });
+    const pictured = deps({ readView: savedView, editState: async () => edited, draft: async () => ({ recipe: draft, look: jpeg('draft') }) });
+    const look = await resolveLook(asset('a'), pictured);
+    expect([look?.source, await look?.image.text()]).toEqual([draftSource(draft), 'draft']);
+    const bare = deps({ readView: savedView, editState: async () => edited, draft: async () => ({ recipe: draft }) });
+    expect(await (await resolveLook(asset('a'), bare))?.image.text()).toBe('saved');
   });
 
   it('takes the kept view of an unedited photo', async () => {

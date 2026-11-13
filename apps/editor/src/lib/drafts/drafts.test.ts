@@ -55,7 +55,6 @@ describe('DraftStore', () => {
 describe('DraftKeeper', () => {
   let store: DraftStore;
   let recipe: Recipe;
-  let views: string[];
   const host = (over: Partial<DraftHost> = {}): DraftHost => ({
     current: () => ({ assetId: 'a', checksum: 'sum', copyId: null }),
     dirty: () => editableJson(recipe) !== editableJson(saved),
@@ -68,7 +67,6 @@ describe('DraftKeeper', () => {
   const keeper = (h = host()) =>
     new DraftKeeper(h, {
       store,
-      keepView: async (_c, shows) => void views.push(shows),
       snapshot: async () => new Blob(['jpeg']),
       thumbnail: async () => new Blob(['thumb']),
       delayMs: 100,
@@ -77,7 +75,6 @@ describe('DraftKeeper', () => {
   beforeEach(() => {
     store = new DraftStore(new MemoryDraftBackend());
     recipe = structuredClone(saved);
-    views = [];
   });
   afterEach(() => vi.useRealTimers());
 
@@ -94,15 +91,17 @@ describe('DraftKeeper', () => {
     expect(d?.recipe.basic.exposure).toBe(1);
     expect(d?.base).toBe(savedShows(saved));
     expect(await d?.thumb?.text()).toBe('thumb');
-    expect(views).toEqual([editableJson(recipe)]);
+    expect(await d?.look?.text()).toBe('jpeg');
   });
 
   it("doesn't write the same edits twice", async () => {
     const k = keeper();
     recipe = brighter(recipe);
     await k.keep();
+    const first = (await store.get('a', null))?.updatedAt;
+    await new Promise((resolve) => setTimeout(resolve, 2));
     await k.keep();
-    expect(views).toHaveLength(1);
+    expect((await store.get('a', null))?.updatedAt).toBe(first);
   });
 
   it('removes the draft when the edit is back to its saved state', async () => {
@@ -127,7 +126,7 @@ describe('DraftKeeper', () => {
     await k.keep();
     const d = await store.get('a', null);
     expect(d?.thumb).toBeUndefined();
-    expect(views).toEqual([]);
+    expect(d?.look).toBeUndefined();
   });
 
   it('starts from the draft a photo opened with, and drops it after a save', async () => {
@@ -136,7 +135,7 @@ describe('DraftKeeper', () => {
     await store.put({ assetId: 'a', copyId: null, recipe, base: 'x', updatedAt: 1 });
     k.opened(recipe);
     await k.keep();
-    expect(views).toEqual([]);
+    expect((await store.get('a', null))?.base).toBe('x');
     await k.rewrite();
     expect((await store.get('a', null))?.base).toBe(savedShows(saved));
     await k.drop();
