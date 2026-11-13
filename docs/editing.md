@@ -24,7 +24,7 @@ Neg., Eterna, Eterna Bleach Bypass) for photos from any camera.
 - A Fujifilm RAW opens with the film simulation it was shot with. Acros and the other monochrome
   simulations open as Monochrome, with a B&W mix for the red, yellow or green filter.
 - Lightroom's names for these profiles ("Adobe Vivid", "Camera CLASSIC CHROME") are recognised when
-  importing presets and sidecars.
+  importing presets and sidecars ([Lightroom import](lightroom.md)).
 
 ![Classic Chrome on a photo from a Fujifilm camera, with its Amount slider](images/editing/profile.jpg)
 

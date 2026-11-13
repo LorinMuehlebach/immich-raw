@@ -64,6 +64,7 @@ opens the RAW again.
 ## Next
 
 - [Editing](editing.md), [Masks](masks.md), [Workflow](workflow.md): what the editor can do.
+- [Lightroom import](lightroom.md): bringing your Lightroom edits along.
 - [Export](export.md), [AI Upscale](upscale.md), [Convert to DNG](dng.md): what you can make from
   an edit.
 - [Stacking and best pick](stacking.md): sorting bursts, with the optional culler.

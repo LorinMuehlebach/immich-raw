@@ -73,8 +73,8 @@ O brings the overlay back or switches it off.
 ## Lightroom
 
 Masks from Lightroom sidecars and presets are imported, AI masks included (they are found again in
-the photo): see [Lightroom import](workflow.md#lightroom-import). Lightroom has no edge settings, so
-imported masks start without them. It has no polygon or lasso mask either.
+the photo): see [Lightroom import](lightroom.md#what-comes-across). Lightroom has no edge settings,
+so imported masks start without them. It has no polygon or lasso mask either.
 
 ## How AI masks work
 
