@@ -3,6 +3,7 @@
 // peak (up to ~1.5 GB at 61 MP) alive for the whole session.
 import type LibRawType from '@immich-raw/libraw';
 import { camXyzFromRgbCam, hasCamXyz } from './color.ts';
+import { startMeasure } from './timing.ts';
 import type { DecoderInfo, LinearImage, RawMeta, SensorData } from './types.ts';
 
 // libraw-wasm (our single-threaded build in packages/libraw) is loaded unbundled from its own
@@ -15,11 +16,50 @@ let librawModule: Promise<typeof LibRawType> | null = null;
 export function setLibRawUrl(url: string): void {
   librawUrl = url;
   librawModule = null;
+  dropSpare();
 }
 
 function loadLibRaw(): Promise<typeof LibRawType> {
   librawModule ??= import(/* @vite-ignore */ librawUrl).then((m: { default: typeof LibRawType }) => m.default);
   return librawModule;
+}
+
+// A LibRaw instance started ahead of time. Its worker loads and instantiates the WebAssembly as
+// soon as it exists, so the decode that takes it doesn't wait for that. It still serves one
+// decode only and is disposed afterwards, like any other instance.
+let spare: Promise<LibRawType> | null = null;
+
+/**
+ * Starts the next decode's worker now (e.g. while the photo downloads). Keeps at most one
+ * waiting; the next decode takes it.
+ */
+export function prewarmDecoder(): void {
+  if (spare) return;
+  const started = loadLibRaw().then((LibRaw) => new LibRaw());
+  spare = started;
+  started.catch(() => {
+    if (spare === started) spare = null;
+  });
+}
+
+function dropSpare(): void {
+  spare?.then((raw) => raw.dispose(), () => {});
+  spare = null;
+}
+
+/** The waiting instance from prewarmDecoder(), or a new one. */
+async function takeLibRaw(): Promise<LibRawType> {
+  const waiting = spare;
+  spare = null;
+  if (waiting) {
+    try {
+      return await waiting;
+    } catch {
+      // fall through to a fresh instance
+    }
+  }
+  const LibRaw = await loadLibRaw();
+  return new LibRaw();
 }
 
 // Settings proven in M0 (docs/spike-results.md):
@@ -99,14 +139,33 @@ function toMeta(m: RawWasmMeta): RawMeta {
   };
 }
 
-async function decode(bytes: Uint8Array, settings: Record<string, unknown>, withMeta: boolean) {
-  const LibRaw = await loadLibRaw();
-  const raw = new LibRaw();
+/**
+ * `label` names the timing measures: `immich-raw:<label> open`, `… metadata`, `… imageData`.
+ * `onWorking` is called once the worker has the long part (unpacking and processing): from then
+ * on the page's thread can be busy without holding up the decode.
+ */
+async function decode(bytes: Uint8Array, settings: Record<string, unknown>, withMeta: boolean, label: string, onWorking?: () => void, signal?: AbortSignal) {
+  const raw = await takeLibRaw();
+  // Stopping ends the worker: whatever it was doing fails with "LibRaw disposed".
+  if (signal?.aborted) raw.dispose();
+  signal?.addEventListener('abort', () => raw.dispose(), { once: true });
   try {
-    // open() transfers (detaches) the buffer it gets, so always hand it a copy.
+    // open() transfers (detaches) the buffer it gets, so always hand it a copy. It also waits
+    // for the worker's WebAssembly, unless the instance was started early.
+    let done = startMeasure(`${label} open`);
     await raw.open(bytes.slice(), settings as never);
-    const meta = withMeta ? ((await raw.metadata(true)) as unknown as RawWasmMeta) : undefined;
-    const img = await raw.imageData();
+    done();
+    let meta: RawWasmMeta | undefined;
+    if (withMeta) {
+      done = startMeasure(`${label} metadata`);
+      meta = (await raw.metadata(true)) as unknown as RawWasmMeta;
+      done();
+    }
+    done = startMeasure(`${label} imageData`);
+    const imgP = raw.imageData();
+    onWorking?.();
+    const img = await imgP;
+    done();
     if (!img || !(img.data instanceof Uint16Array) || img.colors !== 3) {
       throw new Error('The decoder returned no 16-bit RGB image.');
     }
@@ -139,8 +198,7 @@ function extraMeta(m: FullMeta, width: number, height: number): Pick<SensorData,
  * there each pixel holds raw - black in its own colour channel only.
  */
 export async function readSensor(bytes: Uint8Array): Promise<SensorData> {
-  const LibRaw = await loadLibRaw();
-  const raw = new LibRaw();
+  const raw = await takeLibRaw();
   try {
     await raw.open(bytes.slice(), { ...BASE_SETTINGS, noInterpolation: true, noAutoScale: true } as never);
     const m = (await raw.metadata(true)) as unknown as FullMeta;
@@ -211,8 +269,7 @@ export async function readSensor(bytes: Uint8Array): Promise<SensorData> {
 
 /** Default crop, lens make and body serial without decoding the image. */
 export async function readExtraMeta(bytes: Uint8Array): Promise<Pick<SensorData, 'defaultCrop' | 'lensMake' | 'bodySerial'>> {
-  const LibRaw = await loadLibRaw();
-  const raw = new LibRaw();
+  const raw = await takeLibRaw();
   try {
     await raw.open(bytes.slice(), { ...BASE_SETTINGS, halfSize: true } as never);
     const m = (await raw.metadata(true)) as unknown as FullMeta;
@@ -229,7 +286,7 @@ export async function readExtraMeta(bytes: Uint8Array): Promise<Pick<SensorData,
  * limit of the WebAssembly build.)
  */
 export async function decodeBest(bytes: Uint8Array): Promise<{ image: LinearImage } & Pick<SensorData, 'defaultCrop' | 'lensMake' | 'bodySerial'>> {
-  const { img, meta } = await decode(bytes, { ...BASE_SETTINGS, userQual: 3 }, true);
+  const { img, meta } = await decode(bytes, { ...BASE_SETTINGS, userQual: 3 }, true, 'best decode');
   return { image: { ...img, halfSize: false }, ...extraMeta(meta as FullMeta, img.width, img.height) };
 }
 
@@ -261,6 +318,7 @@ export class RawSession {
   readonly decoder: DecoderInfo;
   private bytes: Uint8Array | null;
   private fullPromise: Promise<LinearImage> | null = null;
+  private readonly stop = new AbortController();
 
   private constructor(bytes: Uint8Array, meta: RawMeta, half: LinearImage) {
     this.bytes = bytes;
@@ -269,9 +327,12 @@ export class RawSession {
     this.decoder = { ...DECODER, demosaic: demosaicFor(meta.isXTrans).name };
   }
 
-  /** Decodes at half size (no demosaic, ~2 s) so editing can start right away. */
-  static async open(bytes: Uint8Array): Promise<RawSession> {
-    const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true);
+  /**
+   * Decodes at half size (no demosaic, ~2 s) so editing can start right away. `onWorking`: called
+   * when the worker starts the long part of the decode (see decode()). `signal` stops it.
+   */
+  static async open(bytes: Uint8Array, onWorking?: () => void, signal?: AbortSignal): Promise<RawSession> {
+    const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true, 'half decode', onWorking, signal);
     const m = toMeta(meta!);
     // LibRaw only shrinks mosaic images; a demosaiced (linear, e.g. lossy) DNG comes back at
     // full size. Keep it as the full image and halve it for editing.
@@ -283,13 +344,21 @@ export class RawSession {
     return new RawSession(bytes, m, { ...img, halfSize: true });
   }
 
+  /**
+   * A session from an earlier open() of the same file (e.g. its half image kept in the
+   * browser's storage), so the half-size decode is skipped. full() decodes as usual.
+   */
+  static restore(bytes: Uint8Array, meta: RawMeta, half: LinearImage): RawSession {
+    return new RawSession(bytes, meta, { ...half, halfSize: true });
+  }
+
   /** Full-resolution decode (5-10 s, X-Trans ~17 s). Started once, shared by all callers. */
   full(): Promise<LinearImage> {
     if (!this.fullPromise) {
       const bytes = this.bytes;
       if (!bytes) return Promise.reject(new Error('Session closed'));
       const { userQual } = demosaicFor(this.meta.isXTrans);
-      this.fullPromise = decode(bytes, { ...BASE_SETTINGS, userQual }, false).then(({ img }) => ({ ...img, halfSize: false }));
+      this.fullPromise = decode(bytes, { ...BASE_SETTINGS, userQual }, false, 'full decode', undefined, this.stop.signal).then(({ img }) => ({ ...img, halfSize: false }));
       this.fullPromise.catch(() => (this.fullPromise = null));
     }
     return this.fullPromise;
@@ -299,8 +368,9 @@ export class RawSession {
     return this.fullPromise !== null;
   }
 
-  /** Drops the file bytes; the half image stays usable. */
+  /** Drops the file bytes and stops a running full-resolution decode; the half image stays usable. */
   close(): void {
     this.bytes = null;
+    this.stop.abort();
   }
 }

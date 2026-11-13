@@ -1,5 +1,9 @@
 // Runs the decode bench page in headless Microsoft Edge and writes results + previews.
 // Usage: node run-bench.mjs <samples-dir> <out-dir> [only]
+//   Q=0,2      full decodes at these userQual levels instead of DHT and AHD (Q= : half only)
+//   WARM=1     also a half decode on a worker started early (no WebAssembly start-up)
+//   TILES=2,4  also decodes split into that many stripes on as many workers at once, checked
+//              row by row against a whole decode (needs much more memory)
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -20,7 +24,9 @@ const server = await createServer({ root, configFile: join(root, 'vite.config.mj
 await server.listen(5199);
 const query = new URLSearchParams();
 if (only) query.set('only', only);
-if (process.env.Q) query.set('q', process.env.Q); // e.g. Q=0,2 to compare demosaic levels
+if (process.env.Q !== undefined) query.set('q', process.env.Q); // e.g. Q=0,2 to compare demosaic levels
+if (process.env.WARM) query.set('warm', '1');
+if (process.env.TILES) query.set('tiles', process.env.TILES);
 const url = `http://localhost:5199/?${query}`;
 
 // Memory sampler (Windows): private bytes of all msedge.exe processes started after this point.
@@ -98,10 +104,13 @@ function printSummary(results) {
         file: r.file,
         config: run.config,
         mp: run.output?.megapixels ?? '-',
-        decodeMs: run.error ? 'ERROR' : run.totalMs,
+        decodeMs: run.error ? 'ERROR' : (run.totalMs ?? run.wallMs),
+        openMs: run.openMs ?? run.stripes?.map((s) => s.openMs).join('/') ?? '-',
+        imageDataMs: run.imageDataMs ?? run.stripes?.map((s) => s.imageDataMs).join('/') ?? '-',
+        identical: run.identical ?? '-',
         peakMB: run.peakBrowserMB ?? '-',
         afterMB: run.afterDisposeBrowserMB ?? '-',
-        max: run.stats?.max.join('/') ?? run.error,
+        max: run.stats?.max.join('/') ?? run.error ?? '-',
       });
     }
     if (r.expectedClip) rows.push({ file: r.file, config: 'expected clip', max: r.expectedClip.join('/') });

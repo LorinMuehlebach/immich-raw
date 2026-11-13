@@ -1,9 +1,10 @@
 # The culler
 
-The culler is an optional service that sorts bursts and re-takes. It stacks photos of the same scene taken
-close together and puts the best one in front. The others get a tag that says why they lost. It works on
-RAW files, camera JPEGs and RAW + JPEG pairs. The results are ordinary Immich stacks and tags, so they show
-up everywhere in Immich. The editor's filmstrip adds badges and controls on top.
+The culler is an optional service that sorts bursts and re-takes. It stacks photos of the same moment taken
+close together and puts the best one in front. The others get a tag that says why they lost. Exposure
+brackets get a stack of their own and are kept whole. It works on RAW files, camera JPEGs and RAW + JPEG
+pairs. The results are ordinary Immich stacks and tags, so they show up everywhere in Immich. The editor's
+filmstrip adds badges and controls on top.
 
 Setup: [Installation → the culler](installation.md#optional-the-culler-auto-stack-and-best-pick). Using it: [Stacking and best pick](stacking.md).
 Code: [services/culler/](../services/culler/).
@@ -24,7 +25,20 @@ Code: [services/culler/](../services/culler/).
    - The editor's edits of a RAW (`….edit.jpg`) belong to that RAW's capture.
    - A stack of one RAW and one JPEG (your own, or one Immich's mobile app made) is a capture too.
    - Stacks you made of several shots are left alone.
-3. **Groups.** Captures go in the same group when all of these hold:
+3. **Exposure brackets.** Shots whose exposure steps on purpose (for example 0, −2, +2 EV, for HDR)
+   get a stack of their own. They are found before the groups, so the lighting check never sees them.
+   A set counts when all of these hold:
+   - the shots are at most 2 s apart (plus the previous shot's exposure time), by the same camera;
+   - their camera settings (shutter speed, aperture, ISO) differ by at least 0.3 stops from each
+     other, and span at least 1 stop;
+   - their measured brightness follows the settings, by at least half of each step. In an automatic
+     mode the camera changes its settings to keep the brightness the same, so a normal burst doesn't
+     count;
+   - there are at least 3 of them.
+
+   The shot nearest the middle exposure goes in front, and every shot gets `Culling/Bracket`. None of
+   them is rejected or flagged.
+4. **Groups.** Captures go in the same group when all of these hold:
    - they were taken close together: at most 90 s between neighbours, by the same camera;
    - they look alike: CLIP image similarity of at least 0.88 to one of the group's last three
      shots, and at least 0.82 to its most typical shot (this keeps a slow pan from chaining into one
@@ -34,7 +48,16 @@ Code: [services/culler/](../services/culler/).
    Photos that Immich itself marked as duplicates always join. CLIP is the same ViT-B/32 model Immich
    uses for smart search, with brightness evened out first, so a darker or blurred shot of the same
    scene still matches (0.92–0.99 in tests; different scenes stayed below 0.6).
-4. **Ranking.** Checks run in this order, and each one only looks at the shots that survived the ones
+
+   **One stack per moment.** A group is then split where a new burst shows something else, such as a
+   new pose:
+   - Shots at most 1.5 s apart are one burst, and a burst is never split. A jump sequence stays whole.
+   - A burst after a longer pause joins the earlier moment it looks most like, when some pair of
+     their shots is at least 0.94 alike. A re-take of the same pose stays in its stack.
+   - Otherwise the burst starts a stack of its own, with its own best.
+
+   0.94 is a starting value: `calibrate` shows where a new moment would start on your own photos.
+5. **Ranking.** Checks run in this order, and each one only looks at the shots that survived the ones
    before it. No check ever rejects every shot.
 
    | Check | A shot is rejected when | Tag |
@@ -58,7 +81,8 @@ Code: [services/culler/](../services/culler/).
      - **Every shot of a group is judged alike.** Faces only when every shot has a usable face,
        else people when every shot shows some, else the whole photo with its centre weighted. A
        shot doesn't win just because a whole figure is brighter than a face. Sharpness works the
-       same way: the eyes when every shot has a face, else the sharpest areas.
+       same way: the eyes when every shot has a face, else the animal when every shot shows one,
+       else the sharpest areas.
    - **Exposure of RAW files is measured on the RAW file itself.** Immich renders RAW previews with
      LibRaw's automatic brightness. In a test, that made a shot 1.5 stops darker look exactly like
      the normal one in its preview. So the culler downloads the RAW and decodes it without that
@@ -66,8 +90,12 @@ Code: [services/culler/](../services/culler/).
    - **Sharpness:**
      - Fine detail on a contrast-normalised image, so a darker shot isn't "softer".
      - The flattest areas' noise is subtracted, so grain doesn't count as detail.
-     - Measured on the eyes of the largest face, or else on the sharpest 5 % of the photo, so a
-       blurred background doesn't matter.
+     - Measured on the eyes of the largest face.
+     - Without a face, on the largest animal: the sharpest quarter of its box, so plain fur or
+       feathers don't count. A bird burst where the focus hit the branch behind no longer wins.
+       The animals are COCO's ten (bird, cat, dog, horse, sheep, cow, elephant, bear, zebra,
+       giraffe), found by the same object detector as people.
+     - Without either, on the sharpest 5 % of the photo, so a blurred background doesn't matter.
    - **Eyes:**
      - Faces are found with YuNet. Faces smaller than 40 px, much smaller than the main face, or
        turned away are ignored.
@@ -87,16 +115,21 @@ Code: [services/culler/](../services/culler/).
    - **Best:** the survivor with the most smiles, then the best mix of sharpness (45 %), exposure
      (35 %) and how open the eyes are (20 %, the faces' average); if that is a tie, the earliest
      shot.
+   - **Close call:** when the best and the next shot have as many smiles and their mix is less than
+     0.03 apart (on a 0–1 scale), the best also gets `Culling/Close call`. These are the stacks
+     worth a look.
    - **Your choice comes first:** a shot you put in front yourself is always the best. So is the only
-     favourite in a group.
+     favourite in a group. Neither is ever a close call.
    - The other survivors are runner-ups (`Culling/Runner-up`). The best gets `Culling/Best`.
 
 ## What it changes in Immich
 
-- **One stack per group**, best in front:
+- **One stack per group**, best in front (for a bracket: the middle exposure):
   - for a RAW + JPEG pair, the camera JPEG goes in front;
   - for an edited RAW, its edit does.
-- **Tags** on every file of each capture, under `Culling/` (the root can be changed).
+- **Tags** on every file of each capture, under `Culling/` (the root can be changed): `Best`,
+  `Runner-up`, `Rejected/Lighting`, `Rejected/Blur`, `Rejected/Eyes closed` or `Bracket`. The best of
+  a close call also gets `Close call`, so search for that tag to find the stacks worth a look.
   - When a photo's tag changes (say Runner-up becomes Best), Immich 3.4 sometimes loses the new tag a
     moment later. It writes tags to the photo's sidecar file in a background job and reads them back.
   - So after applying or undoing, the culler waits a few seconds, reads the tags again and sets any
@@ -109,7 +142,7 @@ Code: [services/culler/](../services/culler/).
   - The culler sets the flag once and doesn't retry. Until Immich fixes this, the tags are the
     reliable marker.
 - **Details** for the filmstrip in the photo's metadata (`raw-editor.cull`): its group, rank, role,
-  reason and the measurements.
+  reason, whether the group is a close call (and by how much), and the measurements.
 
 A run that finds nothing new changes nothing.
 
@@ -117,7 +150,7 @@ A run that finds nothing new changes nothing.
 
 | You do this in Immich or the editor | The culler then |
 |---|---|
-| Put another shot in front of a stack (Immich), or ★ **Make best** (filmstrip) | Keeps your choice and moves the `Best` tag to it |
+| Put another shot in front of a stack (Immich), or ★ **Make best** (filmstrip) | Keeps your choice and moves the `Best` tag to it; it also notes what it would have picked (see [Your picks](#your-picks)). When the stack is later split into moments, your pick stays in front of its own |
 | Give a rejected photo stars, or remove its reject flag | Never sets the flag on it again |
 | Take a photo out of a stack | Leaves that photo alone from then on |
 | Delete a whole stack | Doesn't stack that group again (only **Include them** on the auto-stack page, or a run with `--force`, does) |
@@ -129,6 +162,25 @@ A run that finds nothing new changes nothing.
 - It puts back the stacks, tags, reject flags and details the run changed.
 - It doesn't touch anything you changed since then; it tells you what it skipped.
 - An older run can't be undone while a newer run that changed the same photos is still applied.
+
+## Your picks
+
+When the shot you put in front (or the only favourite) isn't the one the culler would pick, the run
+notes the culler's own pick and how your shot compared. **Auto-stack…** in the editor, `python -m
+culler picks` and `GET /api/v1/picks` sum this up:
+- how often you chose another best, of how many stacks;
+- why the culler had passed over your shot: set aside for lighting, sharpness or eyes, or a runner-up
+  that lost on the mix;
+- settings that would have agreed with you:
+  - `blur.min_ratio` just below your softest pick;
+  - `lighting.tolerance` or `max_ev_gap`;
+  - `eyes.max_open_gap` for half-blinks;
+  - the `[ranking]` weights that would have picked most of your runner-ups, nearest to today's.
+
+Nothing changes by itself. A suggestion needs at least 3 of your picks behind it. It comes with the run
+options to preview it (**Preview with this** in the editor, `--options` on the command line) and the
+`culler.toml` lines to keep it. A suggestion only looks at your picks, and it changes other stacks too,
+so look at a preview of a day or an album first.
 
 ## Using it
 
@@ -174,10 +226,11 @@ python -m culler run --day 2024-05-01 --options '{"blur": {"min_ratio": 0.6}}'  
 python -m culler calibrate --day 2024-05-01      # similarity and gap of neighbouring shots
 python -m culler runs                            # recent runs
 python -m culler undo <run id>
+python -m culler picks                           # how often you chose another best, and suggestions
 ```
 
 `calibrate` helps tune the grouping. It lists each pair of neighbouring shots with their similarity and
-time gap, and marks the pairs that would be grouped.
+time gap. It marks the pairs that would be grouped, and where a new moment would start.
 
 ## Settings
 
@@ -207,6 +260,13 @@ Thresholds go in `/data/culler.toml`. The sections and every default are in
 [grouping]
 max_gap_s = 120          # longer bursts with pauses
 link_similarity = 0.85   # group a little more loosely
+moment_gap_s = 1.5       # a pause longer than this starts a new burst
+moment_similarity = 0.94 # a burst less alike than this to every earlier moment gets its own stack; 0 = off
+
+[brackets]
+enabled = true
+min_frames = 3
+min_spread_ev = 1.0      # the set's exposures span at least this many stops
 
 [blur]
 min_ratio = 0.6          # reject only clearly soft shots
@@ -214,6 +274,10 @@ min_ratio = 0.6          # reject only clearly soft shots
 [ranking]
 order = ["lighting", "blur", "eyes"]
 respect_favorites = true
+sharpness_weight = 0.45  # the mix among the shots that pass every check (sums to 1)
+exposure_weight = 0.35
+eyes_weight = 0.2
+close_margin = 0.03      # nearer than this is a close call
 
 [eyes]
 enabled = true
@@ -226,6 +290,10 @@ face_weight = 0.8
 [people]
 enabled = true           # people without a usable face (MediaPipe object detector)
 
+[subjects]
+enabled = true           # sharpness on the largest animal when every shot shows one
+labels = ["bird", "cat", "dog", "horse"]   # default: COCO's ten animals
+
 [smiles]
 enabled = true
 min_score = 0.4          # a face counts as smiling from this score
@@ -233,11 +301,12 @@ min_score = 0.4          # a face counts as smiling from this score
 
 ## Resources
 
-- **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms, the people detector about
-  30 ms). Only photos that have a neighbour within 90 s are measured.
+- **Speed:** about 0.3 s per photo on a desktop CPU (CLIP about 70 ms, the people and animal detector
+  about 30 ms). Only photos that have a neighbour within 90 s are measured.
 - **Models:** CLIP, YuNet (faces), MediaPipe's face landmarker (eyes, smiles) and its object
-  detector EfficientDet-Lite0 (people, 7 MB). Updating to this version measures every photo once
-  again, because faces, people and smiles are now stored apart.
+  detector EfficientDet-Lite0 (people and animals, 7 MB). After updating to this version, a photo
+  already measured is only looked at again for animals: the culler fetches its preview again, but not
+  its RAW file (about 0.1 s a photo instead of 1.5 s for a RAW).
 - **Downloads:** for RAW files the original is downloaded as well.
 - **Cache:** measurements are cached in `/data`, so re-runs are quick.
 - **Memory and size:** about 1 GB of RAM while working; the image is about 1.8 GB including the
@@ -250,7 +319,14 @@ min_score = 0.4          # a face counts as smiling from this score
   smile. The people detector still finds those people for exposure.
 - **Smiles count, not how broad:** a shot with three slight smiles beats one with two big ones.
 - **Starting values:** the thresholds were tuned on test bursts. Check a dry run or `calibrate` on
-  your own photos.
+  your own photos. This goes most of all for `moment_similarity`, set without real portrait or sport
+  sessions to check it on.
+- **Animals:** only COCO's ten. The detector looks at a 320 px copy of the photo, so a small bird far
+  away isn't found, and the photo's sharpest areas count instead. An animal's box also holds some
+  background: a sharp branch inside it still counts. Exposure isn't judged on animals.
+- **Brackets:** they need the camera's exposure settings in Immich (shutter speed, aperture, ISO).
+  RAW brackets need `lighting.raw_source = "file"` (the default): Immich's auto-brightened RAW
+  previews hide the steps.
 - **Filmstrip:** it lists RAWs only. Stacks of JPEGs can still be opened in the stack window from
   Immich's photo viewer.
 - **Compare stack and Auto-stack buttons:** they need the culler on the same address as Immich

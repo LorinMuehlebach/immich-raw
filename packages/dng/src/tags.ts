@@ -33,6 +33,7 @@ export const TAG = {
   CFARepeatPatternDim: 33421,
   CFAPattern: 33422,
   Copyright: 33432,
+  ICCProfile: 34675,
   ExifIFD: 34665,
   GPSInfo: 34853,
   DNGVersion: 50706,

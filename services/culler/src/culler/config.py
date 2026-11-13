@@ -1,8 +1,8 @@
 """Settings: built-in defaults, then a TOML file, then environment variables.
 
 The TOML file is CULLER_CONFIG, or <data dir>/culler.toml when it exists. Its sections match the
-dataclasses below ([grouping], [lighting], [blur], [eyes], [people], [smiles], [ranking], [tags],
-[watcher]).
+dataclasses below ([grouping], [brackets], [lighting], [blur], [eyes], [people], [subjects], [smiles],
+[ranking], [tags], [watcher]).
 Runs started from the editor may pass `options` with the same shape to try other thresholds.
 """
 
@@ -25,6 +25,25 @@ class GroupingConfig:
     medoid_similarity: float = 0.82  # cosine to the group's most typical frame (stops drift in a pan)
     recent_frames: int = 3
     split_by_camera: bool = True
+    # Moments: a group splits into one stack per moment. A new burst (after a pause longer than
+    # moment_gap_s) starts a new moment unless it looks like an earlier one (some pair of shots at
+    # least moment_similarity alike): a re-take stays, a new pose goes. 0 keeps one stack per scene.
+    # Provisional: the same scene measured 0.92-0.99; check `calibrate` on your own bursts.
+    moment_gap_s: float = 1.5
+    moment_similarity: float = 0.94
+
+
+@dataclass(frozen=True)
+class BracketsConfig:
+    """Exposure brackets (see brackets.py) get a stack of their own: the middle exposure in front,
+    none of them rejected."""
+
+    enabled: bool = True
+    min_frames: int = 3
+    max_gap_s: float = 2.0  # plus the previous shot's exposure time
+    min_spread_ev: float = 1.0  # the set's exposures span at least this
+    min_step_ev: float = 0.3  # exposures closer than this count as the same
+    min_follow: float = 0.5  # the measured brightness moves by at least this share of each step
 
 
 @dataclass(frozen=True)
@@ -97,6 +116,21 @@ class PeopleConfig:
     min_area_ratio: float = 0.15  # of the largest person
 
 
+# The animals of COCO, which the people detector (EfficientDet-Lite0) knows as well.
+ANIMALS = ("bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe")
+
+
+@dataclass(frozen=True)
+class SubjectsConfig:
+    """Animals, found by the same object detector as people. Without a face, sharpness is measured
+    on the largest animal when every shot of a group shows one, instead of the sharpest areas."""
+
+    enabled: bool = True
+    labels: tuple[str, ...] = ANIMALS
+    min_score: float = 0.4
+    min_area: float = 0.01  # share of the photo
+
+
 @dataclass(frozen=True)
 class SmilesConfig:
     """Among the shots that pass every check, the one with the most smiling faces is the best."""
@@ -111,6 +145,12 @@ class SmilesConfig:
 class RankingConfig:
     order: tuple[str, ...] = ("lighting", "blur", "eyes")
     respect_favorites: bool = True
+    # Among the shots that pass every check (after smiles): the best mix of these, summing to 1.
+    sharpness_weight: float = 0.45
+    exposure_weight: float = 0.35
+    eyes_weight: float = 0.20
+    # A close call: the best and the next shot score less than this apart (0-1 scale).
+    close_margin: float = 0.03
 
 
 @dataclass(frozen=True)
@@ -138,10 +178,12 @@ class Config:
     webhook_secret: str = field(default="", repr=False)
     threads: int = 2
     grouping: GroupingConfig = field(default_factory=GroupingConfig)
+    brackets: BracketsConfig = field(default_factory=BracketsConfig)
     lighting: LightingConfig = field(default_factory=LightingConfig)
     blur: BlurConfig = field(default_factory=BlurConfig)
     eyes: EyesConfig = field(default_factory=EyesConfig)
     people: PeopleConfig = field(default_factory=PeopleConfig)
+    subjects: SubjectsConfig = field(default_factory=SubjectsConfig)
     smiles: SmilesConfig = field(default_factory=SmilesConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
     tags: TagConfig = field(default_factory=TagConfig)
@@ -153,16 +195,17 @@ class Config:
 
     def analysis_dict(self) -> dict[str, Any]:
         """The settings that change measured features (part of the feature cache key)."""
-        e, p = self.eyes, self.people
+        e, p, s = self.eyes, self.people, self.subjects
         return {
             "faces": [e.detector_score, e.min_face_px, e.min_face_area_ratio, e.max_yaw_proxy],
             "people": [p.min_score, p.min_area, p.min_area_ratio],
+            "animals": [sorted(s.labels), s.min_score, s.min_area],
             "raw": [self.lighting.raw_source, self.lighting.raw_headroom_ev],
         }
 
 
 # Section names a run's `options` may change. Connection settings and the tag root are not.
-OVERRIDABLE = {"grouping", "lighting", "blur", "eyes", "people", "smiles", "ranking"}
+OVERRIDABLE = {"grouping", "brackets", "lighting", "blur", "eyes", "people", "subjects", "smiles", "ranking"}
 
 
 def _coerce(name: str, current: Any, value: Any) -> Any:

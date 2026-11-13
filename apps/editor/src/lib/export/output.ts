@@ -2,20 +2,35 @@
 // and metadata, as one export preset says.
 import { encodeRgbTiff } from '@immich-raw/dng';
 import {
+  OUTPUT_SPACE_INFO,
+  SRGB8,
   addPngMetadata,
+  asImageData,
   buildExifTiff,
   buildXmp,
+  convertPixels,
+  drawLogoWatermark,
   drawWatermark,
   encodeJpeg,
+  encodePng16,
+  iccProfile,
   insertExif,
+  insertIcc,
   insertXmp,
   outputSharpen,
-  resizeImage,
+  pixelsOf,
+  resizePixels,
+  srgb8Converter,
+  WEBP_MAX_SIDE,
+  zlib,
   type ExifFields,
+  type OutputColor,
+  type Pixels,
 } from '@immich-raw/pipeline';
 import { APP_ID } from '@immich-raw/recipe';
-import { fillText, outputSize, type ExportFormat, type ExportPreset } from '../state/export-settings.ts';
-import { captureDate, exportMetadata, immichCopyExif, type MetadataAsset } from './metadata.ts';
+import { fillText, outputSize, validColor, type ExportFormat, type ExportPreset } from '../state/export-settings.ts';
+import { encodeOffThread } from './encoder.ts';
+import { captureDate, exportMetadata, immichCopyExif, immichCopyXmp, type MetadataAsset } from './metadata.ts';
 
 export type OutputStep = 'resize' | 'sharpen' | 'encode';
 
@@ -24,9 +39,20 @@ export interface ExportFile {
   width: number;
   height: number;
   mime: string;
+  /** What the file lacks that the preset asked for, as sentences for a notice (e.g. a missing logo). */
+  notes: string[];
 }
 
-export const FORMAT_MIME: Record<ExportFormat, string> = { jpeg: 'image/jpeg', png: 'image/png', tiff: 'image/tiff' };
+export const MISSING_LOGO = "The watermark logo isn't in this browser, so the photo was exported without a watermark.";
+
+export const FORMAT_MIME: Record<ExportFormat, string> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  tiff: 'image/tiff',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  jxl: 'image/jxl',
+};
 
 export interface OutputOptions {
   /** Copyright template ({year}, {owner}). */
@@ -35,6 +61,8 @@ export interface OutputOptions {
   owner: string;
   /** The copy Save uploads to Immich: always JPEG, no watermark, the RAW's own metadata. */
   forImmich?: boolean;
+  /** The preset's watermark logo, decoded (loadLogoBitmap); null when it isn't in this browser. */
+  logo?: ImageBitmap | null;
   onStep?: (step: OutputStep) => void;
 }
 
@@ -68,45 +96,96 @@ function tiffMetadata(exif: ExifFields, xmp: string, ppi: number) {
   };
 }
 
-/** Turns the full-size rendered photo into the file the preset describes. */
-export async function finishExport(rendered: ImageData, asset: MetadataAsset, preset: ExportPreset, o: OutputOptions): Promise<ExportFile> {
-  const size = outputSize(rendered.width, rendered.height, preset.size, preset.ppi);
-  let image = rendered;
+/** The colour space and bit depth the export is made in: the preset's, sRGB 8-bit for the Immich copy. */
+export function outputColor(preset: Pick<ExportPreset, 'format' | 'color'>, forImmich = false): OutputColor {
+  return forImmich ? SRGB8 : validColor(preset.format, preset.color);
+}
+
+const bitsMatch = (p: Pixels, c: OutputColor) => p.space === c.space && p.bits === c.bits;
+
+/**
+ * Turns the full-size rendered photo into the file the preset describes. `rendered` should be in
+ * outputColor(preset) (a RAW renders straight into it); 8-bit sRGB pixels from elsewhere are
+ * converted. The pixels are sharpened and watermarked in place and may be handed to an encoder
+ * worker: don't use `rendered` afterwards.
+ */
+export async function finishExport(rendered: Pixels | ImageData, asset: MetadataAsset, preset: ExportPreset, o: OutputOptions): Promise<ExportFile> {
+  const color = outputColor(preset, o.forImmich);
+  let image: Pixels = 'bits' in rendered ? rendered : pixelsOf(rendered);
+  if (!bitsMatch(image, color)) image = convertPixels(image, color);
+  const size = outputSize(image.width, image.height, preset.size, preset.ppi);
+  if (!o.forImmich && preset.format === 'webp' && (size.width > WEBP_MAX_SIDE || size.height > WEBP_MAX_SIDE)) {
+    throw new Error(`WebP can't be larger than ${WEBP_MAX_SIDE} pixels a side; this export would be ${size.width} × ${size.height}. Choose a smaller size.`);
+  }
   if (size.width !== image.width || size.height !== image.height) {
     o.onStep?.('resize');
-    image = await resizeImage(image, size.width, size.height);
+    image = await resizePixels(image, size.width, size.height);
   }
+  const info = OUTPUT_SPACE_INFO[color.space];
   if (preset.sharpen.for !== 'none') {
     o.onStep?.('sharpen');
-    if (image === rendered) image = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
-    outputSharpen(image, preset.sharpen.for, preset.sharpen.amount, preset.ppi);
+    outputSharpen(image, preset.sharpen.for, preset.sharpen.amount, preset.ppi, info.luma);
   }
-  if (!o.forImmich && preset.watermark.enabled) {
-    const text = fillText(preset.watermark.text, { owner: o.owner, date: captureDate(asset) });
-    if (text) image = drawWatermark(image, { ...preset.watermark, text });
+  const notes: string[] = [];
+  const wm = preset.watermark;
+  if (!o.forImmich && wm.enabled) {
+    // Marks are drawn in sRGB; other spaces get their colours converted.
+    const convert = color.space === 'srgb' ? undefined : srgb8Converter(color.space);
+    if (wm.kind === 'image') {
+      if (o.logo) drawLogoWatermark(image, o.logo, { position: wm.position, size: wm.imageSize, opacity: wm.opacity }, convert);
+      else notes.push(MISSING_LOGO);
+    } else {
+      const text = fillText(wm.text, { owner: o.owner, date: captureDate(asset) });
+      if (text) drawWatermark(image, { ...wm, text }, convert);
+    }
   }
   o.onStep?.('encode');
   const { width, height } = image;
 
   if (o.forImmich) {
-    const jpeg = insertExif(await encodeJpeg(image, preset.quality / 100), immichCopyExif(asset, APP_ID, width, height));
-    return { bytes: jpeg, width, height, mime: FORMAT_MIME.jpeg };
+    const jpeg = insertExif(await encodeJpeg(asImageData(image), preset.quality.jpeg / 100), immichCopyExif(asset, APP_ID, width, height));
+    return { bytes: insertXmp(jpeg, immichCopyXmp(asset)), width, height, mime: FORMAT_MIME.jpeg, notes };
   }
 
   const meta = exportMetadata(asset, preset.metadata, { copyright: o.copyright, owner: o.owner, software: APP_ID, ppi: preset.ppi, width, height });
+  const wide = color.space !== 'srgb';
+  meta.exif.colorSpace = wide ? 'uncalibrated' : 'sRGB';
+  const icc = wide ? iccProfile(color.space) : undefined;
   const xmp = buildXmp(meta.xmp);
   let bytes: Uint8Array;
   switch (preset.format) {
     case 'jpeg':
-      bytes = insertExif(await encodeJpeg(image, preset.quality / 100), meta.exif);
+      bytes = insertExif(await encodeJpeg(asImageData(image), preset.quality.jpeg / 100), meta.exif);
       if (xmp) bytes = insertXmp(bytes, xmp);
+      if (icc) bytes = insertIcc(bytes, icc);
       break;
-    case 'png':
-      bytes = addPngMetadata(await encodePng(image), { exif: buildExifTiff(meta.exif), xmp: xmp || undefined, ppi: preset.ppi, srgb: true });
+    case 'png': {
+      const png = image.bits === 16 ? await encodePng16(image as Pixels & { data: Uint16Array }) : await encodePng(asImageData(image));
+      const iccp = icc ? { name: info.description, zlib: await zlib(icc as Uint8Array<ArrayBuffer>) } : undefined;
+      bytes = addPngMetadata(png, { exif: buildExifTiff(meta.exif), xmp: xmp || undefined, ppi: preset.ppi, srgb: !wide, iccp });
       break;
+    }
     case 'tiff':
-      bytes = await encodeRgbTiff(image, tiffMetadata(meta.exif, xmp, preset.ppi));
+      bytes = await encodeRgbTiff(image, { ...tiffMetadata(meta.exif, xmp, preset.ppi), icc, colorSpace: meta.exif.colorSpace });
+      break;
+    case 'webp':
+    case 'avif':
+    case 'jxl':
+      // AVIF gets no EXIF or XMP: they would be extra items in its item tables, not a chunk to
+      // add; its colour space is a code (CICP) instead of a profile.
+      bytes = await encodeOffThread({
+        format: preset.format,
+        width,
+        height,
+        data: image.data as Uint8ClampedArray<ArrayBuffer>,
+        quality: preset.quality[preset.format],
+        lossless: preset.lossless,
+        exif: preset.format === 'avif' ? undefined : buildExifTiff(meta.exif),
+        xmp: preset.format === 'avif' ? undefined : xmp || undefined,
+        icc: preset.format === 'webp' ? icc : undefined,
+        cicp: preset.format === 'avif' ? (info.cicp ?? undefined) : undefined,
+      });
       break;
   }
-  return { bytes, width, height, mime: FORMAT_MIME[preset.format] };
+  return { bytes, width, height, mime: FORMAT_MIME[preset.format], notes };
 }

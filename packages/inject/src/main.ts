@@ -5,7 +5,7 @@
 // Loaded into Immich's page by the reverse proxy (/immich-raw/inject.js) or as a userscript.
 import { createCullerCheck } from './culler.ts';
 import { HANDOFF_PREFIX, cullPageUrl, exportPageUrl, newHandoffKey, staleHandoffKeys, type SelectionHandoff } from './handoff.ts';
-import { createEditTargetResolver } from './raw.ts';
+import { createEditTargetResolver, type EditTarget } from './raw.ts';
 import { editorUrl, isExcludedPath, pageContext, parseViewerRoute, stackPageUrl, type ViewerRoute } from './routes.ts';
 import { captureSelectedIds, installDownloadCatcher, selectedCount, selectionBar, visibleSelectedIds } from './selection.ts';
 import { ACTIONS_SELECTOR, BUTTON_ATTR, CULL_BUTTON_ATTR, EXPORT_BUTTON_ATTR, STACK_BUTTON_ATTR } from './selectors.ts';
@@ -165,12 +165,12 @@ function linkTo(button: HTMLButtonElement, url: string): void {
   });
 }
 
-function createButton(bar: Element, rawId: string, route: ViewerRoute): HTMLButtonElement {
+function createButton(bar: Element, target: EditTarget, route: ViewerRoute): HTMLButtonElement {
   const button = iconButton(bar.querySelector('button'), 'Edit RAW', ICON_PATH);
   button.setAttribute(BUTTON_ATTR, '');
   button.dataset.sourceAsset = route.assetId;
-  button.dataset.rawAsset = rawId;
-  linkTo(button, editorUrl(EDITOR_BASE, rawId, route.context, location.pathname + location.search));
+  button.dataset.rawAsset = target.rawId;
+  linkTo(button, editorUrl(EDITOR_BASE, target.rawId, route.context, location.pathname + location.search, target.copyId));
   return button;
 }
 
@@ -237,20 +237,20 @@ function install() {
       removeButtons(STACK_BUTTON_ATTR);
       return;
     }
-    const [rawId, inStack] = await Promise.all([resolve(route.assetId), resolveStack(route.assetId)]);
+    const [target, inStack] = await Promise.all([resolve(route.assetId), resolveStack(route.assetId)]);
     // A newer update (navigation, re-render) superseded this one.
     if (gen !== generation) return;
     const bar = document.querySelector(ACTIONS_SELECTOR);
     const current = (b: HTMLElement) => b.parentElement === bar && b.dataset.sourceAsset === route.assetId;
-    removeButtons(BUTTON_ATTR, (b) => !!rawId && current(b));
+    removeButtons(BUTTON_ATTR, (b) => !!target && current(b));
     removeButtons(STACK_BUTTON_ATTR, (b) => inStack && current(b));
     if (!bar) return;
     // Prepended: the stack button ends up right of Edit RAW.
     if (inStack && !bar.querySelector(`[${STACK_BUTTON_ATTR}]`)) bar.prepend(createStackButton(bar, route));
-    if (rawId && !bar.querySelector(`[${BUTTON_ATTR}]`)) {
+    if (target && !bar.querySelector(`[${BUTTON_ATTR}]`)) {
       const stackButton = bar.querySelector(`[${STACK_BUTTON_ATTR}]`);
-      if (stackButton) stackButton.before(createButton(bar, rawId, route));
-      else bar.prepend(createButton(bar, rawId, route));
+      if (stackButton) stackButton.before(createButton(bar, target, route));
+      else bar.prepend(createButton(bar, target, route));
     }
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MASK_FEATHER, MASK_OFFSET, MAX_COMPONENTS, MAX_MASKS, MAX_OBJECT_POINTS, aiComponents, aiCount, aiLabel, isMaskActive, isMaskRefined, isPartRefined, newAiComponent, newComponent, newMask, normalizeMasks } from './masks.ts';
+import { MASK_FEATHER, MASK_OFFSET, MAX_COMPONENTS, MAX_MASKS, MAX_OBJECT_POINTS, MAX_POLYGON_POINTS, aiComponents, aiCount, aiLabel, brushCount, componentLabel, isMaskActive, isMaskRefined, isPartRefined, newAiComponent, newComponent, newMask, normalizeMasks, type PolygonComponent } from './masks.ts';
 import { defaultRecipe, normalizeRecipe } from './recipe.ts';
 
 describe('masks', () => {
@@ -156,5 +156,29 @@ describe('masks', () => {
     expect(aiLabel({ target: 'people', parts: ['faceSkin'], person: { x: 0, y: 0 } })).toBe('Person – Face Skin');
     expect(aiLabel({ target: 'people', parts: ['faceSkin', 'lips', 'teeth'] })).toBe('People – Face Skin + Lips + …');
     expect(aiLabel({ target: 'landscape', classes: ['sky', 'water'] })).toBe('Landscape – Sky + Water');
+  });
+
+  it('polygons: corners cleaned up, at least three, freehand kept', () => {
+    const tri: PolygonComponent = { ...(newComponent('polygon') as PolygonComponent), points: [0.1, 0.1, 0.5, 0.1, 0.3, 0.4] };
+    const lasso: PolygonComponent = { ...tri, id: 'l', freehand: true };
+    const out = normalizeMasks([
+      { components: [tri, { kind: 'polygon', points: [0.1234567, 0.2, 'x', 0.3, 9, 0.4, 0.5, 0.6] }, { kind: 'polygon', points: [0, 0, 1, 1] }, lasso] },
+    ]);
+    const cs = out[0]!.components;
+    expect(cs).toHaveLength(3);
+    expect(cs[0]).toEqual(tri);
+    // Non-numbers skipped, positions clamped and rounded to 5 decimals.
+    expect(cs[1]!.kind === 'polygon' && cs[1]!.points).toEqual([0.12346, 0.2, 3, 0.4, 0.5, 0.6]);
+    expect(cs[1]!.kind === 'polygon' && cs[1]!.freehand).toBeUndefined();
+    expect(cs[2]).toEqual(lasso);
+    expect(componentLabel(cs[0]!)).toBe('Polygon');
+    expect(componentLabel(cs[2]!)).toBe('Lasso');
+  });
+
+  it('polygons: at most MAX_POLYGON_POINTS corners, and they count as brush parts', () => {
+    const points = Array.from({ length: (MAX_POLYGON_POINTS + 50) * 2 }, (_, i) => (i % 7) / 10);
+    const [m] = normalizeMasks([{ components: [{ kind: 'polygon', points }, { kind: 'brush', strokes: [{ points: [0.5, 0.5] }] }] }]);
+    expect(m!.components[0]!.kind === 'polygon' && m!.components[0]!.points.length).toBe(MAX_POLYGON_POINTS * 2);
+    expect(brushCount([m!])).toBe(2);
   });
 });

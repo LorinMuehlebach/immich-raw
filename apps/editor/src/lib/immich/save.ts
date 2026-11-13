@@ -1,5 +1,6 @@
 // Loads and saves edits. The RAW file is never touched: the render is uploaded as a new
-// asset, stacked on top of the RAW, and the recipe is stored on the RAW's metadata.
+// asset, stacked on top of the RAW, and the recipe is stored on the RAW's metadata. A virtual
+// copy (copies.ts) is saved the same way, under its own key and with its own render.
 import {
   addAssetsToAlbum,
   bulkTagAssets,
@@ -20,8 +21,9 @@ import {
 } from '@immich/sdk';
 import { zoneOffsetMinutes } from '@immich-raw/pipeline';
 import { APP_ID, RECIPE_KEY, RENDER_KEY, cloneRecipe, normalizeRecipe, recipeHash, type Recipe } from '@immich-raw/recipe';
+import type { SaveSettings } from '../state/export-settings.ts';
 import { httpStatus } from './api.ts';
-import { cullerStatus } from './culler.ts';
+import { copyRenderFilename, copyValue, parseCopy, recipeKeyFor, type CopyMeta } from './copies.ts';
 import { keepsOtherCaptureInFront, planStack } from './stack-planner.ts';
 import { sha1Base64, uploadAsset } from './upload.ts';
 
@@ -30,8 +32,8 @@ export type SaveStep = 'prepare' | 'upload' | 'metadata' | 'stack' | 'recipe' | 
 const STEP_LABELS: Record<SaveStep, string> = {
   prepare: 'preparing the save',
   upload: 'uploading the edited JPEG',
-  metadata: 'copying date, location and albums',
-  stack: 'stacking the JPEG on the RAW',
+  metadata: 'copying date, location, albums and tags',
+  stack: 'stacking the JPEG with the RAW',
   recipe: 'storing the edit settings',
   cleanup: 'moving the previous version to trash',
 };
@@ -52,11 +54,18 @@ export interface SaveOptions {
   /** The recipe to save. Its `render` field must be what was loaded (the previous render). */
   recipe: Recipe;
   jpeg: Blob;
+  /** The virtual copy being saved; absent or null for the original edit. */
+  copy?: CopyMeta | null;
+  /** Stack front and favourite; the defaults put the edit in front and copy the RAW's favourite. */
+  settings?: SaveSettings;
   onProgress?: (step: SaveStep, fraction: number) => void;
+  /** Something that didn't stop the save but left the edit without part of the RAW's metadata. */
+  onWarning?: (message: string) => void;
 }
 
 /** Runs the whole save flow and returns the stored recipe (with `render` filled in). */
-export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions): Promise<Recipe> {
+export async function saveRender({ raw, recipe, jpeg, copy = null, settings, onProgress, onWarning }: SaveOptions): Promise<Recipe> {
+  const favorite = settings?.favorite === 'always' || raw.isFavorite;
   let step: SaveStep = 'prepare';
   const progress = (s: SaveStep, f: number) => {
     step = s;
@@ -64,17 +73,22 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
   };
   progress('prepare', 0);
 
-  const stored = await readMetadata(raw.id, RECIPE_KEY).catch(() => null);
+  const key = recipeKeyFor(copy?.id ?? null);
+  const stored = await readMetadata(raw.id, key).catch(() => null);
+  const storedCopy = stored && copy ? parseCopy(key, stored) : null;
+  const storedRecipe = stored ? (copy ? storedCopy?.recipe : normalizeRecipe(stored)) : undefined;
   const hash = await recipeHash(recipe);
   const checksum = await sha1Base64(jpeg);
-  const previousRenderId = recipe.render?.assetId ?? (stored ? normalizeRecipe(stored).render?.assetId : undefined) ?? null;
+  const previousRenderId = recipe.render?.assetId ?? storedRecipe?.render?.assetId ?? null;
+  // A copy keeps the name it has now (it may have been renamed elsewhere since).
+  const write = (r: Recipe) => (copy ? writeMetadata(raw.id, key, copyValue({ ...copy, name: storedCopy?.name ?? copy.name, recipe: r })) : writeRecipe(raw.id, r));
 
   let renderId: string | null = null;
   try {
     // 0: mark the save as in progress, so an interrupted save can be found again.
     const pending = cloneRecipe(recipe);
     pending.pending = { recipeHash: hash, checksum, startedAt: new Date().toISOString() };
-    await writeRecipe(raw.id, pending);
+    await write(pending);
     progress('prepare', 1);
 
     // 2: upload the render.
@@ -82,11 +96,11 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     const uploaded = await uploadAsset(
       {
         file: jpeg,
-        filename: renderFilename(raw.originalFileName),
+        filename: copy ? copyRenderFilename(raw.originalFileName, copy.index) : renderFilename(raw.originalFileName),
         fileCreatedAt: raw.fileCreatedAt,
         fileModifiedAt: new Date().toISOString(),
-        isFavorite: raw.isFavorite,
-        metadata: [{ key: RENDER_KEY, value: { sourceAssetId: raw.id, recipeHash: hash, app: APP_ID } }],
+        isFavorite: favorite,
+        metadata: [{ key: RENDER_KEY, value: { sourceAssetId: raw.id, recipeHash: hash, app: APP_ID, ...(copy ? { copyId: copy.id } : {}) } }],
         checksum,
       },
       (f) => progress('upload', f),
@@ -94,12 +108,13 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     renderId = uploaded.id;
     const isDuplicate = uploaded.status === 'duplicate';
 
-    // 3: copy date/location/rating/description and album membership.
+    // 3: copy date/location/rating/description, album membership and tags. A duplicate upload
+    // ignores isFavorite, so a wanted favourite is set again here (never cleared).
     progress('metadata', 0);
-    const dto = renderUpdate(raw);
+    const dto: UpdateAssetDto = { ...renderUpdate(raw), ...(favorite ? { isFavorite: true } : {}) };
     if (Object.keys(dto).length) await updateAsset({ id: renderId, updateAssetDto: dto });
     await copyAlbums(raw.id, renderId);
-    await copyCullTags(raw, renderId);
+    if (!(await copyTags(raw, renderId))) onWarning?.("The RAW's tags could not be copied to the edit.");
     progress('metadata', 1);
 
     // 4: stack. Re-read the RAW: its stack changes with every save.
@@ -120,6 +135,8 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
       uploadWasDuplicate: isDuplicate,
       newRenderIsTrashed: renderInfo?.isTrashed ?? false,
       keepPrimary,
+      copyId: copy?.id ?? null,
+      front: settings?.front === 'raw' ? 'raw' : 'render',
     });
     if (plan.restoreIds.length) await restoreAssets({ bulkIdsDto: { ids: plan.restoreIds } });
     if (plan.createStackIds.length >= 2) await createStack({ stackCreateDto: { assetIds: plan.createStackIds } });
@@ -130,7 +147,7 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     const final = cloneRecipe(recipe);
     delete final.pending;
     final.render = { assetId: renderId, recipeHash: hash, checksum, renderedAt: new Date().toISOString() };
-    await writeRecipe(raw.id, final);
+    await write(final);
     progress('recipe', 1);
 
     // 6: trash the previous render. A failure here leaves an extra JPEG, not a broken save.
@@ -150,8 +167,8 @@ export async function saveRender({ raw, recipe, jpeg, onProgress }: SaveOptions)
     // Nothing was created: put the stored recipe back so no stale "pending" remains.
     if (!renderId) {
       try {
-        if (stored) await writeMetadata(raw.id, RECIPE_KEY, stored);
-        else await deleteAssetMetadata({ id: raw.id, key: RECIPE_KEY });
+        if (stored) await writeMetadata(raw.id, key, stored);
+        else await deleteAssetMetadata({ id: raw.id, key });
       } catch {
         // best effort
       }
@@ -224,25 +241,34 @@ async function primaryIsOtherCapture(raw: AssetResponseDto, stackId: string): Pr
   return keepsOtherCaptureInFront(raw, primary, stack.assets, typeof source === 'string' ? source : null);
 }
 
-/** The culler's tags (best, runner-up, rejected and why) go with the edit, like the rating does. */
-export async function copyCullTags(raw: AssetResponseDto, renderId: string): Promise<void> {
-  const status = await cullerStatus();
-  if (!status) return;
-  const prefix = `${status.tagRoot}/`;
-  const tagIds = (raw.tags ?? []).filter((t) => t.value.startsWith(prefix)).map((t) => t.id);
-  if (!tagIds.length) return;
+/** Ids of all the RAW's tags, the culler's (best, runner-up, rejected and why) included. */
+export function tagIdsOf(raw: Pick<AssetResponseDto, 'tags'>): string[] {
+  return [...new Set((raw.tags ?? []).map((t) => t.id))];
+}
+
+/**
+ * The RAW's tags go with the edit, like the rating does. The JPEG also lists them in its XMP
+ * (immichCopyXmp), so Immich's metadata job, which may run after this and sets tags from the
+ * file, keeps them. False when the tags could not be added.
+ */
+export async function copyTags(raw: Pick<AssetResponseDto, 'tags'>, targetId: string): Promise<boolean> {
+  const tagIds = tagIdsOf(raw);
+  if (!tagIds.length) return true;
   try {
-    await bulkTagAssets({ tagBulkAssetsDto: { tagIds, assetIds: [renderId] } });
+    await bulkTagAssets({ tagBulkAssetsDto: { tagIds, assetIds: [targetId] } });
+    return true;
   } catch (e) {
-    console.warn('Could not copy the culling tags to the render', e);
+    console.warn('Could not copy the tags to the edit', e);
+    return false;
   }
 }
 
-async function loadRenderInfo(id: string): Promise<{ id: string; isTrashed: boolean; sourceAssetId: string | null } | null> {
+async function loadRenderInfo(id: string): Promise<{ id: string; isTrashed: boolean; sourceAssetId: string | null; copyId: string | null } | null> {
   try {
     const [info, meta] = await Promise.all([getAssetInfo({ id }), readMetadata(id, RENDER_KEY)]);
     const source = meta?.sourceAssetId;
-    return { id: info.id, isTrashed: info.isTrashed, sourceAssetId: typeof source === 'string' ? source : null };
+    const copyId = meta?.copyId;
+    return { id: info.id, isTrashed: info.isTrashed, sourceAssetId: typeof source === 'string' ? source : null, copyId: typeof copyId === 'string' ? copyId : null };
   } catch (e) {
     const status = httpStatus(e);
     if (status === 400 || status === 404) return null; // deleted for good

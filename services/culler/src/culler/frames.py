@@ -134,6 +134,7 @@ def _make_frame(members: list[Asset], renders: set[str], capture_primary: str | 
     else:
         face = (rendered or others or raws)[0].id
     originals = raws + others or rendered
+    exposed = next((a for a in raws + others if a.exposure_ev is not None), None)
     return Frame(
         id=anchor.id,
         asset_ids=tuple(sorted(m.id for m in members)),
@@ -147,4 +148,6 @@ def _make_frame(members: list[Asset], renders: set[str], capture_primary: str | 
         favorite=any(m.is_favorite for m in members),
         starred=any(m.rating is not None and 1 <= m.rating <= 5 for m in members),
         duplicate_ids=frozenset(m.duplicate_id for m in members if m.duplicate_id),
+        exposure_ev=exposed.exposure_ev if exposed else None,
+        exposure_time=exposed.exposure_time if exposed else None,
     )

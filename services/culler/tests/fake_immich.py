@@ -11,6 +11,13 @@ from culler.immich import ImmichError
 from culler.models import Asset, parse_time
 
 
+def _exposure_text(t: float | None) -> str | None:
+    """As Immich shows it: '1/250' below a second, else seconds."""
+    if t is None:
+        return None
+    return f"1/{round(1 / t)}" if t < 1 else f"{t:g}"
+
+
 class FakeImmich:
     def __init__(self, owner: str = "owner"):
         self.owner = owner
@@ -40,7 +47,14 @@ class FakeImmich:
             "duplicateId": a.duplicate_id,
             "type": "IMAGE",
             "visibility": "timeline",
-            "exifInfo": {"rating": a.rating, "make": a.make, "model": a.model},
+            "exifInfo": {
+                "rating": a.rating,
+                "make": a.make,
+                "model": a.model,
+                "exposureTime": _exposure_text(a.exposure_time),
+                "fNumber": a.f_number,
+                "iso": a.iso,
+            },
         }
         if image is not None:
             self.images[a.id] = image

@@ -1,7 +1,7 @@
 // Takes the screenshots of the guides in docs/ (docs/images/<section>/<name>.jpg) on a test Immich
 // with the five seeded sample RAWs: the try-it demo (deploy/demo) or the e2e test Immich.
 // Usage: node e2e/screenshots.mjs [section ...]      (default: all sections)
-//   sections: getting-started editing masks workflow export upscale dng stacking mobile
+//   sections: getting-started editing upright masks polygon workflow scopes copies export upscale dng stacking mobile
 //   IMMICH_URL (default http://127.0.0.1:8088); HEADED=1 shows the browser.
 // - Needs internet once, for the AI mask and upscale models and the Fujifilm looks. They stay in
 //   the browser profile in e2e/out/screenshots-profile.
@@ -24,8 +24,12 @@ const HEADLESS = !process.env.HEADED;
 const SECTIONS = {
   'getting-started': gettingStarted,
   editing,
+  upright,
   masks,
+  polygon,
   workflow,
+  scopes,
+  copies,
   export: exporting,
   upscale,
   dng,
@@ -188,6 +192,49 @@ async function editing() {
   await page.keyboard.press('Enter');
 }
 
+/** A polygon mask (in the masks guide): the solar panels on the roof, clicked corner by corner. */
+async function polygon() {
+  await openEditor(await find('fuji-xt5'));
+  await page.keyboard.press('Shift+W');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Shift+K');
+  for (const p of [[0.566, 0.311], [0.999, 0.299], [0.999, 0.79], [0.829, 0.751], [0.68, 0.707], [0.52, 0.726]]) {
+    await page.mouse.click(...(await at(...p)));
+    await page.waitForTimeout(100);
+  }
+  await page.keyboard.press('Enter');
+  await setSlider('Exposure', -0.5);
+  await setSlider('Dehaze', 30);
+  await blur();
+  await page.keyboard.press('o');
+  await settle();
+  await shot('masks', 'polygon');
+}
+
+/** Guided Upright (in the editing guide): guides along the house's downpipe and gable. */
+async function upright() {
+  await openEditor(await find('fuji-xt5'));
+  // Edges that are vertical with the Transform screenshot's correction (Vertical -25), found
+  // there and kept in the mask frame, so the guides lie on them in the uncorrected photo.
+  await ed(() => globalThis.__editor.applyPatch({ transform: { vertical: -25 } }, 'Transform'));
+  await settle();
+  const guides = await ed(() => {
+    const e = globalThis.__editor;
+    const seg = (x, y0, y1) => [...e.viewToMask(x, y0), ...e.viewToMask(x, y1)];
+    return [seg(0.7565, 0.78, 0.965), seg(0.2585, 0.41, 0.58)];
+  });
+  await ed(() => globalThis.__editor.applyPatch({ transform: { vertical: 0 } }, 'Transform'));
+  await settle();
+  await openPanel('Transform');
+  await page.keyboard.press('Shift+T');
+  await ed((gs) => {
+    for (const g of gs) globalThis.__editor.addUprightGuide(g);
+  }, guides);
+  await settle(1200);
+  await shot('editing', 'upright');
+  await page.keyboard.press('Enter');
+}
+
 async function masks() {
   const fuji = await find('fuji-xt5');
   await openEditor(fuji);
@@ -266,6 +313,42 @@ async function masks() {
   await ai('People').click();
   await page.locator('.picker').waitFor();
   await shot('masks', 'ai-people', maskSettings());
+}
+
+/** The waveform and the vectorscope (in the workflow guide). */
+async function scopes() {
+  // The colour checker shows them best: its patches are flat bars in the waveform and points of
+  // their own hue in the vectorscope.
+  await openEditor(await find('nikon-z7'));
+  await page.getByRole('button', { name: 'Auto', exact: true }).click();
+  await setSlider('Vibrance', 30);
+  await blur();
+  await page.getByRole('button', { name: 'Waveform', exact: true }).click();
+  await settle();
+  await shot('workflow', 'waveform');
+  await page.getByRole('button', { name: 'Vectorscope', exact: true }).click();
+  await settle();
+  await shot('workflow', 'vectorscope', page.locator('.scopes'));
+  // The scope is kept in the browser profile: leave the histogram for the other sections.
+  await page.getByRole('button', { name: 'Histogram', exact: true }).click();
+  await settle(300);
+}
+
+/** Virtual copies (in the workflow guide): a black-and-white copy and the menu. */
+async function copies() {
+  await openEditor(await find('fuji-xt5'), { reset: false });
+  // A copy for the picture, deleted again afterwards.
+  await ed(() => globalThis.__editor.newVirtualCopy());
+  await page.waitForFunction(() => !!globalThis.__editor.copyId);
+  await ed(() => globalThis.__editor.renameCopy(globalThis.__editor.copyId, 'Black & white'));
+  await page.locator('aside.side .line:has(.lbl:text-is("Profile")) select').selectOption('monochrome');
+  await blur();
+  await settle(1200);
+  await page.locator('.copies .switch').click();
+  await settle(300);
+  await shot('workflow', 'virtual-copies', page, { clip: { x: 0, y: 0, width: 1000, height: 460 } });
+  await page.keyboard.press('Escape');
+  await ed(() => globalThis.__editor.deleteCopy(globalThis.__editor.copyId));
 }
 
 async function workflow() {

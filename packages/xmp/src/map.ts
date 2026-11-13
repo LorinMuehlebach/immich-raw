@@ -112,7 +112,8 @@ export const NUMBER_ROWS: NumberRow[] = [
   row('DefringeGreenAmount', LENS_PARAMS.defringeGreen, 0, false),
   row('DefringeGreenHueLo', LENS_PARAMS.defringeGreenLo, 0, false),
   row('DefringeGreenHueHi', LENS_PARAMS.defringeGreenHi, 0, false),
-  // Transform (manual sliders; Upright's automatic modes are reported as skipped)
+  // Transform (manual sliders; Upright, automatic or guided, is reported as skipped: Lightroom's
+  // guide fields (UprightFourSegments_*) aren't mapped to Guided Upright yet)
   row('PerspectiveVertical', TRANSFORM_PARAMS.vertical),
   row('PerspectiveHorizontal', TRANSFORM_PARAMS.horizontal),
   row('PerspectiveRotate', TRANSFORM_PARAMS.rotate, 1),

@@ -1,7 +1,8 @@
 """Picks the best frame of a group by sequential elimination, then a tie-break.
 
 Among the frames that pass every check, the one with the most smiling faces is the best (when
-smiles count), then the best mix of sharpness, exposure and open eyes.
+smiles count), then the best mix of sharpness, exposure and open eyes. When the best and the next
+shot have as many smiles and their mix is less than `close_margin` apart, the group is a close call.
 
 Order of the result: best, runner-ups (passed every check) in that order, then rejected frames,
 those that survived longer first.
@@ -9,13 +10,17 @@ those that survived longer first.
 
 from __future__ import annotations
 
-from culler.checks import CHECKS, Basis, Candidate
-from culler.config import Config
+from dataclasses import replace
+
+from culler.brackets import middle
+from culler.checks import CHECKS, Basis, Candidate, least_open
+from culler.config import Config, RankingConfig
 from culler.features.exposure import subject_exposure, subject_target
-from culler.models import Features, Frame, FrameResult, GroupResult, Reason
+from culler.models import Features, Frame, FrameResult, GroupResult, PickInfo, Reason
 
 
-def tie_break_score(c: Candidate, top_sharpness: float) -> float:
+def tie_break_parts(c: Candidate, top_sharpness: float) -> tuple[float, float, float]:
+    """(sharpness, exposure, eyes), each 0-1."""
     sharp = c.sharpness / top_sharpness if top_sharpness > 0 else 0.0
     light = 1.0 - min(1.0, c.badness / 1.5)
     f = c.features
@@ -24,7 +29,13 @@ def tie_break_score(c: Candidate, top_sharpness: float) -> float:
         eyes = sum(openness) / len(openness)
     else:
         eyes = (f.faces_known - f.faces_closed) / f.faces_known if f.faces_known else 0.5
-    return 0.45 * sharp + 0.35 * light + 0.20 * eyes
+    return sharp, light, eyes
+
+
+def tie_break_score(c: Candidate, top_sharpness: float, cfg: RankingConfig | None = None) -> float:
+    r = cfg or RankingConfig()
+    sharp, light, eyes = tie_break_parts(c, top_sharpness)
+    return r.sharpness_weight * sharp + r.exposure_weight * light + r.eyes_weight * eyes
 
 
 def rank_group(
@@ -47,7 +58,7 @@ def rank_group(
         survivors = [c for c in survivors if c.frame_id not in out]
 
     top_sharp = max(c.sharpness for c in cands)
-    score = {c.frame_id: tie_break_score(c, top_sharp) for c in cands}
+    score = {c.frame_id: tie_break_score(c, top_sharp, cfg.ranking) for c in cands}
 
     def smiles(c: Candidate) -> int:
         return c.features.faces_smiling(cfg.smiles.min_score) if cfg.smiles.enabled else 0
@@ -75,6 +86,11 @@ def rank_group(
     ordered = [by_id[best_id], *runner_ups, *losers]
 
     best = by_id[best_id]
+    close_call, margin = False, None
+    if runner_ups and not is_pinned:
+        nxt = runner_ups[0]
+        margin = round(score[best_id] - score[nxt.frame_id], 4)
+        close_call = smiles(best) == smiles(nxt) and margin < cfg.ranking.close_margin
     results: dict[str, FrameResult] = {}
     for rank, c in enumerate(ordered, start=1):
         fid = c.frame_id
@@ -88,7 +104,47 @@ def rank_group(
             pinned=is_pinned and fid == best_id,
             metrics=_metrics(c, best, cfg),
         )
-    return GroupResult(frame_ids=[c.frame_id for c in ordered], results=results)
+    pick = None
+    if is_pinned:
+        no_picks = replace(cfg, ranking=replace(cfg.ranking, respect_favorites=False))
+        auto = rank_group(frames, features, no_picks)
+        if auto.best != best_id:
+            mine = auto.results[best_id]
+            pick = PickInfo(
+                source="you" if pinned in by_id else "favourite",
+                your_frame=best_id,
+                auto_frame=auto.best,
+                your_role=mine.role,
+                your_reason=mine.reason,
+                deltas=_pick_deltas(by_id[best_id], by_id[auto.best], cands, top_sharp, smiles),
+            )
+    return GroupResult(
+        frame_ids=[c.frame_id for c in ordered],
+        results=results,
+        close_call=close_call,
+        margin=margin,
+        pick=pick,
+    )
+
+
+def _pick_deltas(mine: Candidate, auto: Candidate, cands: list[Candidate], top_sharp: float, smiles) -> dict:
+    """How the user's shot compared, in the terms of each check (see suggest.py)."""
+    best_lit = min(cands, key=lambda x: x.badness)
+    out: dict = {
+        "sharpRatio": round(mine.sharpness / top_sharp, 3) if top_sharp > 0 else None,
+        "lightingWorse": round(mine.badness - best_lit.badness, 3),
+        "evGap": round(abs(mine.exposure.key - best_lit.exposure.key), 2),
+        "you": [round(v, 4) for v in tie_break_parts(mine, top_sharp)],
+        "auto": [round(v, 4) for v in tie_break_parts(auto, top_sharp)],
+        "smiles": [smiles(mine), smiles(auto)],
+    }
+    known = [x for x in cands if x.features.faces_known > 0]
+    if known and mine.features.faces_known > 0:
+        out["closedMore"] = mine.features.faces_closed - min(x.features.faces_closed for x in known)
+        opens = [v for x in known if (v := least_open(x)) is not None]
+        if opens and (v := least_open(mine)) is not None:
+            out["openGap"] = round(max(opens) - v, 3)
+    return out
 
 
 def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
@@ -102,7 +158,10 @@ def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
         "faces": f.faces_known,
         "closed": f.faces_closed,
         "judgedOn": c.judged_on,
+        "sharpOn": c.basis.sharpness,
     }
+    if c.basis.sharpness == "subject" and f.animals:
+        out["subjectLabel"] = f.animals[0].label
     openness = f.eyes_openness()
     if openness:
         out["eyesOpen"] = round(100 * sum(openness) / len(openness))
@@ -118,3 +177,44 @@ def _metrics(c: Candidate, best: Candidate, cfg: Config) -> dict:
         out["smiling"] = f.faces_smiling(cfg.smiles.min_score)
         out["smileFaces"] = sum(1 for face in f.faces if face.smile is not None)
     return out
+
+
+def rank_brackets(
+    frames: list[Frame], features: dict[str, Features], cfg: Config, pinned: str | None = None
+) -> GroupResult:
+    """An exposure bracket: kept whole, nothing rejected. In front: the user's pick (or a sole
+    favourite), else the middle exposure; the others follow from dark to bright."""
+    by_id = {f.id: f for f in frames}
+    front_id: str | None = pinned if pinned in by_id else None
+    if front_id is None and cfg.ranking.respect_favorites:
+        favourites = [f for f in frames if f.favorite]
+        if len(favourites) == 1:
+            front_id = favourites[0].id
+    is_pinned = front_id is not None
+    front = by_id[front_id] if front_id else middle(frames)
+    rest = sorted(
+        (f for f in frames if f.id != front.id),
+        key=lambda f: (f.exposure_ev is None, f.exposure_ev or 0.0, f.taken, f.name),
+    )
+    ordered = [front, *rest]
+    ref = features.get(front.id)
+    results: dict[str, FrameResult] = {}
+    for rank, f in enumerate(ordered, start=1):
+        feats = features.get(f.id)
+        metrics: dict = {}
+        if feats and ref:
+            metrics["evVsBest"] = round(feats.exposure.key - ref.exposure.key, 2)
+            metrics["clipHiPct"] = round(100 * feats.exposure.clip_hi, 1)
+            metrics["clipLoPct"] = round(100 * feats.exposure.clip_lo, 1)
+        if f.exposure_ev is not None and front.exposure_ev is not None:
+            metrics["bracketEv"] = round(f.exposure_ev - front.exposure_ev, 1)
+        results[f.id] = FrameResult(
+            frame_id=f.id,
+            role="bracket",
+            reason=None,
+            rank=rank,
+            score=0.0,
+            pinned=is_pinned and f.id == front.id,
+            metrics=metrics,
+        )
+    return GroupResult(frame_ids=[f.id for f in ordered], results=results, kind="bracket")

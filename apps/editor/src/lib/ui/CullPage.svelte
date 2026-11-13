@@ -13,6 +13,7 @@
   import {
     badgeFor,
     describeRun,
+    closeCallRows,
     layoutRows,
     NO_EDITS,
     runPhase,
@@ -93,6 +94,7 @@
     run?.report?.singles ? run.report.singles.filter((s) => s.leftAlone && !edits.remove.includes(s.frameId)).length : (run?.summary?.takenApart ?? 0),
   );
   const rows = $derived(layoutRows(run?.report));
+  const closeCalls = $derived(closeCallRows(rows));
   const hasEdits = (e: RunEdits) => e.remove.length > 0 || Object.keys(e.join).length > 0;
   const names = $derived(
     new Map([...(run?.report?.groups ?? []).flatMap((g) => g.frames.map((f) => [f.frameId, f.name] as const)), ...(run?.report?.singles ?? []).map((s) => [s.frameId, s.name] as const)]),
@@ -331,13 +333,29 @@
     rank: f.rank,
     groupSize: r.shots.length,
     pinned: f.pinned,
+    closeCall: r.closeCall,
     metrics: f.metrics,
   });
 
   function details(r: StackRow): string {
-    const aside = r.rejected.lighting + r.rejected.blur + r.rejected.eyes;
-    const parts = [r.runnerUps && plural(r.runnerUps, 'runner-up'), aside && `${aside} set aside`].filter(Boolean);
+    if (r.bracket) return 'kept whole';
+    const aside = Object.values(r.rejected).reduce((a, b) => a + b, 0);
+    const parts = [r.closeCall && 'close call', r.runnerUps && plural(r.runnerUps, 'runner-up'), aside && `${aside} set aside`].filter(Boolean);
     return parts.length ? parts.join(' · ') : 'all good';
+  }
+
+  function caption(r: StackRow): string {
+    if (r.bracket) return `± Exposure bracket of ${r.shots.length}`;
+    return `★ ${r.best.pinned ? 'Your pick' : 'Best'} of ${r.shots.length}${r.closeCall ? ' ≈' : ''}`;
+  }
+
+  /** Scrolls a close call's row into view and flashes it. */
+  function showStack(groupId: string) {
+    const el = document.getElementById(`stack-${groupId}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el?.classList.remove('flash');
+    void el?.offsetWidth; // restart the animation
+    el?.classList.add('flash');
   }
 
   function onWindowPointer(e: PointerEvent) {
@@ -468,17 +486,35 @@
               </p>
             {/if}
 
+            {#if closeCalls.length}
+              <div class="note close-calls">
+                <p>
+                  {plural(closeCalls.length, 'close call')}: the best and the next shot nearly tied. Worth a look before you keep the pick:
+                </p>
+                <ul>
+                  {#each closeCalls as r (r.groupId)}
+                    <li>
+                      <button onclick={() => showStack(r.groupId)} title="Show this stack">
+                        <img use:img={thumbUrl(r.best.faceId)} alt={r.best.name} draggable="false" />
+                        <span>{clock(r.taken)} · {plural(r.shots.length, 'shot')}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+
             {#if rows.length}
               <ul class="rows">
                 {#each rows as r (r.kind === 'stack' ? r.groupId : `s-${r.singles[0]?.frameId}`)}
                   {#if r.kind === 'stack'}
-                    <li class="row stack-row">
+                    <li class="row stack-row" id={`stack-${r.groupId}`} class:close={r.closeCall}>
                       <div class="lead">
                         <button class="lead-pic" disabled={!stacked} onclick={() => (open = r.best.faceId)} title={stacked ? 'Compare the shots of this stack' : r.best.name}>
                           <img use:img={thumbUrl(r.best.faceId)} alt={r.best.name} draggable="false" />
                           <span class="count">{r.shots.length}</span>
                         </button>
-                        <span class="caption">★ {r.best.pinned ? 'Your pick' : 'Best'} of {r.shots.length}</span>
+                        <span class="caption">{caption(r)}</span>
                         <span class="sub">{details(r)} · {clock(r.taken)}</span>
                       </div>
                       <ul class="shots">
@@ -687,6 +723,38 @@
     padding: 6px 14px;
   }
 
+  .close-calls ul {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .close-calls button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px 3px 3px;
+  }
+  .close-calls img {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 3px;
+  }
+  .row.close .caption {
+    color: var(--accent);
+  }
+  .row.flash {
+    animation: flash 1.2s ease-out;
+  }
+  @keyframes flash {
+    from {
+      background: color-mix(in srgb, var(--accent) 25%, transparent);
+    }
+  }
+
   /* The rows: a stack (its preferred shot large, all its shots beside it) or single photos. */
   .rows {
     list-style: none;
@@ -821,6 +889,9 @@
   }
   .badge.runner-up {
     color: #cfd8e3;
+  }
+  .badge.bracket {
+    color: #9fd3ff;
   }
   .badge.rejected {
     color: #fff;

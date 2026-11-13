@@ -47,8 +47,10 @@ export function isSafeReturnPath(value: string): boolean {
   return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\');
 }
 
-export function editorUrl(base: string, rawId: string, context: string, returnPath: string): string {
+export function editorUrl(base: string, rawId: string, context: string, returnPath: string, copyId: string | null = null): string {
   const params = new URLSearchParams({ asset: rawId, ctx: context });
+  // A virtual copy's JPEG opens that copy.
+  if (copyId) params.set('copy', copyId);
   if (isSafeReturnPath(returnPath)) params.set('return', returnPath);
   const sep = base.includes('?') ? '&' : '?';
   return `${base}${sep}${params.toString()}`;

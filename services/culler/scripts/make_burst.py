@@ -6,10 +6,12 @@ Usage: python scripts/make_burst.py <out-dir> <a.jpg> <b.jpg> <c.jpg> <d.jpg> [-
   Scene B: base, blurred, shifted; 5 minutes later.
   Scene C: one photo, 30 minutes later.
   Scene D: base, blurred, shifted; an hour later.
+  Scene E: an exposure bracket of the third photo, 0 / -2 / +2 EV 0.3 s apart, two hours later. Its
+           manifest entries carry the shutter speed of each shot (for the DNG's EXIF).
 
 Variants are made in linear light, the way a camera would capture them. Writes a JPEG per shot
 and manifest.json (file, seconds after the first shot, expected outcome: "best-candidate",
-"lighting", "blur" or "single"). With --linear16 it also writes <name>.rgb16: linear RGB,
+"lighting", "blur", "single" or "bracket"). With --linear16 it also writes <name>.rgb16: linear RGB,
 16-bit little-endian, scaled like a sensor (white = clipping, one stop of headroom over the
 JPEG), for e2e/raw-burst.mjs to wrap into DNG files.
 """
@@ -82,11 +84,17 @@ def main(argv: list[str]) -> None:
         ("burst_d0", 3600, capture(d), "best-candidate"),
         ("burst_d1", 3601, capture(d, blur=3.0), "blur"),
         ("burst_d2", 3602, capture(d, move=(0.0, 0.01)), "best-candidate"),
+        # An AEB set: the shutter speed steps the exposure (1/250 s, then 1/1000 s and 1/60 s).
+        ("burst_e0", 7200.0, capture(c), "bracket", {"exposureTime": 1 / 250}),
+        ("burst_e1", 7200.3, capture(c, ev=-2.0), "bracket", {"exposureTime": 1 / 1000}),
+        ("burst_e2", 7200.6, capture(c, ev=2.06), "bracket", {"exposureTime": 1 / 60}),
     ]
     manifest = []
-    for name, seconds, lin, expect in shots:
+    for name, seconds, lin, expect, *extra in shots:
         cv2.imwrite(str(out / f"{name}.jpg"), cv2.cvtColor(to_srgb8(lin), cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
         entry = {"name": name, "file": f"{name}.jpg", "seconds": seconds, "expect": expect, "scene": name[6]}
+        for e in extra:
+            entry.update(e)
         if linear16:
             sensor = np.clip(lin * RAW_HEADROOM, 0, 1)
             (out / f"{name}.rgb16").write_bytes(np.round(sensor * 65535).astype("<u2").tobytes())

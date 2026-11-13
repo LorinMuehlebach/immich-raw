@@ -1,5 +1,6 @@
 // Puts seeded RAWs back to their unedited state on the test Immich: deletes the editor's
-// renders (permanently), the stack and the stored recipe. Usage: node e2e/reset.mjs <filename-part>
+// renders (permanently), the stack, the stored recipe and the virtual copies.
+// Usage: node e2e/reset.mjs <filename-part>
 const BASE = process.env.IMMICH_URL ?? 'http://127.0.0.1:8088';
 const [namePart] = process.argv.slice(2);
 if (!namePart) {
@@ -36,6 +37,9 @@ for (const raw of raws) {
     removed = renders.length;
   }
   await api('DELETE', `/assets/${raw.id}/metadata/raw-editor.recipe`);
-  console.log(`reset ${raw.originalFileName}: ${removed} render(s) deleted, recipe cleared`);
+  // Virtual copies, and their snapshots.
+  const keys = ((await api('GET', `/assets/${raw.id}/metadata`)) ?? []).map((i) => i.key).filter((k) => /^raw-editor\.(copy|history)\./.test(k));
+  for (const k of keys) await api('DELETE', `/assets/${raw.id}/metadata/${encodeURIComponent(k)}`);
+  console.log(`reset ${raw.originalFileName}: ${removed} render(s) deleted, recipe${keys.length ? ` and ${keys.length} virtual copy key(s)` : ''} cleared`);
 }
 if (!raws.length) console.log('no matching RAW found');

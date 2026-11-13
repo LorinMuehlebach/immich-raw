@@ -2,10 +2,16 @@
 
 Tools around the edit: seeing it, going back, reusing it and moving between photos.
 
-## Histogram, clipping, before/after and zoom
+## Histogram and scopes, clipping, before/after and zoom
 
 - **Histogram** at the top right, with the camera settings. J shows clipping in the photo (or
   click the triangles); Alt-dragging a tone slider shows what it clips.
+- **Scopes:** the buttons under the histogram switch it to
+  - a **waveform**: the brightness of the photo from left to right, black at the bottom;
+  - an **RGB parade**: the same for red, green and blue side by side;
+  - a **vectorscope**: hue and saturation, with the 75 % colour targets and the skin tone line.
+
+  The choice is kept in the browser.
 - **Before/after:** `\` or **Before** in the header.
 - **Zoom:** double-click the photo or Z for 100 %; Ctrl + mouse wheel, or pinch on a trackpad, for
   free zoom up to 800 %.
@@ -14,6 +20,10 @@ Tools around the edit: seeing it, going back, reusing it and moving between phot
 
 ![Clipping warnings (J): blown highlights in red](images/workflow/clipping.jpg)
 
+![The waveform of a colour checker: each row of patches is a flat bar](images/workflow/waveform.jpg)
+
+![The vectorscope of the same photo](images/workflow/vectorscope.jpg)
+
 ## History, snapshots and undo
 
 - **History** lists every change with its name; click a step to go back to it. Ctrl+Z and
@@ -21,6 +31,24 @@ Tools around the edit: seeing it, going back, reusing it and moving between phot
 - **Snapshots** save the current settings under a name (+), stored on the RAW in Immich.
 
 ![History and snapshots in the left panel](images/workflow/history-snapshots.jpg)
+
+## Virtual copies
+
+Several edits of one RAW, like Lightroom's virtual copies: a colour and a black-and-white version,
+say, or two crops.
+- **New virtual copy** (Ctrl+'), in the menu next to the file name, starts a copy from the current
+  settings and opens it. Unsaved changes go with it; the edit it was made from keeps its saved
+  state.
+- Each copy saves its own JPEG into the RAW's stack, called `<name>.copy-2.edit.jpg`. The
+  original's JPEG stays in front; **Show in front in Immich** puts the open edit's JPEG there
+  instead.
+- The menu switches between the original and the copies (asking first about unsaved changes),
+  renames the open copy or deletes it, with its JPEG going to Immich's trash. Each copy has its
+  own history and snapshots.
+- Immich's Edit RAW button on a copy's JPEG opens that copy. An album export includes each copy
+  whose JPEG is in the album, named `<name>-copy-2`.
+
+![The virtual copies menu next to the file name](images/workflow/virtual-copies.jpg)
 
 ## Presets
 
@@ -42,6 +70,17 @@ another photo; **Previous** (Ctrl+Alt+V) applies the settings of the photo you e
 Below the photo: the RAWs of the album or person you opened the photo from, otherwise the RAWs
 taken within 12 hours of it. ← and → go to the previous and next photo. With the culler it also
 shows stacks ([Stacking](stacking.md)).
+
+The next photo opens in the same page, without loading the editor again, and the address bar
+follows: the browser's Back and Forward go through the photos you opened. Unsaved changes ask
+first, as when going back to Immich.
+
+Over HTTPS the editor gets the photos around the open one ready while you edit: the next and
+previous photo, then the two after those. It downloads them as soon as the open photo shows, and
+decodes them once the open photo is decoded at full resolution. Then ← and → open them from the
+browser's cache (800 MB, shared with the photos opened before; photos that don't fit are left
+out). It doesn't do this with Data Saver on, on a mobile network, or on a device with less than
+4 GB of memory.
 
 ![The filmstrip of an album](images/workflow/filmstrip.jpg)
 

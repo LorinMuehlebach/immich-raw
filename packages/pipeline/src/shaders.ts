@@ -664,6 +664,15 @@ float decodeSrgb(float v) {
   return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
 }
 
+#ifdef WIDE_OUT
+// Exports in a wider colour space keep display values beyond 0..1 (extended sRGB: the curve
+// continued above 1 and mirrored below 0) until the finish pass converts them.
+float encX(float v) { float a = abs(v); return sign(v) * (a <= 0.0031308 ? 12.92 * a : 1.055 * pow(a, 1.0 / 2.4) - 0.055); }
+float decX(float v) { float a = abs(v); return sign(v) * (a <= 0.04045 ? a / 12.92 : pow((a + 0.055) / 1.055, 2.4)); }
+vec3 encX3(vec3 v) { return vec3(encX(v.r), encX(v.g), encX(v.b)); }
+vec3 decX3(vec3 v) { return vec3(decX(v.r), decX(v.g), decX(v.b)); }
+#endif
+
 // DNG "hexcone" HSV (dng_utils.h): hue 0..6 (0 red, 2 green, 4 blue), saturation, value.
 vec3 dngHsv(vec3 c) {
   float v = max(c.r, max(c.g, c.b));
@@ -723,7 +732,11 @@ vec3 applyLook(vec3 c) {
 // Lightroom's Color Grading on display colours: shadow, midtone and highlight wheels
 // weighted by lightness, plus the global wheel. Pure black stays neutral.
 vec3 colorGrade(vec3 enc) {
+#ifdef WIDE_OUT
+  vec3 lab = lmsToLab(uSrgbToLms * decX3(enc));
+#else
   vec3 lab = lmsToLab(uSrgbToLms * vec3(decodeSrgb(enc.r), decodeSrgb(enc.g), decodeSrgb(enc.b)));
+#endif
   float y = clamp(lab.x, 0.0, 1.0);
   float p = uGradeShape.x;
   float t = y < p ? 0.5 * y / p : 0.5 + 0.5 * (y - p) / (1.0 - p);
@@ -733,16 +746,26 @@ vec3 colorGrade(vec3 enc) {
   float fade = smoothstep(0.0, 0.1, y);
   lab.yz += (ws * uGradeAB[0] + wm * uGradeAB[1] + wh * uGradeAB[2] + uGradeAB[3]) * fade;
   lab.x += dot(vec4(ws, wm, wh, 1.0), uGradeLum) * fade;
+#ifdef WIDE_OUT
+  return encX3(uLmsToSrgb * labToLms(lab));
+#else
   vec3 lin = clamp(uLmsToSrgb * labToLms(lab), 0.0, 1.0);
   return vec3(encodeSrgb(lin.r), encodeSrgb(lin.g), encodeSrgb(lin.b));
+#endif
 }
 
 // Mask colour swatch: tints display colours in OKLab, keeping lightness.
 vec3 localColor(vec3 enc, vec2 ab) {
+#ifdef WIDE_OUT
+  vec3 lab = lmsToLab(uSrgbToLms * decX3(enc));
+  lab.yz += ab * smoothstep(0.0, 0.1, lab.x);
+  return encX3(uLmsToSrgb * labToLms(lab));
+#else
   vec3 lab = lmsToLab(uSrgbToLms * vec3(decodeSrgb(enc.r), decodeSrgb(enc.g), decodeSrgb(enc.b)));
   lab.yz += ab * smoothstep(0.0, 0.1, lab.x);
   vec3 lin = clamp(uLmsToSrgb * labToLms(lab), 0.0, 1.0);
   return vec3(encodeSrgb(lin.r), encodeSrgb(lin.g), encodeSrgb(lin.b));
+#endif
 }
 
 // 1 inside the hue range from..to (radians, may wrap), fading out just beyond it.
@@ -771,6 +794,15 @@ float lut(float v, int ch) {
   float u = clamp(v, 0.0, 1.0) * (4095.0 / 4096.0) + 0.5 / 4096.0;
   return texture(uLut, vec2(u, 0.5))[ch];
 }
+
+#ifdef WIDE_OUT
+// The tone curve continued in straight lines beyond 0..1, with its slopes at the ends.
+float lutX(float v, int ch) {
+  if (v < 0.0) return lut(0.0, ch) + v * 64.0 * (lut(1.0 / 64.0, ch) - lut(0.0, ch));
+  if (v > 1.0) return lut(1.0, ch) + (v - 1.0) * 64.0 * (lut(1.0, ch) - lut(63.0 / 64.0, ch));
+  return lut(v, ch);
+}
+#endif
 
 void main() {
   vec2 t = frameT();
@@ -875,6 +907,25 @@ void main() {
 
   // Profile: tone curve in ProPhoto, then to sRGB (clipped) with a mild S-curve and, for
   // some film looks, a display-space LUT.
+#ifdef WIDE_OUT
+  // Not clipped: colours outside sRGB go on to the output space. Inside 0..1 every step below
+  // is the same as for sRGB; beyond it the curves continue in straight lines.
+  vec3 enc = encX3(uWorkToSrgb * rgbTone(work));
+  if (uProfile == 0 || uProfile == 3) {
+    float k = uSCurveCustom == 0 ? 0.25 : uSCurve;
+    vec3 c = clamp(enc, 0.0, 1.0);
+    enc = mix(c, c * c * (3.0 - 2.0 * c), k) + (1.0 - k) * (enc - c);
+  }
+  if (uFilmLut == 1) {
+    // Film looks are sRGB tables: they bring colours outside sRGB into it.
+    float m = float(textureSize(uFilmLutTex, 0).x);
+    vec3 film = textureLod(uFilmLutTex, clamp(enc, 0.0, 1.0) * ((m - 1.0) / m) + 0.5 / m, 0.0).rgb;
+    enc = mix(enc, film, uFilmLutAmount);
+  }
+  if (uGrading == 1) enc = colorGrade(enc);
+  if (lD.z != 0.0 || lD.w != 0.0) enc = localColor(enc, lD.zw);
+  if (uCurve == 1) enc = vec3(lutX(enc.r, 0), lutX(enc.g, 1), lutX(enc.b, 2));
+#else
   vec3 srgbLin = clamp(uWorkToSrgb * rgbTone(work), 0.0, 1.0);
   vec3 enc = vec3(encodeSrgb(srgbLin.r), encodeSrgb(srgbLin.g), encodeSrgb(srgbLin.b));
   if (uProfile == 0 || uProfile == 3) {
@@ -889,6 +940,7 @@ void main() {
   if (uGrading == 1) enc = colorGrade(enc);
   if (lD.z != 0.0 || lD.w != 0.0) enc = localColor(enc, lD.zw);
   if (uCurve == 1) enc = vec3(lut(enc.r, 0), lut(enc.g, 1), lut(enc.b, 2));
+#endif
   if (overlay > 0.0) enc = mix(enc, uOverlayColor, 0.5 * overlay);
   o = vec4(enc, 1.0);
 }`;
@@ -946,6 +998,15 @@ uniform int uShowMask;
 uniform int uMaskSharp;     // 1 when a mask uses Sharpness
 out vec4 o;
 const vec3 W709 = vec3(0.2126, 0.7152, 0.0722);
+#ifdef WIDE_OUT
+// Exports in another colour space: the last step takes extended sRGB there.
+uniform mat3 uSrgbToOut;    // linear sRGB -> linear output space
+uniform float uOutGamma;    // the output's curve: 0 = the sRGB curve, else a pure power
+vec3 outEncode(vec3 v) {
+  if (uOutGamma > 0.0) return pow(v, vec3(1.0 / uOutGamma));
+  return mix(12.92 * v, 1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), v));
+}
+#endif
 void main() {
   srcGradients(frameT());
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -983,10 +1044,24 @@ void main() {
   if (amount > 0.0) y += clamp(y - b.x, -lim, lim) * amount * mask;
   if (uShowMask == 2) { o = vec4(vec3(clamp(y, 0.0, 1.0)), d.a); return; }
   float g = (y - 0.2126 * (cd.x + y) - 0.0722 * (cd.y + y)) / 0.7152;
+#ifdef WIDE_OUT
+  vec3 rgb = vec3(cd.x + y, g, cd.y + y);
+  if (uOutPx.x > 0.0 && d.a > 0.5) rgb = postCrop(rgb);
+  // Clipped to the output space's gamut, channel by channel.
+  o = vec4(outEncode(clamp(uSrgbToOut * fxDecode(rgb), 0.0, 1.0)), d.a);
+#else
   vec3 rgb = clamp(vec3(cd.x + y, g, cd.y + y), 0.0, 1.0);
   if (uOutPx.x > 0.0 && d.a > 0.5) rgb = postCrop(rgb);
   o = vec4(clamp(rgb, 0.0, 1.0), d.a);
+#endif
 }`;
+
+/** The variant of a fragment shader for exports in another colour space (#define WIDE_OUT). */
+export function wideOut(fs: string): string {
+  const head = '#version 300 es\n';
+  if (!fs.startsWith(head)) throw new Error('wideOut: shader must start with #version 300 es');
+  return `${head}#define WIDE_OUT 1\n${fs.slice(head.length)}`;
+}
 
 /**
  * Draws the finished image to the canvas (flipped), with clipping warnings, Lightroom's

@@ -1,9 +1,11 @@
 // WebGL2 renderer: fitted preview from a <= 2560 px proxy, 1:1 zoom regions and
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
-import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, type BrushComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
+import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, type BrushComponent, type PolygonComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
 import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
 import { cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type ProfileLooks, type ProfileRender } from './color/index.ts';
+import { OUTPUT_SPACE_INFO, SRGB8, type OutputColor } from './color/output-spaces.ts';
+import type { Pixels } from './export/pixels.ts';
 import { buildCurveLut, isCurveNeutral, LUT_SIZE } from './curves.ts';
 import { estimateDehaze } from './dehaze.ts';
 import { Denoiser, effectsUniforms, nrPlan } from './effects.ts';
@@ -12,6 +14,8 @@ import { GLContext, type Program, type Target } from './gl.ts';
 import { NO_LENS, defringeUniforms, lensModel, lensSourcePoint, lensUniforms, type LensData, type LensModel } from './lens.ts';
 import { MaskRefiner } from './mask-refine.ts';
 import { colorFeature, maskFrameScale, maskUniforms, type MaskResources } from './masks.ts';
+import { histogramOf, type Histogram, type ScopeImage } from './scopes.ts';
+import { PolygonRasterizer, polygonKey } from './polygon.ts';
 import * as S from './shaders.ts';
 import { developUniforms, finishUniforms, lookUniforms, STATIC_UNIFORMS, type CameraInfo } from './uniforms.ts';
 
@@ -66,14 +70,6 @@ export interface ZoomView {
   /** Canvas size in device pixels. */
   width: number;
   height: number;
-}
-
-export interface Histogram {
-  r: Uint32Array;
-  g: Uint32Array;
-  b: Uint32Array;
-  /** Pixels counted. */
-  total: number;
 }
 
 export interface ExportProgress {
@@ -134,6 +130,8 @@ export class Renderer {
   private ctx: GLContext;
   private gl: WebGL2RenderingContext;
   private p: Programs;
+  /** Tone and finish passes for exports in another colour space (WIDE_OUT), compiled on first use. */
+  private wideP: { tone: Program; finish: Program } | null = null;
   private denoiser: Denoiser;
   /** Masks with a refined edge (Offset, Feather, Smooth), rendered into maps. */
   private refiner: MaskRefiner;
@@ -142,6 +140,7 @@ export class Renderer {
   /** The decoded image the proxy was made from (colour range masks read their samples here). */
   private cpuSource: SourceImage | null = null;
   private brushRaster = new BrushRasterizer();
+  private polygonRaster = new PolygonRasterizer();
   private brushTex: WebGLTexture | null = null;
   /** What the brush atlas was built from; NO_KEY = nothing uploaded yet. */
   private brushKey = NO_KEY;
@@ -377,17 +376,27 @@ export class Renderer {
     return t;
   }
 
-  private chainTargets(prefix: string, w: number, h: number): ChainTargets {
+  /**
+   * The pass chain's targets. 16-bit exports keep the tone result and the finished image in
+   * 32-bit float: half floats hold only about 11 bits.
+   */
+  private chainTargets(prefix: string, w: number, h: number, bits: 8 | 16 = 8): ChainTargets {
     const gl = this.gl;
     return {
       lin: this.target(`${prefix}.lin`, w, h, gl.RGBA16F),
       bl1: this.target(`${prefix}.bl1`, w, h, gl.R16F),
       bl2: this.target(`${prefix}.bl2`, w, h, gl.R16F),
-      dev: this.target(`${prefix}.dev`, w, h, gl.RGBA16F),
+      dev: this.target(`${prefix}.dev`, w, h, bits === 16 ? gl.RGBA32F : gl.RGBA16F),
       blurA: this.target(`${prefix}.blurA`, w, h, gl.RGBA16F),
       blurB: this.target(`${prefix}.blurB`, w, h, gl.RGBA16F),
-      fin: this.target(`${prefix}.fin`, w, h, gl.RGBA8, gl.LINEAR),
+      // 32-bit float textures can't be filtered linearly everywhere; only read back.
+      fin: bits === 16 ? this.target(`${prefix}.fin`, w, h, gl.RGBA32F) : this.target(`${prefix}.fin`, w, h, gl.RGBA8, gl.LINEAR),
     };
+  }
+
+  private wide(): { tone: Program; finish: Program } {
+    this.wideP ??= { tone: this.ctx.program(S.wideOut(S.FS_TONE)), finish: this.ctx.program(S.wideOut(S.FS_FINISH)) };
+    return this.wideP;
   }
 
   private freeChain(prefix: string): void {
@@ -510,13 +519,21 @@ export class Renderer {
     const { camera } = this.requireSource();
     const [fx, fy] = maskFrameScale(camera.fullWidth, camera.fullHeight);
     const brushes = recipe.masks.flatMap((m) => m.components.filter((c): c is BrushComponent => c.kind === 'brush' && c.strokes.length > 0));
-    const key = brushes
-      .map((c) => `${c.id}:${c.strokes.map((st) => `${st.erase ? 'e' : 'p'}${st.size},${st.feather},${st.flow},${st.density},${st.points.length},${st.points[0]},${st.points.at(-1)}`).join(';')}`)
-      .join('|');
+    // Polygons share the brush atlas.
+    const polygons = recipe.masks.flatMap((m) => m.components.filter((c): c is PolygonComponent => c.kind === 'polygon' && c.points.length >= 6));
+    const key = [
+      ...brushes.map((c) => `${c.id}:${c.strokes.map((st) => `${st.erase ? 'e' : 'p'}${st.size},${st.feather},${st.flow},${st.density},${st.points.length},${st.points[0]},${st.points.at(-1)}`).join(';')}`),
+      ...polygons.map((c) => `${c.id}:poly${polygonKey(c.points)}`),
+    ].join('|');
     if (key !== this.brushKey) {
       this.brushKey = key;
       this.brushRaster.retain(new Set(brushes.map((c) => c.id)));
-      const atlas = packBrushAtlas(brushes.map((c) => ({ id: c.id, map: this.brushRaster.rasterize(c, fx, fy) })), this.maxTextureSize);
+      this.polygonRaster.retain(new Set(polygons.map((c) => c.id)));
+      const maps = [
+        ...brushes.map((c) => ({ id: c.id, map: this.brushRaster.rasterize(c, fx, fy) })),
+        ...polygons.map((c) => ({ id: c.id, map: this.polygonRaster.rasterize(c, fx, fy) })),
+      ];
+      const atlas = packBrushAtlas(maps, this.maxTextureSize);
       this.brushTex = this.uploadAtlas(this.brushTex, atlas);
       // No atlas: a texture of zeros, so nothing reads an unbound sampler.
       this.ctx.setShared('uBrush', atlas ? this.brushTex : this.dummy);
@@ -752,8 +769,15 @@ export class Renderer {
     overlay: string | null = null,
     /** Full-resolution crop frame in pixels, for vignetting and grain; null = no post-crop effects. */
     outPx: [number, number] | null = null,
+    /** Colour space of the finished image (exports); sRGB for everything on screen. */
+    out: OutputColor = SRGB8,
   ): void {
     const { camera } = this.requireSource();
+    const wide = out.space !== 'srgb';
+    const tone = wide ? this.wide().tone : this.p.tone;
+    const finish = wide ? this.wide().finish : this.p.finish;
+    const outInfo = OUTPUT_SPACE_INFO[out.space];
+    const outU: Record<string, Float32Array | number> = wide ? { uSrgbToOut: toGlMat3(outInfo.fromSrgb), uOutGamma: outInfo.gamma ?? 0 } : {};
     const transTex = an.dehaze.uDehazeMode === 1 && an.trans ? an.trans : this.dummy;
     const mu = maskUniforms(recipe, maskFrameScale(camera.fullWidth, camera.fullHeight), overlay, this.maskResources(recipe, frame));
     const { uses, ...masks } = mu;
@@ -786,7 +810,7 @@ export class Renderer {
     const prof = this.profileFor(recipe);
     const pt = this.profileTextures(prof);
     this.ctx.draw(
-      this.p.tone,
+      tone,
       T.dev,
       {
         uLin: lin.tex,
@@ -821,12 +845,13 @@ export class Renderer {
       this.ctx.draw(this.p.blur, T.blurA, { uTex: T.dev.tex }, { uDir: new Int32Array([1, 0]), uSigma: fu.blurSigma, uConvert: 1 });
       this.ctx.draw(this.p.blur, T.blurB, { uTex: T.blurA.tex }, { uDir: new Int32Array([0, 1]), uSigma: fu.blurSigma, uConvert: 0 });
     }
-    this.ctx.draw(this.p.finish, T.fin, { uDev: T.dev.tex, uBlur: needBlur ? T.blurB.tex : T.dev.tex }, {
+    this.ctx.draw(finish, T.fin, { uDev: T.dev.tex, uBlur: needBlur ? T.blurB.tex : T.dev.tex }, {
       ...u,
       uSharpen: needBlur ? [fu.uSharpen[0]!, fu.uSharpen[1]!, fu.uSharpen[2]!, fu.uSharpen[3]!] : [0, 0, 0, 0],
       uShowMask: sharpenView,
       uMaskSharp: maskSharp ? 1 : 0,
       ...effectsUniforms(recipe.effects, outPx),
+      ...outU,
     });
   }
 
@@ -966,25 +991,27 @@ export class Renderer {
 
   /** Histogram of the last fitted render (display values, inside the image only). */
   histogram(): Histogram | null {
+    const img = this.scopeImage(256);
+    return img && histogramOf(img);
+  }
+
+  /**
+   * A small copy of the last fitted render for the scopes: `width` pixels wide, display values,
+   * alpha below 128 outside the image.
+   */
+  scopeImage(width: number): ScopeImage | null {
     const gl = this.gl;
     const fin = this.t['fit.fin'];
     if (!fin) return null;
-    const tw = 256;
-    const th = Math.max(1, Math.round((256 * fin.height) / fin.width));
+    const tw = Math.max(1, Math.round(width));
+    const th = Math.max(1, Math.round((tw * fin.height) / fin.width));
     const thumb = this.target('thumb', tw, th, gl.RGBA8);
     this.ctx.draw(this.p.thumb, thumb, { uImg: fin.tex }, { uSize: [tw, th] });
-    const px = new Uint8Array(tw * th * 4);
+    // The chain's targets hold the top of the image in row 0 (FS_PRESENT flips), so no flip here.
+    const data = new Uint8Array(tw * th * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, thumb.fb);
-    gl.readPixels(0, 0, tw, th, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    const h: Histogram = { r: new Uint32Array(256), g: new Uint32Array(256), b: new Uint32Array(256), total: 0 };
-    for (let i = 0; i < px.length; i += 4) {
-      if (px[i + 3]! < 128) continue;
-      h.r[px[i]!]!++;
-      h.g[px[i + 1]!]!++;
-      h.b[px[i + 2]!]!++;
-      h.total++;
-    }
-    return h;
+    gl.readPixels(0, 0, tw, th, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    return { width: tw, height: th, data };
   }
 
   /**
@@ -1059,21 +1086,63 @@ export class Renderer {
   }
 
   /**
-   * Renders the full-resolution image in tiles and returns RGBA8 pixels.
+   * Renders the full-resolution image in tiles and returns 8-bit sRGB pixels.
    * `full` must be the full decode; `recipe` is rendered in edit mode (cropped).
    */
   async exportImage(recipe: Recipe, full: SourceImage, onProgress?: ExportProgress): Promise<ImageData> {
+    const p = await this.exportPixels(recipe, full, SRGB8, onProgress);
+    return new ImageData(p.data as Uint8ClampedArray<ArrayBuffer>, p.width, p.height);
+  }
+
+  /**
+   * Renders the full-resolution image in tiles, in the colour space and bit depth `out` asks
+   * for: RGBA, 0-255 or 0-65535, encoded with that space's curve.
+   */
+  async exportPixels(recipe: Recipe, full: SourceImage, out: OutputColor, onProgress?: ExportProgress): Promise<Pixels> {
     const { width: W, height: H } = this.exportSize(recipe);
-    const out = new Uint8ClampedArray(W * H * 4);
     const rects: Rect[] = [];
     for (let y = 0; y < H; y += TILE) {
       for (let x = 0; x < W; x += TILE) rects.push({ x, y, w: Math.min(TILE, W - x), h: Math.min(TILE, H - y) });
     }
-    await this.renderRects(recipe, full, rects, TILE, 'export', (r, buf) => {
-      for (let row = 0; row < r.h; row++) out.set(buf.subarray(row * r.w * 4, (row + 1) * r.w * 4), ((r.y + row) * W + r.x) * 4);
-    }, onProgress);
-    for (let i = 3; i < out.length; i += 4) out[i] = 255;
-    return new ImageData(out, W, H);
+    if (out.bits === 16) {
+      const data = new Uint16Array(W * H * 4);
+      await this.renderRects<Float32Array>(
+        recipe,
+        full,
+        rects,
+        TILE,
+        'export',
+        (r, buf) => {
+          for (let row = 0; row < r.h; row++) {
+            const src = row * r.w * 4;
+            const dst = ((r.y + row) * W + r.x) * 4;
+            for (let i = 0; i < r.w * 4; i++) {
+              const v = buf[src + i]!;
+              data[dst + i] = v <= 0 ? 0 : v >= 1 ? 65535 : Math.round(v * 65535);
+            }
+          }
+        },
+        onProgress,
+        out,
+      );
+      for (let i = 3; i < data.length; i += 4) data[i] = 65535;
+      return { data, width: W, height: H, bits: 16, space: out.space };
+    }
+    const data = new Uint8ClampedArray(W * H * 4);
+    await this.renderRects(
+      recipe,
+      full,
+      rects,
+      TILE,
+      'export',
+      (r, buf) => {
+        for (let row = 0; row < r.h; row++) data.set(buf.subarray(row * r.w * 4, (row + 1) * r.w * 4), ((r.y + row) * W + r.x) * 4);
+      },
+      onProgress,
+      out,
+    );
+    for (let i = 3; i < data.length; i += 4) data[i] = 255;
+    return { data, width: W, height: H, bits: 8, space: out.space };
   }
 
   /** Size of the full-resolution image exportImage renders for `recipe`. */
@@ -1100,16 +1169,17 @@ export class Renderer {
 
   /**
    * Renders rectangles (at most tile x tile) of the full-resolution frame from the full decode and
-   * hands each one's RGBA rows (r.w wide, packed) to `sink`.
+   * hands each one's RGBA rows (r.w wide, packed) to `sink`: bytes, or floats (0..1) for 16-bit.
    */
-  private async renderRects(
+  private async renderRects<B extends Uint8Array | Float32Array = Uint8Array>(
     recipe: Recipe,
     full: SourceImage,
     rects: Rect[],
     tile: number,
     prefix: 'export' | 'region',
-    sink: (r: Rect, rgba: Uint8Array) => void,
+    sink: (r: Rect, rgba: B) => void,
     onProgress?: ExportProgress,
+    out: OutputColor = SRGB8,
   ): Promise<void> {
     const gl = this.gl;
     const an = this.analyze(recipe, this.frameFor(recipe, 'edit'));
@@ -1146,8 +1216,9 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     const srcF = this.ctx.target(maxSw, maxSh, gl.RGBA16F);
-    const T = this.chainTargets(prefix, R, R);
-    const buf = new Uint8Array(tile * tile * 4);
+    const T = this.chainTargets(prefix, R, R, out.bits);
+    const float = out.bits === 16;
+    const buf = (float ? new Float32Array(tile * tile * 4) : new Uint8Array(tile * tile * 4)) as B;
     try {
       for (let i = 0; i < tiles.length; i++) {
         const tl = tiles[i]!;
@@ -1170,9 +1241,12 @@ export class Renderer {
           'none',
           null,
           [W, H],
+          out,
         );
         gl.bindFramebuffer(gl.FRAMEBUFFER, T.fin.fb);
-        gl.readPixels(APRON, APRON, tl.w, tl.h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        gl.readPixels(APRON, APRON, tl.w, tl.h, gl.RGBA, float ? gl.FLOAT : gl.UNSIGNED_BYTE, buf);
+        // A lost context reads back zeros: fail rather than write a black file.
+        if (this.isLost) throw new Error('The graphics context was lost while exporting (often when the computer runs low on memory). Try again.');
         sink({ x: tl.x0, y: tl.y0, w: tl.w, h: tl.h }, buf);
         onProgress?.(i + 1, tiles.length);
         await new Promise((res) => setTimeout(res, 0));

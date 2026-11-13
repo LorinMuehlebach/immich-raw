@@ -1,6 +1,6 @@
 // Local adjustments (Lightroom's Masking panel). A mask is built from components (gradients,
-// brush strokes, range masks) that are added, subtracted or intersected, and carries its own
-// sliders.
+// brush strokes, polygons, range masks) that are added, subtracted or intersected, and carries
+// its own sliders.
 //
 // Geometry lives in the "mask frame": the decoded image in sensor orientation, scaled so
 // the longer side is 1 (x in [0, W/max], y in [0, H/max], y down). It is isotropic, so a
@@ -11,8 +11,10 @@ import { clampParam, type ParamSpec } from './params.ts';
 export const MAX_MASKS = 8;
 /** Components across all masks (the shader evaluates them in one loop). */
 export const MAX_COMPONENTS = 24;
-/** Brush components across all masks (each one is a texture in the shader). */
+/** Brush and polygon components across all masks (each one is a map in the shader's brush atlas). */
 export const MAX_BRUSHES = 8;
+/** Corners of one polygon (a lasso is simplified down to this). */
+export const MAX_POLYGON_POINTS = 500;
 /** Sample points of one colour range component (Lightroom allows 5). */
 export const MAX_COLOR_SAMPLES = 5;
 /** Points across all strokes of one brush component, to keep the recipe small. */
@@ -23,7 +25,7 @@ export const MAX_AI = 8;
 export const MAX_OBJECT_POINTS = 64;
 
 export type MaskMode = 'add' | 'subtract' | 'intersect';
-export type ComponentKind = 'linear' | 'radial' | 'luminance' | 'brush' | 'color' | 'ai';
+export type ComponentKind = 'linear' | 'radial' | 'luminance' | 'brush' | 'polygon' | 'color' | 'ai';
 
 interface ComponentBase {
   id: string;
@@ -84,6 +86,18 @@ export interface BrushStroke {
 export interface BrushComponent extends ComponentBase {
   kind: 'brush';
   strokes: BrushStroke[];
+}
+
+/**
+ * A closed shape, filled: drawn corner by corner, or freehand (the lasso). Its edge is sharp
+ * (anti-aliased); the part's edge settings soften it. Lightroom has no polygon mask.
+ */
+export interface PolygonComponent extends ComponentBase {
+  kind: 'polygon';
+  /** Corners, flat [x0, y0, x1, y1, ...] in the mask frame; the last one joins the first. */
+  points: number[];
+  /** Drawn freehand: edited as a whole (moved), not corner by corner. */
+  freehand?: boolean;
 }
 
 /** A point (or small disc of radius r, mask-frame units) whose colour the range selects. */
@@ -166,7 +180,7 @@ export interface AiComponent extends ComponentBase {
   points?: number[];
 }
 
-export type MaskComponent = LinearComponent | RadialComponent | LuminanceComponent | BrushComponent | ColorComponent | AiComponent;
+export type MaskComponent = LinearComponent | RadialComponent | LuminanceComponent | BrushComponent | PolygonComponent | ColorComponent | AiComponent;
 
 export interface LocalAdjustments {
   temp: number;
@@ -269,6 +283,7 @@ export const COMPONENT_LABELS: Record<ComponentKind, string> = {
   radial: 'Radial Gradient',
   luminance: 'Luminance Range',
   brush: 'Brush',
+  polygon: 'Polygon',
   color: 'Color Range',
   ai: 'AI Selection',
 };
@@ -288,6 +303,13 @@ export function aiLabel(c: Pick<AiComponent, 'target' | 'parts' | 'classes' | 'p
     return what ? `${base} – ${what}` : base;
   }
   return base;
+}
+
+/** Name of a part, as the panel and the history show it. */
+export function componentLabel(c: MaskComponent): string {
+  if (c.kind === 'ai') return aiLabel(c);
+  if (c.kind === 'polygon' && c.freehand) return 'Lasso';
+  return COMPONENT_LABELS[c.kind];
 }
 
 export const shortId = (): string => Math.random().toString(36).slice(2, 10);
@@ -323,6 +345,7 @@ export function newComponent(kind: ComponentKind, mode: MaskMode = 'add'): MaskC
   if (kind === 'linear') return { ...base, kind, x0: 0.5, y0: 0.2, x1: 0.5, y1: 0.45 };
   if (kind === 'radial') return { ...base, kind, cx: 0.5, cy: 0.33, rx: 0.2, ry: 0.15, angle: 0, feather: 50 };
   if (kind === 'brush') return { ...base, kind, strokes: [] };
+  if (kind === 'polygon') return { ...base, kind, points: [] };
   if (kind === 'color') return { ...base, kind, samples: [], refine: 50 };
   if (kind === 'ai') return { ...base, kind, target: 'subject' };
   return { ...base, kind, lo: 50, hi: 100, smooth: 20 };
@@ -427,6 +450,20 @@ function normalizeComponentShape(input: unknown): MaskComponent | null {
       }
       return { ...base, kind: 'brush', strokes };
     }
+    case 'polygon': {
+      const pts: number[] = [];
+      const src = Array.isArray(input.points) ? input.points : [];
+      for (let i = 0; i + 1 < src.length && pts.length < MAX_POLYGON_POINTS * 2; i += 2) {
+        const x = src[i];
+        const y = src[i + 1];
+        if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) pts.push(quant(clampNum(x, -2, 3)), quant(clampNum(y, -2, 3)));
+      }
+      // A shape needs three corners.
+      if (pts.length < 6) return null;
+      const c: PolygonComponent = { ...base, kind: 'polygon', points: pts };
+      if (input.freehand === true) c.freehand = true;
+      return c;
+    }
     case 'color': {
       const samples: ColorSample[] = [];
       for (const sm of Array.isArray(input.samples) ? input.samples : []) {
@@ -516,8 +553,8 @@ export function normalizeMasks(input: unknown): Mask[] {
 /** Total number of components, to check against MAX_COMPONENTS before adding one. */
 export const componentCount = (masks: Mask[]): number => masks.reduce((n, m) => n + m.components.length, 0);
 
-/** Brush components across all masks, to check against MAX_BRUSHES. */
-export const brushCount = (masks: Mask[]): number => masks.reduce((n, m) => n + m.components.filter((c) => c.kind === 'brush').length, 0);
+/** Brush and polygon components across all masks, to check against MAX_BRUSHES. */
+export const brushCount = (masks: Mask[]): number => masks.reduce((n, m) => n + m.components.filter((c) => c.kind === 'brush' || c.kind === 'polygon').length, 0);
 
 /** AI components across all masks, to check against MAX_AI. */
 export const aiCount = (masks: Mask[]): number => masks.reduce((n, m) => n + m.components.filter((c) => c.kind === 'ai').length, 0);

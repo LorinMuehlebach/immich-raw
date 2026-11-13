@@ -2,16 +2,19 @@
 // every change to the recipe goes through here so history and re-rendering stay in sync.
 import {
   AssetFileType,
+  deleteAssetMetadata,
+  deleteAssets,
   downloadAssetFile,
   getAlbumInfo,
   getAssetInfo,
   getAssetMetadata,
   searchAssetFiles,
   updateAssetMetadata,
+  updateStack,
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
-import { RawSession, readFujiFilmSim, setLibRawUrl, type FujiFilmSim, type LinearImage } from '@immich-raw/decoder';
+import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
@@ -34,20 +37,31 @@ import {
   isTransformActive,
   maxViewRect,
   quarterTurnsFromFlip,
+  SCOPE_KINDS,
+  SCOPE_SAMPLE_WIDTH,
   sampleSource,
+  scopeOf,
+  simplifyPolygon,
   tempTintForNeutral,
   totalTurns,
   transformInverse,
+  uprightMatrix,
   uprightSize,
   viewToCrop,
   withAspect,
+  asImageData,
+  SRGB8,
   type Affine,
   type AutoParams,
   type CameraInfo,
   type Histogram,
   type LensData,
   type MaskView,
+  type OutputColor,
+  type Pixels,
   type ProfileLooks,
+  type ScopeData,
+  type ScopeKind,
   type ViewRect,
 } from '@immich-raw/pipeline';
 import {
@@ -63,6 +77,8 @@ import {
   MAX_BRUSHES,
   MAX_BRUSH_POINTS,
   MAX_OBJECT_POINTS,
+  MAX_POLYGON_POINTS,
+  MAX_UPRIGHT_GUIDES,
   aiCount,
   aiLabel,
   newAiComponent,
@@ -71,6 +87,7 @@ import {
   MAX_MASKS,
   brushCount,
   componentCount,
+  componentLabel,
   newComponent,
   newMask,
   defaultEdge,
@@ -107,6 +124,7 @@ import {
   type Mask,
   type MaskComponent,
   type MaskMode,
+  type PolygonComponent,
   type MaskEdge,
   type MixerChannel,
   type ParamSpec,
@@ -118,9 +136,14 @@ import {
 } from '@immich-raw/recipe';
 import { apiUrl, authHeaders, getServerVersionInfo, getSession, initApi, serverVersionWarning, setApiKey } from '../immich/api.ts';
 import { buildDng, LOSSY_QUALITY, type BuiltDng, type DngMode, type Verification } from '../dng/convert.ts';
-import { downloadOriginal } from '../immich/download.ts';
+import { hasDecoded, readDecoded, writeDecoded } from '../immich/decoded-cache.ts';
+import { keepView, readView, type KeptView } from '../immich/view-cache.ts';
+import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
+import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
+import { canPrefetch, decodeNeighbour, fetchNeighbour, resetPrefetch } from '../immich/prefetch.ts';
 import { cacheDng, convertBlocked, replaceWithDng, type DeleteMode, type ReplaceStep } from '../immich/replace.ts';
-import { canEdit, loadRecipe, saveRender, type SaveStep } from '../immich/save.ts';
+import { canEdit, errorMessage, readMetadata, saveRender, writeMetadata, type SaveStep } from '../immich/save.ts';
+import { copiesIn, copyInfo, copyKey, copyValue, historyKeyFor, newCopy, parseCopy, storedEdit, type CopyInfo, type CopyMeta } from '../immich/copies.ts';
 import { History, editable, editableJson, type HistoryStep } from './history.ts';
 import {
   DEFAULT_EXPORT_SETTINGS,
@@ -130,10 +153,12 @@ import {
   type ExportPreset,
   type ExportPresetId,
   type ExportSettings,
+  type SaveSettings,
 } from './export-settings.ts';
 import { downloadBlob } from '../download.ts';
+import { loadLogoBitmap } from './logos.ts';
 import { captureDate } from '../export/metadata.ts';
-import { finishExport, type ExportFile } from '../export/output.ts';
+import { finishExport, outputColor, type ExportFile } from '../export/output.ts';
 import { parseContext } from '../immich/context.ts';
 import { newId } from '../id.ts';
 import { anchoredCentre, fitScale, nextScale } from './zoom.ts';
@@ -145,21 +170,44 @@ import { PATCH, UpscaleState } from './upscale.svelte.ts';
 import { UPSCALE_QUALITY, checkUpscale, formatDuration, upscaledDownloadName, type UpscaleCheck } from './upscale.ts';
 import { FUJI_DECLINED, fujiLooks } from '../fuji-looks.svelte.ts';
 import { photoDefaults, type PhotoDefaults } from '../photo-defaults.ts';
+import { OPEN_LABELS, beginStep, endStep, newOpenSteps, type OpenStep, type OpenStepId } from './open-progress.ts';
+import {
+  cameraKey,
+  estimateDecodeMs,
+  estimateCachedMs,
+  estimateDownloadMs,
+  estimateFullMs,
+  estimateInfoMs,
+  estimateReadMs,
+  estimateShowMs,
+  loadOpenTimes,
+  recordFull,
+  recordOpen,
+  saveOpenTimes,
+  type OpenSample,
+  type OpenTimes,
+} from './open-times.ts';
 
 export type Status = 'loading' | 'auth' | 'error' | 'ready';
 /**
  * 'tat': Lightroom's targeted adjustment tool (drag on the photo to change the Color Mixer).
  * 'mask': the Masking panel with its on-image handles.
+ * 'upright': Guided Upright, guides drawn on the whole (uncropped) photo.
  */
-export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale';
+export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale' | 'upright';
 
 /** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
 export interface MaskDraft {
-  /** object: Lightroom's Objects (drag a box around it, or click it). */
-  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object';
+  /**
+   * object: Lightroom's Objects (drag a box around it, or click it). polygon: click the
+   * corners; lasso: drag around the area.
+   */
+  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object' | 'polygon' | 'lasso';
   mode: MaskMode;
   /** Mask to add it to; null = create a new mask. */
   maskId: string | null;
+  /** Polygon: the corners clicked so far, flat [x, y, ...] in the mask frame. */
+  points?: number[];
 }
 
 /** The People or Landscape choices before the AI mask is made. */
@@ -176,7 +224,7 @@ export interface AiPicker {
 const MODE_VERB: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
 
 /** History name of a mask part. */
-const partLabel = (c: MaskComponent) => (c.kind === 'ai' ? aiLabel(c) : COMPONENT_LABELS[c.kind]);
+const partLabel = componentLabel;
 
 /** Brush settings (Lightroom's brush panel); each stroke keeps the values it was painted with. */
 export interface BrushSettings {
@@ -214,6 +262,10 @@ export interface Snapshot {
 /** Shown while a zoomed view waits for the full-resolution decode; cleared when it is there. */
 const HALF_SIZE_NOTICE = 'Showing the half-size preview until the full-resolution decode finishes.';
 const FULL_FAILED_NOTICE = 'The full-resolution decode failed, so zooming in shows the half-size preview.';
+/** For estimates before Immich has said how big the RAW is. */
+const TYPICAL_RAW_BYTES = 50e6;
+/** Thrown inside an open when another photo was opened meanwhile; not an error. */
+const SUPERSEDED = Symbol('superseded');
 
 export interface ZoomState {
   on: boolean;
@@ -279,18 +331,25 @@ const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   render: 'Rendering',
   resize: 'Resizing',
   sharpen: 'Sharpening',
-  encode: 'Encoding JPEG',
+  encode: 'Encoding',
   prepare: 'Preparing',
   upload: 'Uploading',
-  metadata: 'Copying date, location and albums',
+  metadata: 'Copying date, location, albums and tags',
   stack: 'Stacking with the RAW',
   recipe: 'Saving edit settings',
   cleanup: 'Moving the previous version to trash',
 };
 
+/** What Save did with the stack, from the RAW's stack front after saving. */
+function savedNotice(front: string | undefined, rawId: string, renderId: string | null, saved = 'Saved'): string {
+  if (front && front === renderId) return `${saved} to Immich, stacked on top of the RAW.`;
+  if (front === rawId) return `${saved} to Immich, in the RAW's stack behind the RAW.`;
+  return `${saved} to Immich, in the RAW's stack.`;
+}
+
 const UPSCALE_SAVE_LABEL: Record<UpscaleSaveStep, string> = {
   upload: 'Uploading',
-  metadata: 'Copying date, location and albums',
+  metadata: 'Copying date, location, albums and tags',
   stack: 'Stacking with the RAW',
 };
 
@@ -325,6 +384,13 @@ const COLOR_FALLBACK = "The Fujifilm film look isn't downloaded in this browser,
 const PREVIOUS_KEY = 'raw-editor.previous';
 const AUTO_PARAMS_KEY = 'raw-editor.autoParams';
 const EXPORT_KEY = 'raw-editor.export';
+const SCOPE_KEY = 'raw-editor.scope';
+
+/** Snapshots stored under `key` in a metadata listing. */
+function snapshotsIn(items: readonly { key: string; value: unknown }[], key: string): Snapshot[] {
+  const v = items.find((i) => i.key === key)?.value as { snapshots?: Snapshot[] } | undefined;
+  return Array.isArray(v?.snapshots) ? v.snapshots.filter((s) => s && typeof s.state === 'string') : [];
+}
 
 function storageGet<T>(key: string): T | null {
   try {
@@ -359,7 +425,10 @@ export const ALT_VIEW: Partial<Record<string, MaskView>> = {
 export class Editor {
   status = $state<Status>('loading');
   loadingText = $state('Loading…');
-  loadingProgress = $state<number | null>(null);
+  /** The steps of opening the photo, for the loading screen (empty until the session is checked). */
+  openSteps = $state<OpenStep[]>([]);
+  /** The running full-resolution decode: when it started and how long it should take. */
+  fullEta = $state<{ startedAt: number; estimateMs: number } | null>(null);
   error = $state<string | null>(null);
   warning = $state<string | null>(null);
   notice = $state<string | null>(null);
@@ -376,6 +445,9 @@ export class Editor {
   clipping = $state(false);
   maskView = $state<MaskView>('none');
   histogram = $state<Histogram | null>(null);
+  /** Which scope shows above the panels (kept in this browser), and its data when it isn't the histogram. */
+  scope = $state<ScopeKind>(SCOPE_KINDS.find((k) => k === storageGet<string>(SCOPE_KEY)) ?? 'histogram');
+  scopeData = $state<ScopeData | null>(null);
   fullStatus = $state<'idle' | 'decoding' | 'ready' | 'error'>('idle');
   /** A save, export or upscale in progress; `cancel` when it can be stopped. */
   saving = $state<{ label: string; fraction: number; cancel?: () => void } | null>(null);
@@ -384,6 +456,10 @@ export class Editor {
   historySteps = $state<HistoryStep[]>([]);
   historyIndex = $state(0);
   snapshots = $state<Snapshot[]>([]);
+  /** The virtual copy being edited; null = the original edit. */
+  copyId = $state<string | null>(null);
+  /** The RAW's virtual copies (Lightroom's), in the order they were made. */
+  copies = $state<CopyInfo[]>([]);
   hasClipboard = $state(false);
   hasPrevious = $state(false);
   sidecarOffer = $state<SidecarOffer | null>(null);
@@ -469,24 +545,57 @@ export class Editor {
   private pastRenders = new Set<string>();
   /** The render made by a save in this session (Immich may still be making its preview). */
   private savedRenderId: string | null = null;
+  /** How long opens took in this browser (for the loading screen's estimates). */
+  private openTimes: OpenTimes = { cameras: {} };
+  /** The open photo's camera (open-times.ts) and the size of its RAW file. */
+  private cameraKey = '';
+  private fileBytes = 0;
+  /** Photos next to this one to get ready in the background, and those already done. */
+  private prefetchWanted: string[] = [];
+  /** Photos whose download was tried, and the checksums of those fetched (to decode next). */
+  private prefetchTried = new Set<string>();
+  private prefetchFetched = new Map<string, string>();
+  private prefetchDecodeTried = new Set<string>();
+  private prefetchMayDecode = false;
+  private fetching = false;
+  private decoding = false;
+  /** The open photo's half-size image is in the cache (or won't be): neighbours come after it. */
+  private decodedKept: Promise<void> = Promise.resolve();
+  /** When the download's progress was last shown. */
+  private lastBytesShown = 0;
+  /** The canvas the renderer draws on; the renderer is made once and kept for every photo. */
+  private canvas: HTMLCanvasElement | null = null;
+  /** Counts the photos opened in this page: an open that isn't the latest stops (SUPERSEDED). */
+  private photoGen = 0;
+  /** Stops the running open's download and half-size decode when another photo is opened. */
+  private openStop = new AbortController();
+  /** The photo and saved state whose look was last kept for the loading screen (keepViewIfPlain). */
+  private viewKept = '';
+  /** The same for the background work on the photos around it. */
+  private prefetchStop = new AbortController();
 
   dirty = $derived(editableJson(this.recipe) !== this.savedJson);
 
   // ---------------------------------------------------------------- loading
 
   async load(canvas: HTMLCanvasElement): Promise<void> {
-    const params = new URLSearchParams(location.search);
-    const assetId = params.get('asset');
-    const ret = params.get('return');
-    this.returnPath = ret && isSafeReturnPath(ret) ? ret : null;
-    this.ctx = params.get('ctx');
+    this.canvas = canvas;
+    const assetId = this.readUrl();
     this.hasClipboard = !!storageGet(CLIPBOARD_KEY);
     this.hasPrevious = !!storageGet(PREVIOUS_KEY);
     setLibRawUrl(`${import.meta.env.BASE_URL}libraw/index.js`);
     initApi();
 
     try {
+      // From navigating here until the app runs (loading the page and its scripts).
+      try {
+        performance.measure('immich-raw:page start', { start: 0, end: performance.now() });
+      } catch {
+        // no User Timing: nothing to show in DevTools
+      }
+      const doneSession = startMeasure('session');
       this.me = await getSession();
+      doneSession();
       if (!this.me) {
         this.status = 'auth';
         return;
@@ -495,17 +604,212 @@ export class Editor {
       getServerVersionInfo()
         .then((v) => (this.warning = serverVersionWarning(v)))
         .catch(() => {});
+      await this.openPhoto(assetId, this.photoGen);
+    } catch (e) {
+      if (e !== SUPERSEDED) this.fail(e);
+    }
+  }
 
-      this.loadingText = 'Loading photo info…';
+  /** The photo, context and return path in the address bar; the photo's id. */
+  private readUrl(): string | null {
+    const params = new URLSearchParams(location.search);
+    const ret = params.get('return');
+    this.returnPath = ret && isSafeReturnPath(ret) ? ret : null;
+    this.ctx = params.get('ctx');
+    return params.get('asset');
+  }
+
+  /**
+   * Opens another photo in this page: the filmstrip, the arrow keys, and the browser's Back and
+   * Forward. The page, the renderer with its compiled shaders, the filmstrip and the decoder stay.
+   * `url`: 'push' adds the photo to the browser's history; 'none' when the address already
+   * changed (Back and Forward).
+   */
+  async switchPhoto(id: string, url: 'push' | 'none' = 'push'): Promise<void> {
+    if (this.saving) return;
+    if (url === 'push') history.pushState(null, '', this.urlFor(id));
+    this.readUrl();
+    this.closePhoto();
+    const gen = ++this.photoGen;
+    // This photo's step timings only (DevTools, the probes).
+    performance.clearMeasures?.();
+    try {
+      await this.openPhoto(id, gen);
+    } catch (e) {
+      if (e !== SUPERSEDED && gen === this.photoGen) this.fail(e);
+    }
+  }
+
+  /**
+   * Puts away the open photo before the next one opens: stops its background work (the
+   * full-resolution decode is cancelled; what else finishes later finds it gone) and resets
+   * everything that belongs to it.
+   */
+  private closePhoto(): void {
+    this.openStop.abort();
+    this.session?.close();
+    this.session = null;
+    this.fullImage = null;
+    this.camera = null;
+    this.status = 'loading';
+    this.error = null;
+    this.notice = null;
+    this.fullStatus = 'idle';
+    this.fullEta = null;
+    if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
+    this.previewUrl = null;
+    this.recipe = defaultRecipe();
+    this.savedJson = editableJson(this.recipe);
+    this.history.reset($state.snapshot(this.recipe) as Recipe, 'Open');
+    this.syncHistory();
+    this.snapshots = [];
+    this.copies = [];
+    this.copyId = null;
+    this.sidecarOffer = null;
+    this.fujiOffer = null;
+    this.dngDialog = null;
+    this.dngBuilt = null;
+    this.exportDialog = null;
+    this.tool = 'edit';
+    this.before = false;
+    this.maskView = 'none';
+    this.histogram = null;
+    this.scopeData = null;
+    this.uprightSel = null;
+    if (this.histogramTimer) clearTimeout(this.histogramTimer);
+    this.histogramTimer = null;
+    this.zoom = { on: false, cx: 0.5, cy: 0.5, scale: 1 };
+    this.cropAuto = true;
+    this.maskSel = { mask: null, comp: null };
+    this.maskDraft = null;
+    this.aiPicker = null;
+    this.maskEditing = 'shape';
+    this.lensInfo = { searching: false, profile: null, lensName: '', autoName: '', candidates: [], caText: '' };
+    this.lensQuery = null;
+    this.dngLens = null;
+    this.lensData = NO_LENS;
+    this.lensFor = null;
+    this.caFrom = null;
+    this.pendingLabel = 'Edit';
+    this.previewRecipe = null;
+    this.tatDrag = null;
+    this.autoApplied = null;
+    this.autoSamples = null;
+    this.drawLabel = null;
+    this.stroke = null;
+    this.defaults = { recipe: defaultRecipe(), wanted: null, simLabel: null };
+    this.fujiSim = null;
+    this.storedEdit = false;
+    this.pastRenders = new Set();
+    this.savedRenderId = null;
+    this.decodedKept = Promise.resolve();
+    this.viewKept = '';
+    this.previewRun++;
+    this.upscale.preview = null;
+    this.upscale.previewStatus = null;
+    this.upscale.previewError = null;
+    this.ai.reset();
+    this.renderer?.releaseZoom();
+    this.renderer?.setLens(NO_LENS);
+    // The photos around the new one get pinned and fetched afresh. A download or decode still
+    // running stops: the new photo may need the network and the processor (it may even be that photo).
+    this.prefetchStop.abort();
+    this.prefetchStop = new AbortController();
+    this.prefetchWanted = [];
+    this.prefetchTried.clear();
+    this.prefetchFetched.clear();
+    this.prefetchDecodeTried.clear();
+    this.prefetchMayDecode = false;
+    resetPrefetch();
+  }
+
+  /** The steps of opening one photo, up to its first render; background work starts at the end. */
+  private async openPhoto(assetId: string, gen: number): Promise<void> {
+    const live = () => {
+      if (gen !== this.photoGen) throw SUPERSEDED;
+    };
+    const canvas = this.canvas!;
+    const stop = (this.openStop = new AbortController());
+    {
+      // The decoder's worker loads its WebAssembly while the photo info and the original arrive.
+      prewarmDecoder();
+      const now = () => performance.now();
+      const times = (this.openTimes = loadOpenTimes());
+      this.openSteps = newOpenSteps({
+        info: estimateInfoMs(times),
+        original: estimateDownloadMs(times, TYPICAL_RAW_BYTES),
+        decode: estimateDecodeMs(times, '', TYPICAL_RAW_BYTES),
+        show: estimateShowMs(times, ''),
+      });
+
+      beginStep(this.openSteps, 'info', now());
+      let done = startMeasure('asset info');
       const asset = await getAssetInfo({ id: assetId });
+      done();
+      live();
+      endStep(this.openSteps, 'info', now());
       if (!isRawFilename(asset.originalFileName)) throw new Error(`${asset.originalFileName} is not a RAW file.`);
       this.asset = asset;
-      this.readOnly = !canEdit(asset, this.me);
+      this.readOnly = !canEdit(asset, this.me!);
       document.title = `${asset.originalFileName} · immich-raw`;
-      this.showServerPreview(asset.id);
+      // What the photo looked like here last time; whether it still applies depends on the saved edit.
+      const viewP = readView(asset.checksum);
+      // The cache never pushes out the photo being edited while it is open.
+      unpinPhotos();
+      pinPhoto(asset.checksum);
+      const camera = (this.cameraKey = cameraKey(asset.exifInfo?.make, asset.exifInfo?.model, asset.originalFileName));
+      this.fileBytes = asset.exifInfo?.fileSizeInByte ?? 0;
+      const sizeGuess = this.fileBytes || TYPICAL_RAW_BYTES;
+      this.estimateStep('original', estimateDownloadMs(times, sizeGuess));
+      this.estimateStep('decode', estimateDecodeMs(times, camera, sizeGuess));
+      this.estimateStep('show', estimateShowMs(times, camera));
 
-      const [stored, snapshots] = await Promise.all([loadRecipe(asset.id).catch(() => null), this.loadSnapshots(asset.id)]);
-      this.snapshots = snapshots;
+      // The original downloads (or comes from this browser's cache) while the saved edit, the
+      // snapshots and a decoded copy of the photo kept from an earlier open load.
+      beginStep(this.openSteps, 'original', now());
+      const doneDownload = startMeasure('download');
+      const original = { from: null as DownloadProgress['from'] | null, endedAt: 0 };
+      const bytesP = downloadOriginal({ id: asset.id, checksum: asset.checksum }, (_f, p) => {
+        if (gen !== this.photoGen) return;
+        original.from = p.from;
+        if (p.received >= p.total && p.total > 0) original.endedAt = now();
+        this.originalProgress(p);
+      }, stop.signal);
+      bytesP.then(doneDownload, () => {});
+      const doneCacheRead = startMeasure('decoded cache read');
+      const cacheReadStarted = now();
+      let cachedMs: number | undefined;
+      const decodedP = readDecoded(asset.checksum).then((photo) => {
+        if (photo) {
+          doneCacheRead();
+          cachedMs = now() - cacheReadStarted;
+        }
+        return photo;
+      });
+      const decodedKept = hasDecoded(asset.checksum);
+      decodedKept.then((kept) => {
+        if (gen !== this.photoGen) return;
+        // Say so before the step starts: it takes a fraction of a decode.
+        const s = this.openSteps.find((x) => x.id === 'decode');
+        if (kept && s && s.startedAt === null) Object.assign(s, { label: OPEN_LABELS.decodeCached, estimateMs: estimateCachedMs(times, camera, sizeGuess) });
+      });
+      const bothKept = Promise.all([decodedKept, hasOriginal(asset.checksum)]).then(([d, o]) => d && o);
+      done = startMeasure('recipe and snapshots');
+      // One listing holds the edit, its snapshots and the virtual copies.
+      const items = await getAssetMetadata({ id: asset.id }).catch(() => []);
+      done();
+      live();
+      this.copies = copiesIn(items).map(copyInfo);
+      let copyId = new URLSearchParams(location.search).get('copy');
+      if (copyId && !this.copies.some((c) => c.id === copyId)) {
+        this.notice = 'That virtual copy no longer exists; the original edit is open.';
+        copyId = null;
+        this.setUrlCopy(null);
+      }
+      this.copyId = copyId;
+      const stored = storedEdit(items, copyId);
+      void this.showPreview(asset, stored, viewP, gen);
+      this.snapshots = snapshotsIn(items, historyKeyFor(copyId));
       this.storedEdit = !!stored;
       // Film looks kept in this browser (never downloads here).
       const looksP = fujiLooks.load();
@@ -515,40 +819,227 @@ export class Editor {
         if (stored.render?.assetId) this.pastRenders.add(stored.render.assetId);
       }
 
-      this.loadingText = 'Downloading original…';
-      const bytes = await downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => (this.loadingProgress = f));
-      this.loadingProgress = null;
-      this.loadingText = 'Decoding RAW…';
-      // The film simulation set in the camera (Fujifilm maker note); null for other files.
-      this.fujiSim = readFujiFilmSim(bytes);
-      const session = await RawSession.open(bytes);
-      this.session = session;
-      this.camera = cameraInfo(session.meta);
-      const looks = await looksP;
-      this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
-      if (!stored) {
-        this.recipe = cloneRecipe(this.defaults.recipe);
-        this.savedJson = editableJson(this.recipe);
-      }
+      // The shaders compile while this thread would otherwise wait: during the decode (in its
+      // worker), or, when both are cached, while the original and the kept decode are read. Not
+      // during a download: its chunks are read on this thread, and compiling blocks it.
+      // Made once, for the first photo of the page; later photos reuse it.
+      let renderer: Renderer | null = this.renderer;
+      let compiledAt = 0;
+      const makeRenderer = async (): Promise<Renderer> => {
+        // The pause lets the promise chains started just before go on first.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        done = startMeasure('renderer');
+        const r = new Renderer(canvas);
+        r.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
+        done();
+        compiledAt = now();
+        return r;
+      };
+      try {
+        if (!renderer && (await bothKept)) renderer = await makeRenderer();
+        const bytes = await bytesP;
+        live();
+        endStep(this.openSteps, 'original', now());
+        this.fileBytes = bytes.length;
+        // The film simulation set in the camera (Fujifilm maker note); null for other files.
+        this.fujiSim = readFujiFilmSim(bytes);
+        const cached = await decodedP;
+        live();
+        let session: RawSession;
+        let decodeMs: number | undefined;
+        if (cached) {
+          beginStep(this.openSteps, 'decode', now(), { label: OPEN_LABELS.decodeCached, estimateMs: estimateCachedMs(times, camera, bytes.length) });
+          session = RawSession.restore(bytes, cached.meta, cached.half);
+        } else {
+          const started = now();
+          beginStep(this.openSteps, 'decode', started, { estimateMs: estimateDecodeMs(times, camera, bytes.length) });
+          const doneDecode = startMeasure('half decode');
+          // The decode takes several round trips to its worker. Compile once the worker has the
+          // long one (unpacking), or a round trip waits for the compile.
+          let working!: () => void;
+          const workerBusy = new Promise<void>((resolve) => (working = resolve));
+          const sessionP = RawSession.open(bytes, () => working(), stop.signal).then((opened) => {
+            doneDecode();
+            // Right after a long compile (a new browser profile: seconds), the result waited for
+            // this thread, so the time says more about the compile than the decode.
+            if (now() - compiledAt > 30) decodeMs = now() - started;
+            return opened;
+          });
+          const settled = sessionP.then(
+            () => {},
+            () => {},
+          ); // the decode's error is thrown below, after the shaders
+          await Promise.race([workerBusy, settled]);
+          renderer ??= await makeRenderer();
+          session = await sessionP;
+          live();
+        }
+        renderer ??= await makeRenderer();
+        live();
+        endStep(this.openSteps, 'decode', now());
+        const showStarted = now();
+        beginStep(this.openSteps, 'show', showStarted);
+        this.session = session;
+        this.camera = cameraInfo(session.meta);
+        const looks = await looksP;
+        live();
+        this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
+        if (!stored) {
+          this.recipe = cloneRecipe(this.defaults.recipe);
+          this.savedJson = editableJson(this.recipe);
+        }
 
-      this.renderer = new Renderer(canvas);
-      this.renderer.onContextLost = () => (this.error = 'The graphics context was lost. Reload the page to continue.');
-      this.renderer.setSource(session.half, this.camera);
-      this.renderer.setProfileLooks(looks ?? {});
-      this.renderer.setPhotoDefaults(this.defaults.recipe);
-      this.ai.reset();
-      this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
-      this.loadLens(bytes);
-      this.syncHistory();
-      this.status = 'ready';
-      this.renderNow();
+        this.renderer = renderer;
+        this.renderer.setSource(session.half, this.camera);
+        this.renderer.setProfileLooks(looks ?? {});
+        this.renderer.setPhotoDefaults(this.defaults.recipe);
+        this.ai.reset();
+        this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
+        this.loadLens(bytes);
+        this.syncHistory();
+        this.status = 'ready';
+        done = startMeasure('first render');
+        this.renderNow();
+        done();
+        endStep(this.openSteps, 'show', now());
+        this.learnOpen(original, { camera, bytes: bytes.length, decodeMs, cachedMs, showMs: now() - showStarted });
+        if (!cached) this.keepDecoded(asset.checksum, session);
+      } catch (e) {
+        if (renderer && this.renderer !== renderer) renderer.dispose();
+        throw e;
+      }
       // Full resolution is needed for saving and 1:1 zoom; start it in the background.
       this.startFullDecode();
       if (!stored) this.checkSidecar(asset.id);
       this.offerFujiLooks();
-    } catch (e) {
-      this.fail(e);
     }
+  }
+
+  private estimateStep(id: OpenStepId, ms: number): void {
+    const s = this.openSteps.find((x) => x.id === id);
+    if (s && s.startedAt === null) s.estimateMs = ms;
+  }
+
+  /** Shows where the original comes from and how much of it has arrived (at most every 50 ms). */
+  private originalProgress(p: DownloadProgress): void {
+    const s = this.openSteps.find((x) => x.id === 'original');
+    if (!s || s.endedAt !== null) return;
+    if (p.from === 'cache') {
+      s.label = OPEN_LABELS.originalCached;
+      s.estimateMs = estimateReadMs(this.openTimes, p.total);
+      return;
+    }
+    const t = performance.now();
+    const last = p.total > 0 && p.received >= p.total;
+    if (!last && t - this.lastBytesShown < 50) return;
+    this.lastBytesShown = t;
+    const total = p.total || this.fileBytes;
+    s.label = OPEN_LABELS.download;
+    s.bytes = { received: p.received, total };
+    if (total) s.estimateMs = estimateDownloadMs(this.openTimes, total);
+  }
+
+  /** Adds this open's step times to the averages the next open's estimates come from. */
+  private learnOpen(original: { from: DownloadProgress['from'] | null; endedAt: number }, sample: Omit<OpenSample, 'infoMs' | 'download' | 'read'>): void {
+    const info = this.openSteps.find((x) => x.id === 'info');
+    const orig = this.openSteps.find((x) => x.id === 'original');
+    const s: OpenSample = { ...sample };
+    if (info?.startedAt != null && info.endedAt != null) s.infoMs = info.endedAt - info.startedAt;
+    if (orig?.startedAt != null && original.endedAt > orig.startedAt) {
+      const part = { bytes: sample.bytes, ms: original.endedAt - orig.startedAt };
+      if (original.from === 'network') s.download = part;
+      else if (original.from === 'cache') s.read = part;
+    }
+    // Read again: another tab may have added an open since this one started.
+    this.openTimes = recordOpen(loadOpenTimes(), s);
+    saveOpenTimes(this.openTimes);
+  }
+
+  /** Keeps the half-size image for the next open of this photo, once the browser has a moment. */
+  private keepDecoded(checksum: string, session: RawSession): void {
+    this.decodedKept = new Promise<void>((resolve) => {
+      const write = () => {
+        const done = startMeasure('decoded cache write');
+        void writeDecoded(checksum, session.meta, session.half).then(done).finally(resolve);
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(write, { timeout: 2000 });
+      else setTimeout(write, 500);
+    });
+  }
+
+  /**
+   * Gets the photos around this one ready to open, nearest first (`ids`: the filmstrip's next and
+   * previous, then two either way; no further). Their originals download now, one at a time; they
+   * are decoded at half size once `decode` is true (the open photo's full-resolution decode is
+   * done: two decodes at once would slow it down and need more memory).
+   */
+  prefetch(ids: string[], decode: boolean): void {
+    this.prefetchWanted = ids.filter((id) => id !== this.asset?.id).slice(0, 4);
+    if (decode) this.prefetchMayDecode = true;
+    if (!canPrefetch()) return;
+    this.fetchMore();
+    this.decodeNeighbours();
+  }
+
+  private fetchMore(): void {
+    if (this.fetching) return;
+    this.fetching = true;
+    void this.fetchNeighbours().finally(() => {
+      this.fetching = false;
+      // Photos asked for while the last one was finishing.
+      if (this.prefetchWanted.some((x) => !this.prefetchTried.has(x))) this.fetchMore();
+    });
+  }
+
+  /** Waits while a save runs: it renders at full size and needs the memory and the processor. */
+  private async notWhileSaving(): Promise<void> {
+    while (this.saving) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  private async fetchNeighbours(): Promise<void> {
+    await this.decodedKept;
+    for (;;) {
+      const id = this.prefetchWanted.find((x) => !this.prefetchTried.has(x));
+      if (!id) return;
+      this.prefetchTried.add(id);
+      await this.notWhileSaving();
+      const done = startMeasure('prefetch download');
+      const signal = this.prefetchStop.signal;
+      try {
+        const checksum = await fetchNeighbour(id, signal);
+        if (checksum) {
+          done();
+          this.prefetchFetched.set(id, checksum);
+          this.decodeNeighbours();
+        }
+      } catch (e) {
+        if (!signal.aborted) console.warn('Could not download a photo nearby ahead of time', e);
+      }
+    }
+  }
+
+  /** Decodes the fetched photos, nearest first, one at a time (once that is allowed). */
+  private decodeNeighbours(): void {
+    if (this.decoding || !this.prefetchMayDecode) return;
+    this.decoding = true;
+    void (async () => {
+      for (;;) {
+        const id = this.prefetchWanted.find((x) => this.prefetchFetched.has(x) && !this.prefetchDecodeTried.has(x));
+        if (!id) return;
+        this.prefetchDecodeTried.add(id);
+        await this.notWhileSaving();
+        const done = startMeasure('prefetch');
+        const signal = this.prefetchStop.signal;
+        try {
+          if (await decodeNeighbour(this.prefetchFetched.get(id)!, signal)) done();
+        } catch (e) {
+          if (!signal.aborted) console.warn('Could not decode a photo nearby ahead of time', e);
+        }
+      }
+    })().finally(() => {
+      this.decoding = false;
+      if (this.prefetchWanted.some((x) => this.prefetchFetched.has(x) && !this.prefetchDecodeTried.has(x))) this.decodeNeighbours();
+    });
   }
 
   /** Offers the Fujifilm film looks when the photo or its saved edit would use them. */
@@ -609,31 +1100,79 @@ export class Editor {
     this.requestRender();
   }
 
-  private showServerPreview(id: string): void {
-    fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), { headers: authHeaders(), credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.blob() : null))
-      .then((b) => {
-        if (b && this.status !== 'ready') this.previewUrl = URL.createObjectURL(b);
-      })
-      .catch(() => {});
+  /**
+   * The picture that stands in for the photo while it loads, the first of:
+   * - what the editor showed last time, if the saved edit is still the same (keepViewIfPlain);
+   * - the saved JPEG's preview in Immich, for a photo with a saved edit;
+   * - Immich's preview of the RAW (its own conversion: brighter, more saturated, without the edit).
+   */
+  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number): Promise<void> {
+    const show = (b: Blob) => {
+      if (gen !== this.photoGen || this.status === 'ready') return;
+      if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
+      this.previewUrl = URL.createObjectURL(b);
+    };
+    const view = await viewP;
+    if (view && view.shows === (stored ? editableJson(stored) : 'unedited')) return show(view.image);
+    for (const id of [stored?.render?.assetId, asset.id]) {
+      if (!id || gen !== this.photoGen) continue;
+      const b = await fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), { headers: authHeaders(), credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.blob() : null))
+        .catch(() => null);
+      // The saved JPEG may be gone (deleted in Immich): then the RAW's preview.
+      if (b) return show(b);
+    }
+  }
+
+  /**
+   * Keeps what the photo looks like for the loading screen of its next open. Called right after
+   * a render, while the canvas still holds it (it is cleared once shown). Only a plain view of the
+   * saved edit counts, with the lens profile and any AI masks in place, and only once per state.
+   */
+  private keepViewIfPlain(): void {
+    const a = this.asset;
+    const canvas = this.canvas;
+    if (!a || !canvas || this.dirty || this.previewRecipe || this.before || this.clipping || this.maskView !== 'none') return;
+    if (this.overlayMask || this.wholeView || this.zoom.on) return;
+    if (this.lensInfo.searching || Object.values(this.ai.status).some((s) => s.state === 'working')) return;
+    const key = `${a.checksum}|${this.savedJson}`;
+    if (key === this.viewKept) return;
+    this.viewKept = key;
+    const shows = this.storedEdit || this.savedRenderId ? this.savedJson : 'unedited';
+    const checksum = a.checksum;
+    canvas.toBlob((b) => b && void keepView(checksum, shows, b), 'image/jpeg', 0.85);
   }
 
   private startFullDecode(): void {
     if (!this.session || this.fullStatus === 'decoding' || this.fullStatus === 'ready') return;
     this.fullStatus = 'decoding';
-    this.session
+    const session = this.session;
+    const started = performance.now();
+    // A linear DNG's full image comes with the half-size decode: nothing to time.
+    const timed = !this.session.fullStarted;
+    this.fullEta = { startedAt: started, estimateMs: estimateFullMs(this.openTimes, this.cameraKey, this.fileBytes) };
+    session
       .full()
       .then((img) => {
+        // Another photo is open now (this decode was stopped, or finished just before).
+        if (this.session !== session) return;
         this.fullImage = img;
         this.fullStatus = 'ready';
+        this.fullEta = null;
+        if (timed) {
+          this.openTimes = recordFull(loadOpenTimes(), this.cameraKey, this.fileBytes, performance.now() - started);
+          saveOpenTimes(this.openTimes);
+        }
         if (this.notice === HALF_SIZE_NOTICE) this.notice = null;
         // Fringes are a pixel or two wide: measure them again at full resolution.
         this.measureCA();
         if (this.zoom.on) this.requestRender();
       })
       .catch((e) => {
+        if (this.session !== session) return;
         console.error('Full-resolution decode failed', e);
         this.fullStatus = 'error';
+        this.fullEta = null;
         if (this.notice === HALF_SIZE_NOTICE) this.notice = FULL_FAILED_NOTICE;
       });
   }
@@ -645,6 +1184,8 @@ export class Editor {
       const file = files[0];
       if (!file) return;
       const text = await (await downloadAssetFile({ id: file.id })).text();
+      // Another photo was opened meanwhile.
+      if (this.asset?.id !== assetId) return;
       if (!isLightroomSidecar(text)) return;
       const crs = parseXmp(text);
       if (!crs) return;
@@ -722,7 +1263,7 @@ export class Editor {
       const recipe = this.currentRecipe();
       this.ai.sync(recipe);
       const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: this.overlayMask };
-      if (this.zoom.on && this.tool !== 'crop' && this.session) {
+      if (this.zoom.on && !this.wholeView && this.session) {
         const vp = this.viewport;
         // Up to 50 % the half-size decode has a pixel for every screen pixel, and it is a
         // quarter of the full image to upload. (Further out the renderer uses its preview.)
@@ -735,8 +1276,9 @@ export class Editor {
           height: Math.max(1, Math.round(vp.height * vp.dpr)),
         }, opts);
       } else {
-        const f = renderer.render(recipe, { mode: this.tool === 'crop' ? 'crop' : 'edit', ...opts });
+        const f = renderer.render(recipe, { mode: this.wholeView ? 'crop' : 'edit', ...opts });
         if (f.width !== this.frame.width || f.height !== this.frame.height) this.frame = { width: f.width, height: f.height };
+        this.keepViewIfPlain();
       }
       this.viewVersion++;
       this.scheduleHistogram();
@@ -754,10 +1296,23 @@ export class Editor {
       const r = this.renderer;
       if (!r || this.status !== 'ready') return;
       // While zoomed the canvas shows a region; the histogram is of the whole image.
-      if (this.zoom.on && this.tool !== 'crop') r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
+      if (this.zoom.on && !this.wholeView) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
       else if (this.overlayMask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
-      this.histogram = r.histogram();
+      if (this.scope === 'histogram') {
+        this.histogram = r.histogram();
+      } else {
+        const img = r.scopeImage(SCOPE_SAMPLE_WIDTH[this.scope]);
+        this.scopeData = img && scopeOf(this.scope, img);
+      }
     }, wait);
+  }
+
+  setScope(kind: ScopeKind): void {
+    if (this.scope === kind) return;
+    this.scope = kind;
+    this.scopeData = null;
+    storageSet(SCOPE_KEY, kind);
+    this.scheduleHistogram();
   }
 
   // ---------------------------------------------------------------- editing
@@ -1063,22 +1618,12 @@ export class Editor {
     if (patch) this.applyPatch(patch, 'Paste from Previous');
   }
 
-  private async loadSnapshots(assetId: string): Promise<Snapshot[]> {
-    try {
-      const items = await getAssetMetadata({ id: assetId });
-      const v = items.find((i) => i.key === HISTORY_KEY)?.value as { snapshots?: Snapshot[] } | undefined;
-      return Array.isArray(v?.snapshots) ? v.snapshots.filter((s) => s && typeof s.state === 'string') : [];
-    } catch {
-      return [];
-    }
-  }
-
   private async storeSnapshots(): Promise<void> {
     if (!this.asset || this.readOnly) return;
     try {
       await updateAssetMetadata({
         id: this.asset.id,
-        assetMetadataUpsertDto: { items: [{ key: HISTORY_KEY, value: { schema: 1, snapshots: $state.snapshot(this.snapshots) } }] },
+        assetMetadataUpsertDto: { items: [{ key: historyKeyFor(this.copyId), value: { schema: 1, snapshots: $state.snapshot(this.snapshots) } }] },
       });
     } catch (e) {
       this.notice = `Couldn't store snapshots: ${e instanceof Error ? e.message : String(e)}`;
@@ -1128,6 +1673,7 @@ export class Editor {
       console.warn('Lens profile lookup failed', e);
     }
     this.lensDb = await loadLensDb();
+    if (this.session !== session) return;
     this.lensInfo.searching = false;
     this.syncLens(true);
     this.requestRender();
@@ -1289,7 +1835,7 @@ export class Editor {
    * Arms a gradient to be drawn on the photo (Lightroom's M / Shift+M); luminance ranges
    * are added right away. mode/maskId: add to, subtract from or intersect with an existing mask.
    */
-  startMask(kind: ComponentKind, mode: MaskMode = 'add', maskId: string | null = null): void {
+  startMask(kind: ComponentKind | 'lasso', mode: MaskMode = 'add', maskId: string | null = null): void {
     if (kind === 'ai') return this.startAiMask('subject', mode, maskId);
     if (this.readOnlyGuard() || !this.maskRoom(!maskId)) return;
     if (this.tool !== 'mask') this.setTool('mask');
@@ -1300,16 +1846,63 @@ export class Editor {
       this.changed(true, `${maskId ? 'Add' : 'New Mask:'} ${COMPONENT_LABELS.luminance}`);
       return;
     }
-    if (kind === 'brush' && brushCount(this.recipe.masks) >= MAX_BRUSHES) {
-      this.notice = `Up to ${MAX_BRUSHES} brush parts are supported in total.`;
+    if ((kind === 'brush' || kind === 'polygon' || kind === 'lasso') && brushCount(this.recipe.masks) >= MAX_BRUSHES) {
+      this.notice = `Up to ${MAX_BRUSHES} brush, polygon and lasso parts are supported in total.`;
       return;
     }
-    this.maskDraft = { kind, mode: maskId ? mode : 'add', maskId };
+    this.maskDraft = { kind, mode: maskId ? mode : 'add', maskId, ...(kind === 'polygon' ? { points: [] } : {}) };
   }
 
   cancelMaskDraft(): void {
     this.maskDraft = null;
     this.aiPicker = null;
+  }
+
+  // ---- polygon and lasso
+
+  /** Polygon being drawn: a corner at mask-frame point p. */
+  addPolygonPoint(p: [number, number]): void {
+    const d = this.maskDraft;
+    if (d?.kind !== 'polygon' || this.readOnlyGuard()) return;
+    const points = d.points ?? [];
+    if (points.length >= MAX_POLYGON_POINTS * 2) {
+      this.notice = `Up to ${MAX_POLYGON_POINTS} corners per polygon.`;
+      return;
+    }
+    this.maskDraft = { ...d, points: [...points, q5(p[0]), q5(p[1])] };
+  }
+
+  /** Polygon being drawn: takes back the last corner (Backspace). */
+  removePolygonPoint(): void {
+    const d = this.maskDraft;
+    if (d?.kind !== 'polygon' || !d.points?.length) return;
+    this.maskDraft = { ...d, points: d.points.slice(0, -2) };
+  }
+
+  /** Polygon being drawn: closes it and adds it (needs three corners). */
+  closePolygon(): boolean {
+    const d = this.maskDraft;
+    if (d?.kind !== 'polygon' || (d.points?.length ?? 0) < 6) return false;
+    return this.addPolygon(d.points!, false);
+  }
+
+  /** Lasso: the outline dragged on the photo (mask frame), closed and simplified. */
+  drawLasso(points: number[]): boolean {
+    if (this.maskDraft?.kind !== 'lasso') return false;
+    // Corners closer than half a brush-map texel to the outline add nothing.
+    return this.addPolygon(simplifyPolygon(points, 0.5 / 2048, MAX_POLYGON_POINTS), true);
+  }
+
+  private addPolygon(points: number[], freehand: boolean): boolean {
+    const d = this.maskDraft;
+    if (!d || this.readOnlyGuard() || points.length < 6 || !this.maskRoom(!d.maskId)) return false;
+    this.maskDraft = null;
+    const c = newComponent('polygon', d.mode) as PolygonComponent;
+    c.points = points.map(q5);
+    if (freehand) c.freehand = true;
+    this.addComponent(c, d.maskId);
+    this.changed(true, `${d.maskId ? MODE_VERB[d.mode] : 'New Mask:'} ${partLabel(c)}`);
+    return true;
   }
 
   // ---- AI masks
@@ -1426,8 +2019,8 @@ export class Editor {
   /** Starts drawing the armed gradient at mask-frame point p; returns the new component's id. */
   beginMaskDraw(p: [number, number]): string | null {
     const d = this.maskDraft;
-    // Objects are pointed out with drawObject.
-    if (!d || d.kind === 'object' || this.readOnlyGuard()) return null;
+    // Objects are pointed out with drawObject; polygons and lassos are drawn with their own calls.
+    if (!d || d.kind === 'object' || d.kind === 'polygon' || d.kind === 'lasso' || this.readOnlyGuard()) return null;
     const c = newComponent(d.kind, d.mode);
     if (c.kind === 'linear') Object.assign(c, { x0: p[0], y0: p[1], x1: p[0], y1: p[1] + 1e-3 });
     else if (c.kind === 'radial') Object.assign(c, { cx: p[0], cy: p[1], rx: 1e-3, ry: 1e-3 });
@@ -1693,11 +2286,17 @@ export class Editor {
       this.maskSel = { mask: last.id, comp: last.components[0]?.id ?? null };
     }
     this.tool = tool;
-    if (tool === 'crop') {
+    if (tool !== 'upright') this.uprightSel = null;
+    if (this.wholeView) {
       this.before = false;
       this.setZoom(false);
     }
     this.requestRender();
+  }
+
+  /** The view shows the whole transformed photo, not the crop (Crop, Guided Upright); no zoom there. */
+  get wholeView(): boolean {
+    return this.tool === 'crop' || this.tool === 'upright';
   }
 
   toggleBefore(): void {
@@ -1743,7 +2342,7 @@ export class Editor {
    */
   zoomAnchor(x: number, y: number): { scale: number; p: [number, number] } | null {
     const r = this.renderer;
-    if (!r || !this.camera || this.tool === 'crop' || this.status !== 'ready') return null;
+    if (!r || !this.camera || this.wholeView || this.status !== 'ready') return null;
     const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
     return { scale: this.zoom.on ? this.zoom.scale : fitScale(frame, this.viewport), p: r.previewToFrame(x, y) ?? [0.5, 0.5] };
   }
@@ -1754,7 +2353,7 @@ export class Editor {
    */
   zoomFrom(anchor: { scale: number; p: [number, number] }, factor: number, at: [number, number]): void {
     const r = this.renderer;
-    if (!r || !this.camera || this.tool === 'crop' || this.status !== 'ready') return;
+    if (!r || !this.camera || this.wholeView || this.status !== 'ready') return;
     const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
     const fit = fitScale(frame, this.viewport);
     const current = this.zoom.on ? this.zoom.scale : fit;
@@ -1906,7 +2505,70 @@ export class Editor {
     const t = this.recipe.transform;
     if (!t.constrain || !isTransformActive(t)) return undefined;
     const { w, h } = this.uprightProxySize();
-    return transformInverse(t, w, h);
+    return transformInverse(t, w, h, this.uprightNow());
+  }
+
+  /** Guided Upright's correction for the current guides (null: none, or guides that ask too much). */
+  private uprightNow(): Affine | null {
+    const r = this.renderer;
+    if (!r || !this.camera) return null;
+    return uprightMatrix(this.recipe.transform, totalTurns(this.camera.flip, this.recipe.crop), r.proxyWidth, r.proxyHeight);
+  }
+
+  // ---- Guided Upright
+
+  /** The selected guide (Delete removes it). */
+  uprightSel = $state<number | null>(null);
+
+  /** Guided Upright's guides, [x0, y0, x1, y1] in the mask frame. */
+  get uprightGuides(): [number, number, number, number][] {
+    return this.recipe.transform.upright?.guides ?? [];
+  }
+
+  /** There are guides, but they would turn the photo too far, so they do nothing. */
+  get uprightFailed(): boolean {
+    void this.viewVersion;
+    return this.uprightGuides.length > 0 && !this.uprightNow();
+  }
+
+  addUprightGuide(g: [number, number, number, number]): void {
+    const guides = this.uprightGuides;
+    if (guides.length >= MAX_UPRIGHT_GUIDES) {
+      this.notice = `Up to ${MAX_UPRIGHT_GUIDES} guides.`;
+      return;
+    }
+    if (this.setUprightGuides([...guides, g], 'Guided Upright: Add Guide')) this.uprightSel = guides.length;
+  }
+
+  moveUprightGuide(index: number, g: [number, number, number, number]): void {
+    this.setUprightGuides(this.uprightGuides.map((x, i) => (i === index ? g : x)), 'Guided Upright: Move Guide');
+  }
+
+  removeUprightGuide(index: number): void {
+    if (index < 0 || index >= this.uprightGuides.length) return;
+    if (this.setUprightGuides(this.uprightGuides.filter((_, i) => i !== index), 'Guided Upright: Remove Guide')) this.uprightSel = null;
+  }
+
+  clearUprightGuides(): void {
+    if (this.uprightGuides.length && this.setUprightGuides([], 'Guided Upright: Clear Guides')) this.uprightSel = null;
+  }
+
+  /** Sets the guides; none = Guided Upright off. With Constrain Crop the crop follows. */
+  private setUprightGuides(guides: [number, number, number, number][], label: string): boolean {
+    if (this.readOnlyGuard()) return false;
+    const t = this.recipe.transform;
+    if (!guides.length) delete t.upright;
+    else t.upright = { guides: guides.map((g) => g.map(q5) as [number, number, number, number]), focal35: t.upright?.focal35 ?? this.focal35() };
+    if (t.constrain) this.constrainCrop();
+    this.changed(true, label);
+    return true;
+  }
+
+  /** 35 mm-equivalent focal length: EXIF focal length times the camera's crop factor (Lensfun); 35 when unknown. */
+  private focal35(): number {
+    const q = this.lensQuery;
+    const crop = this.lensDb && q ? findCamera(this.lensDb, q.cameraMake, q.cameraModel)?.camera.cropFactor : undefined;
+    return q?.focalLength && crop ? Math.round(q.focalLength * crop * 10) / 10 : 35;
   }
 
   /** Keeps the crop inside the transformed image (largest box when the crop wasn't set by hand). */
@@ -1930,6 +2592,149 @@ export class Editor {
     this.changed(true, 'Reset Transform');
   }
 
+  // ---------------------------------------------------------------- virtual copies
+
+  /** The edit's name: "Original", or the copy's. */
+  get editName(): string {
+    return this.copyId ? (this.copies.find((c) => c.id === this.copyId)?.name ?? 'Copy') : 'Original';
+  }
+
+  private currentCopy(): CopyMeta | null {
+    const c = this.copyId ? this.copies.find((x) => x.id === this.copyId) : null;
+    return c ? { id: c.id, name: c.name, index: c.index, createdAt: c.createdAt } : null;
+  }
+
+  /** Keeps `copy` in the editor's address, so a reload opens the same edit. */
+  private setUrlCopy(copyId: string | null): void {
+    const q = new URLSearchParams(location.search);
+    if (copyId) q.set('copy', copyId);
+    else q.delete('copy');
+    history.replaceState(history.state, '', `${location.pathname}?${q}`);
+  }
+
+  /** Puts the original edit or a virtual copy in the editor; the photo stays decoded. */
+  private enterEdit(copyId: string | null, stored: Recipe | null, snapshots: Snapshot[]): void {
+    this.endTargeted();
+    this.maskDraft = null;
+    this.aiPicker = null;
+    this.maskSel = { mask: null, comp: null };
+    this.previewRecipe = null;
+    this.autoApplied = null;
+    this.copyId = copyId;
+    this.setUrlCopy(copyId);
+    this.recipe = stored ?? cloneRecipe(this.defaults!.recipe);
+    this.savedJson = editableJson(this.recipe);
+    this.storedEdit = !!stored;
+    this.snapshots = snapshots;
+    // "Back" may lead to any of this RAW's JPEGs; it goes to the one of the edit open last.
+    if (stored?.render?.assetId) this.pastRenders.add(stored.render.assetId);
+    this.history.reset($state.snapshot(this.recipe) as Recipe, stored ? 'Open (saved edit)' : 'Open');
+    this.syncHistory();
+    this.syncLens();
+    this.requestRender();
+  }
+
+  /** Opens the original edit (null) or a virtual copy as stored now; unsaved changes are dropped. */
+  async openEdit(copyId: string | null): Promise<void> {
+    const asset = this.asset;
+    if (!asset || this.status !== 'ready' || copyId === this.copyId) return;
+    let items: { key: string; value: unknown }[];
+    try {
+      items = await getAssetMetadata({ id: asset.id });
+    } catch (e) {
+      this.error = `Couldn't open the edit: ${errorMessage(e)}`;
+      return;
+    }
+    this.copies = copiesIn(items).map(copyInfo);
+    if (copyId && !this.copies.some((c) => c.id === copyId)) {
+      this.notice = 'That virtual copy no longer exists.';
+      return;
+    }
+    this.enterEdit(copyId, storedEdit(items, copyId), snapshotsIn(items, historyKeyFor(copyId)));
+  }
+
+  /**
+   * Lightroom's Create Virtual Copy (Ctrl+'): a new copy holding the current settings, opened
+   * right away. Unsaved changes go with it; the edit it was made from keeps its saved state.
+   */
+  async newVirtualCopy(): Promise<void> {
+    const asset = this.asset;
+    if (!asset || this.readOnlyGuard() || this.status !== 'ready' || this.saving) return;
+    this.commit();
+    const from = this.editName;
+    const changed = this.dirty;
+    const c = newCopy(this.copies, $state.snapshot(this.recipe) as Recipe);
+    try {
+      await writeMetadata(asset.id, copyKey(c.id), copyValue(c));
+    } catch (e) {
+      this.error = `Couldn't make the virtual copy: ${errorMessage(e)}`;
+      return;
+    }
+    this.copies = [...this.copies, copyInfo(c)];
+    this.enterEdit(c.id, c.recipe, []);
+    this.notice = `${c.name} made from ${changed ? `the current settings; ${from} keeps its last saved state` : from}. Save it to put its own JPEG in the stack.`;
+  }
+
+  async renameCopy(id: string, name: string): Promise<void> {
+    const asset = this.asset;
+    const n = name.trim().slice(0, 60);
+    if (!asset || !n || this.readOnlyGuard()) return;
+    try {
+      const c = parseCopy(copyKey(id), await readMetadata(asset.id, copyKey(id)));
+      if (!c) throw new Error('it no longer exists');
+      await writeMetadata(asset.id, copyKey(id), copyValue({ ...c, name: n }));
+      this.copies = this.copies.map((x) => (x.id === id ? { ...x, name: n } : x));
+    } catch (e) {
+      this.error = `Couldn't rename the copy: ${errorMessage(e)}`;
+    }
+  }
+
+  /**
+   * Deletes a virtual copy: its settings and snapshots, and its JPEG (to Immich's trash). The
+   * original opens if the copy was open; unsaved changes of the copy are dropped.
+   */
+  async deleteCopy(id: string): Promise<void> {
+    const asset = this.asset;
+    const copy = this.copies.find((c) => c.id === id);
+    if (!asset || !copy || this.readOnlyGuard()) return;
+    try {
+      const items = await getAssetMetadata({ id: asset.id });
+      const renderId = storedEdit(items, id)?.render?.assetId ?? null;
+      if (renderId) await this.leaveFront(asset.id, renderId, storedEdit(items, null)?.render?.assetId ?? null);
+      await deleteAssetMetadata({ id: asset.id, key: copyKey(id) });
+      await deleteAssetMetadata({ id: asset.id, key: historyKeyFor(id) }).catch(() => {});
+      if (renderId) await deleteAssets({ assetBulkDeleteDto: { ids: [renderId] } }).catch((e) => console.warn('Could not move the copy to trash', e));
+      this.copies = this.copies.filter((c) => c.id !== id);
+      if (this.copyId === id) await this.openEdit(null);
+      this.notice = `${copy.name} deleted${renderId ? "; its JPEG is in Immich's trash" : ''}.`;
+    } catch (e) {
+      this.error = `Couldn't delete the copy: ${errorMessage(e)}`;
+    }
+  }
+
+  /** Before a JPEG leaves the stack: if it is in front, the original's JPEG (else the RAW) takes over. */
+  private async leaveFront(rawId: string, renderId: string, originalRenderId: string | null): Promise<void> {
+    const raw = await getAssetInfo({ id: rawId });
+    if (!raw.stack || raw.stack.primaryAssetId !== renderId) return;
+    const next = originalRenderId && originalRenderId !== renderId ? originalRenderId : rawId;
+    await updateStack({ id: raw.stack.id, stackUpdateDto: { primaryAssetId: next } }).catch((e) => console.warn('Could not change the front of the stack', e));
+  }
+
+  /** Puts this edit's JPEG in front of the RAW's stack in Immich. */
+  async showInFront(): Promise<void> {
+    const asset = this.asset;
+    const renderId = this.recipe.render?.assetId;
+    if (!asset || !renderId || this.readOnlyGuard()) return;
+    try {
+      const raw = await getAssetInfo({ id: asset.id });
+      if (!raw.stack) throw new Error('the RAW is not in a stack');
+      if (raw.stack.primaryAssetId !== renderId) await updateStack({ id: raw.stack.id, stackUpdateDto: { primaryAssetId: renderId } });
+      this.notice = `${this.editName} is now in front of the stack in Immich.`;
+    } catch (e) {
+      this.error = `Couldn't change the front of the stack: ${errorMessage(e)}`;
+    }
+  }
+
   // ---------------------------------------------------------------- saving
 
   async save(): Promise<boolean> {
@@ -1943,24 +2748,38 @@ export class Editor {
     try {
       // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
-      const { recipe, file, fallback } = await this.renderExport(asset, session, renderer, preset, step, true);
+      const settings = $state.snapshot(this.exportSettings.save) as SaveSettings;
+      // Tags, rating or favourite may have changed in Immich since the editor opened.
+      const raw = await getAssetInfo({ id: asset.id }).catch(() => asset);
+      const { recipe, file, fallback } = await this.renderExport(raw, session, renderer, preset, step, true);
+      const copy = this.currentCopy();
+      const warnings: string[] = [];
       const saved = await saveRender({
-        raw: asset,
+        raw,
         recipe,
         jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
+        copy,
+        settings,
         onProgress: (s, f) => step(s, f),
+        onWarning: (w) => warnings.push(w),
       });
+      if (copy) this.copies = this.copies.map((c) => (c.id === copy.id ? { ...c, renderId: saved.render?.assetId ?? null } : c));
       if (this.recipe.render?.assetId) this.pastRenders.add(this.recipe.render.assetId);
       this.recipe.render = saved.render;
       this.savedRenderId = saved.render?.assetId ?? null;
+      // Read the RAW again before the way back is updated: it follows the stack's new front.
+      this.asset = await getAssetInfo({ id: asset.id }).catch(() => raw);
       this.syncReturnPath();
       this.recipe.decoder = saved.decoder;
       delete this.recipe.pending;
       this.savedJson = editableJson(saved);
+      // A render now keeps the saved look for the next open's loading screen.
+      this.requestRender();
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
-      this.notice = `Saved to Immich, stacked on top of the RAW.${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
-      this.asset = await getAssetInfo({ id: asset.id }).catch(() => asset);
+      this.notice = [savedNotice(this.asset.stack?.primaryAssetId, asset.id, this.savedRenderId, copy ? `Saved ${copy.name}` : 'Saved'), ...warnings, fallback ? COLOR_FALLBACK : '']
+        .filter(Boolean)
+        .join(' ');
       this.requestRender();
       return true;
     } catch (e) {
@@ -1982,20 +2801,22 @@ export class Editor {
     step: (s: RenderStep, fraction?: number) => void,
     forImmich = false,
   ): Promise<{ recipe: Recipe; file: ExportFile; fallback: boolean }> {
-    const { recipe, image, fallback } = await this.renderFull(session, renderer, step);
+    const { recipe, image, fallback } = await this.renderFull(session, renderer, step, outputColor(preset, forImmich));
     const file = await this.finish(image, asset, preset, step, forImmich);
     return { recipe, file, fallback };
   }
 
   /**
-   * The current edit rendered at full resolution, and the recipe it was rendered from.
+   * The current edit rendered at full resolution (in the colour space and bit depth `out`), and
+   * the recipe it was rendered from.
    * fallback: the recipe's film look isn't in this browser, so it rendered with Color.
    */
   private async renderFull(
     session: RawSession,
     renderer: Renderer,
     step: (s: RenderStep, fraction?: number) => void,
-  ): Promise<{ recipe: Recipe; image: ImageData; fallback: boolean }> {
+    out: OutputColor = SRGB8,
+  ): Promise<{ recipe: Recipe; image: Pixels; fallback: boolean }> {
     step('decode');
     this.startFullDecode();
     const full = await session.full();
@@ -2011,18 +2832,25 @@ export class Editor {
     recipe.app = APP_ID;
     recipe.decoder = { name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic };
     step('render');
-    const image = await renderer.exportImage(recipe, full, (done, total) => step('render', done / total));
+    const image = await renderer.exportPixels(recipe, full, out, (done, total) => step('render', done / total));
     return { recipe, image, fallback };
   }
 
   /** A rendered image made into the file `preset` describes. */
-  private finish(image: ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
-    return finishExport(image, asset, preset, {
-      copyright: this.exportSettings.copyright,
-      owner: this.ownerName(asset),
-      forImmich,
-      onStep: (s) => step(s),
-    });
+  private async finish(image: Pixels | ImageData, asset: AssetResponseDto, preset: ExportPreset, step: (s: RenderStep) => void, forImmich = false): Promise<ExportFile> {
+    const wm = preset.watermark;
+    const logo = !forImmich && wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
+    try {
+      return await finishExport(image, asset, preset, {
+        copyright: this.exportSettings.copyright,
+        owner: this.ownerName(asset),
+        forImmich,
+        logo,
+        onStep: (s) => step(s),
+      });
+    } finally {
+      logo?.close();
+    }
   }
 
   /** The photographer, for the copyright line: the asset owner's Immich name. */
@@ -2068,7 +2896,7 @@ export class Editor {
       });
       downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
       this.error = null;
-      this.notice = `Exported ${name} (${file.width} × ${file.height}).${fallback ? ` ${COLOR_FALLBACK}` : ''}`;
+      this.notice = [`Exported ${name} (${file.width} × ${file.height}).`, ...file.notes, fallback ? COLOR_FALLBACK : ''].filter(Boolean).join(' ');
       return true;
     } catch (e) {
       console.error(e);
@@ -2133,13 +2961,15 @@ export class Editor {
       await aiConsent.permitModels([upscaler(s.style, s.scale).model]);
       const { recipe, image } = await this.renderFull(session, renderer, (st, f) => show(STEP_LABEL[st], f));
       if (cancelled) throw new Error(CANCELLED);
-      const big = await this.runUpscale(image, s.style, s.scale, backend.gpu, (t) => (task = t), show);
+      const big = await this.runUpscale(asImageData(image), s.style, s.scale, backend.gpu, (t) => (task = t), show);
       cancellable = false;
       const high = $state.snapshot(this.exportSettings.presets.high) as ExportPreset;
       const preset: ExportPreset = {
         ...structuredClone(high),
         format: s.format,
-        quality: UPSCALE_QUALITY,
+        // The upscaler works on 8-bit sRGB.
+        color: SRGB8,
+        quality: { ...high.quality, jpeg: UPSCALE_QUALITY },
         size: { mode: 'full', value: 0, unit: 'px' },
         // The model sharpens already.
         sharpen: { for: 'none', amount: high.sharpen.amount },
@@ -2148,12 +2978,12 @@ export class Editor {
       if (target === 'download') {
         const name = upscaledDownloadName(asset.originalFileName, s.scale, s.format);
         downloadBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), name);
-        this.notice = `Exported ${name} (${file.width} × ${file.height}).`;
+        this.notice = [`Exported ${name} (${file.width} × ${file.height}).`, ...file.notes].join(' ');
       } else {
         await saveUpscaled({
           raw: asset,
           jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
-          info: { scale: s.scale, style: s.style, recipeHash: await recipeHash(recipe) },
+          info: { scale: s.scale, style: s.style, recipeHash: await recipeHash(recipe), copyId: this.copyId },
           onProgress: (st, f) => show(UPSCALE_SAVE_LABEL[st], f),
         });
         this.notice = `Saved the ${s.scale}× copy to Immich (${file.width} × ${file.height}), stacked with the RAW.`;
@@ -2275,6 +3105,12 @@ export class Editor {
 
   setExportCopyright(text: string): void {
     this.storeExportSettings({ ...($state.snapshot(this.exportSettings) as ExportSettings), copyright: text });
+  }
+
+  /** How Save puts the edit into Immich (stack front, favourite). Takes effect on the next save. */
+  setSaveSettings(patch: Partial<SaveSettings>): void {
+    const current = $state.snapshot(this.exportSettings) as ExportSettings;
+    this.storeExportSettings({ ...current, save: { ...current.save, ...patch } });
   }
 
   /** Puts one preset back to its defaults. */
@@ -2425,16 +3261,18 @@ export class Editor {
     }
   }
 
-  /** Where "back" goes: the page the user came from, pointing at the new render if saved. */
+  /** Where "back" goes: the page the user came from, pointing at the stack's front photo if saved. */
   backUrl(): string {
     const renderId = this.recipe.render?.assetId;
     const rawId = this.asset?.id;
     let path = this.returnPath ?? (rawId ? `/photos/${rawId}` : '/photos');
     // The editor may have been opened from the RAW or from an earlier render (the top of
-    // the stack); either way, come back to the current render.
-    if (renderId) {
-      for (const id of [rawId, ...this.pastRenders]) {
-        if (id && id !== renderId && path.includes(id)) path = path.replaceAll(id, renderId);
+    // the stack); either way, come back to the current render, or to the RAW when Save
+    // keeps the RAW in front.
+    const target = rawId && renderId && this.asset?.stack?.primaryAssetId === rawId ? rawId : renderId;
+    if (target) {
+      for (const id of [rawId, renderId, ...this.pastRenders]) {
+        if (id && id !== target && path.includes(id)) path = path.replaceAll(id, target);
       }
     }
     return path;

@@ -75,6 +75,19 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   can log in with the test password; run the same command without `E2E_BIND` to close it again.
 - Decoder build: `node e2e/probe-decoder-compare.mjs <samples-dir>` decodes the samples with
   `packages/libraw/lib` and the npm libraw-wasm 1.6.0 it replaced, and checks the output is the same.
+- Opening speed: `node e2e/probe-open-speed.mjs <out-dir> [sony,canon,fuji]` reports the median
+  time until the photo shows, plus the editor's own `immich-raw:*` step timings. Nothing is saved.
+  Each RAW is opened three ways:
+  - `download`: in a fresh browser profile;
+  - `cached`: again, so the original (and the decoded image, in builds that keep it) comes from the
+    browser's cache;
+  - `next`: the filmstrip's next photo, with →, after the editor got it ready in the background.
+    Builds that switch photos inside the page do so without loading it again. Only RAWs with a
+    neighbour have this; `canon-lr` and the `DSCF…` series do.
+  To compare two editor builds, serve the second one at another address (for example a second
+  nginx container on the e2e network with `-p 127.0.0.1:8087:80` and that build mounted at
+  `/usr/share/nginx/immich-raw`), then pass both:
+  `IMMICH_URLS=http://127.0.0.1:8088,http://127.0.0.1:8087`. The runs alternate between them.
 - AI masks: `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>` makes a Sky, Subject, Landscape,
   Object and People mask on one photo (`leica-q2.DNG` has sky, water and a ferry), then exports it.
   It needs internet: the models (about 316 MB) download on first use and stay in the browser
@@ -90,6 +103,25 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
 
   To compare builds side by side, run the editor's dev server from each checkout on its own port
   and point `IMMICH_URL` at it, e.g. `IMMICH_URL=http://localhost:5174`.
+- Scopes: `node e2e/probe-scopes.mjs <out-dir> [file name part]` switches between the histogram,
+  waveform, RGB parade and vectorscope on one seeded RAW (`nikon-z7` by default), checks that each
+  counts every pixel, that the waveform rises with Exposure and that the choice survives a reload,
+  and writes a picture of each. Nothing is saved.
+- Polygon masks: `node e2e/probe-polygon.mjs <out-dir> [file name part]` draws polygons and a lasso
+  on one seeded RAW (`nikon-z7` by default):
+  - closing on the first corner, with Enter and with a double-click (which must not zoom);
+  - Backspace, Shift+K, corner editing (drag, add on an edge, Alt+click to remove);
+  - the mask changing only the inside, and undo.
+
+  Nothing is saved.
+- Guided Upright: `node e2e/probe-upright.mjs <out-dir> [file name part]` draws guides on one seeded
+  RAW (`nikon-z7` by default) and checks that they end up vertical, through moving, adding and
+  deleting guides, guides that ask too much, undo and Constrain Crop. Nothing is saved.
+- Virtual copies: `node e2e/probe-copies.mjs <out-dir> [file name part]` (`canon` by default) makes
+  copies of one seeded RAW (Ctrl+' and the menu), saves one, and checks its key, its JPEG's name and
+  place in the stack, switching (menu, reload, unsaved changes), renaming, Escape and deleting. It
+  saves to Immich, then removes its copies and their JPEGs again (and a stack made only for them);
+  the original edit is not saved. Run it on `fuji` too, whose saved edit must stay in front.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

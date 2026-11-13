@@ -1,7 +1,7 @@
 <script lang="ts">
   // Lightroom's Masking panel: create masks, combine their parts, and set each mask's
-  // local sliders. Gradients are drawn on the photo, brushes painted, colours picked there
-  // (see MaskOverlay).
+  // local sliders. Gradients are drawn on the photo, brushes painted, polygons and lassos
+  // outlined, colours picked there (see MaskOverlay).
   import {
     AI_TARGET_LABELS,
     BRUSH_DENSITY,
@@ -23,6 +23,7 @@
     PERSON_PART_LABELS,
     RADIAL_FEATHER,
     aiLabel,
+    componentLabel,
     getPath,
     isMaskRefined,
     isPartRefined,
@@ -57,7 +58,8 @@
   const RANGE_LO: ParamSpec = { path: 'lo', label: 'Range from', min: 0, max: 100, default: 50, step: 1, decimals: 0, signed: false };
   const RANGE_HI: ParamSpec = { path: 'hi', label: 'Range to', min: 0, max: 100, default: 100, step: 1, decimals: 0, signed: false };
   const MODE_LABEL: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
-  const KINDS: ComponentKind[] = ['brush', 'linear', 'radial', 'color', 'luminance'];
+  const KINDS: (ComponentKind | 'lasso')[] = ['brush', 'polygon', 'lasso', 'linear', 'radial', 'color', 'luminance'];
+  const kindLabel = (k: ComponentKind | 'lasso') => (k === 'lasso' ? 'Lasso' : COMPONENT_LABELS[k]);
   const AI_TARGETS: AiTarget[] = ['subject', 'sky', 'background', 'people', 'landscape', 'object'];
   const AI_TITLE: Record<AiTarget, string> = {
     subject: 'Select Subject: the main subject of the photo (AI)',
@@ -86,6 +88,8 @@
     linear: 'Drag on the photo to draw the linear gradient.',
     radial: 'Drag on the photo to draw the radial gradient (Shift: circle).',
     brush: 'Paint on the photo. Alt erases; [ and ] change the size.',
+    polygon: 'Click the corners on the photo. Click the first corner, double-click or press Enter to close; Backspace takes back a corner.',
+    lasso: 'Drag around the area on the photo; let go to close the shape.',
     color: 'Click the colour to select on the photo, or drag to average an area.',
     object: 'Drag a box around the object on the photo, or click it.',
   };
@@ -134,12 +138,12 @@
     e.currentTarget.value = '';
     if (!value || !sel) return;
     if (value.startsWith('ai:')) editor.startAiMask(value.slice(3) as AiTarget, mode, sel.id);
-    else editor.startMask(value as ComponentKind, mode, sel.id);
+    else editor.startMask(value as ComponentKind | 'lasso', mode, sel.id);
   }
 
   const toggle = <T,>(list: T[], item: T, on: boolean): T[] => (on ? [...list, item] : list.filter((x) => x !== item));
   const ordered = <T extends string>(all: T[], list: T[]) => all.filter((x) => list.includes(x));
-  const partLabel = (c: MaskComponent) => (c.kind === 'ai' ? aiLabel(c) : COMPONENT_LABELS[c.kind]);
+  const partLabel = (c: MaskComponent) => componentLabel(c);
 
   /** Index in ai.people of the person an AI part selects (-1 = everyone). */
   function whoIndex(c: AiComponent, people: PersonInfo[] | null): number {
@@ -239,6 +243,8 @@
     <button class:active={editor.maskDraft?.kind === 'linear' && !editor.maskDraft.maskId} onclick={() => editor.startMask('linear')} disabled={editor.readOnly} title="Linear gradient (M): drag on the photo from full effect to none">Linear</button>
     <button class:active={editor.maskDraft?.kind === 'radial' && !editor.maskDraft.maskId} onclick={() => editor.startMask('radial')} disabled={editor.readOnly} title="Radial gradient (Shift+M): drag on the photo from the centre out">Radial</button>
     <button class:active={editor.maskDraft?.kind === 'brush' && !editor.maskDraft.maskId} onclick={() => editor.startMask('brush')} disabled={editor.readOnly} title="Brush (K): paint the mask on the photo">Brush</button>
+    <button class:active={editor.maskDraft?.kind === 'polygon' && !editor.maskDraft.maskId} onclick={() => editor.startMask('polygon')} disabled={editor.readOnly} title="Polygon (Shift+K): click the corners of the area on the photo">Polygon</button>
+    <button class:active={editor.maskDraft?.kind === 'lasso' && !editor.maskDraft.maskId} onclick={() => editor.startMask('lasso')} disabled={editor.readOnly} title="Lasso: drag around the area on the photo">Lasso</button>
     <button class:active={editor.maskDraft?.kind === 'color' && !editor.maskDraft.maskId} onclick={() => editor.startMask('color')} disabled={editor.readOnly} title="Color range: select by colour">Color</button>
     <button onclick={() => editor.startMask('luminance')} disabled={editor.readOnly} title="Luminance range: select by brightness">Luminance</button>
   </div>
@@ -377,7 +383,7 @@
             {#each [['add', 'Add…', 'Add to mask'], ['subtract', 'Subtract…', 'Subtract from mask'], ['intersect', 'Intersect…', 'Intersect mask with']] as [mode, label, aria] (mode)}
               <select onchange={(e) => addPart(e, mode as MaskMode)} disabled={editor.readOnly} aria-label={aria}>
                 <option value="">{label}</option>
-                {#each KINDS as k (k)}<option value={k}>{COMPONENT_LABELS[k]}</option>{/each}
+                {#each KINDS as k (k)}<option value={k}>{kindLabel(k)}</option>{/each}
                 <optgroup label="AI">
                   {#each AI_TARGETS as t (t)}<option value="ai:{t}">{aiMenuLabel(t)}</option>{/each}
                 </optgroup>
@@ -411,6 +417,23 @@
             {/each}
           </div>
         {/if}
+      {:else if comp.kind === 'polygon'}
+        <Slider
+          spec={MASK_FEATHER}
+          value={comp.edge?.feather ?? 0}
+          onchange={(v) => editor.setEdge(sel.id, comp.id, MASK_FEATHER, v)}
+          oncommit={() => editor.commit()}
+          onreset={() => editor.setEdge(sel.id, comp.id, MASK_FEATHER, 0, true)}
+          disabled={editor.readOnly}
+        />
+        <p class="note">
+          {#if comp.freehand}
+            Drag the pin to move the lasso.
+          {:else}
+            {comp.points.length / 2} corners. Drag a corner to move it, drag an edge to add one, Alt+click a corner to remove it; the pin moves the whole shape.
+          {/if}
+          Feather softens the edge (in pixels of the full-size photo).
+        </p>
       {:else if comp.kind === 'brush'}
         <p class="note">{comp.strokes.length} stroke{comp.strokes.length === 1 ? '' : 's'}. Paint on the photo to add, hold Alt (or tick Erase) to remove.</p>
       {:else if comp.kind === 'ai'}

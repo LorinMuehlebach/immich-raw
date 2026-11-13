@@ -20,18 +20,33 @@ const BASE = {
   highlight: 1,
 };
 
-// `?q=0,2` replaces the default set with full decodes at those userQual levels.
+// `?q=0,2` replaces the default set with full decodes at those userQual levels (`?q=` alone:
+// only the half decode).
 const qParam = new URLSearchParams(location.search).get('q');
-const CONFIGS = qParam
+const CONFIGS = qParam !== null
   ? [
       { name: 'half', settings: { ...BASE, halfSize: true } },
-      ...qParam.split(',').map((q) => ({ name: `full-q${q}`, settings: { ...BASE, userQual: Number(q) } })),
+      ...qParam
+        .split(',')
+        .filter(Boolean)
+        .map((q) => ({ name: `full-q${q}`, settings: { ...BASE, userQual: Number(q) } })),
     ]
   : [
       { name: 'half', settings: { ...BASE, halfSize: true } },
       { name: 'full-DHT', settings: { ...BASE, userQual: 11 } },
       { name: 'full-AHD', settings: { ...BASE, userQual: 3 } },
     ];
+
+// `?warm=1` adds a half decode on a worker started 2 s earlier: its `open` has no WebAssembly
+// start-up in it, which shows what starting the worker early (prewarmDecoder) saves.
+const WARM = new URLSearchParams(location.search).get('warm') === '1';
+// `?tiles=2,4` adds decodes split into that many horizontal stripes (LibRaw's cropbox), one
+// worker per stripe, all at once: the half decode and the editor's full decode (AHD, or
+// Markesteijn 1-pass for X-Trans). Every stripe is checked row by row against a whole decode.
+const TILES = (new URLSearchParams(location.search).get('tiles') ?? '')
+  .split(',')
+  .map(Number)
+  .filter((n) => n > 1);
 
 const REQUIRED_COLOR_FIELDS = ['black', 'maximum', 'cam_mul', 'pre_mul', 'rgb_cam', 'cam_xyz'];
 
@@ -118,6 +133,124 @@ function pickMeta(meta) {
   };
 }
 
+/** One decode in a fresh worker. `startedMs` is how long the worker existed before `open`. */
+async function decodeOnce(bytes, settings, startedMs = 0) {
+  const raw = new LibRaw();
+  try {
+    if (startedMs) await sleep(startedMs);
+    let t = performance.now();
+    await raw.open(bytes.slice(), settings);
+    const openMs = Math.round(performance.now() - t);
+    t = performance.now();
+    const img = await raw.imageData();
+    const imageDataMs = Math.round(performance.now() - t);
+    return { img, openMs, imageDataMs };
+  } finally {
+    raw.dispose();
+  }
+}
+
+/** FNV-1a hash of each of `count` rows from `first`, to compare rows without keeping images. */
+function rowHashes(img, first = 0, count = img.height) {
+  const out = new Uint32Array(count);
+  const stride = img.width * 3;
+  for (let r = 0; r < count; r++) {
+    let h = 0x811c9dc5;
+    const start = (first + r) * stride;
+    for (let i = start; i < start + stride; i++) h = Math.imul(h ^ img.data[i], 0x01000193);
+    out[r] = h >>> 0;
+  }
+  return out;
+}
+
+// Stripe edges sit on multiples of 6 rows (X-Trans' pattern, and even for Bayer): LibRaw moves
+// a crop's corner onto the colour pattern, so aligned edges keep every stripe where it was asked.
+const ALIGN = 6;
+// Rows each stripe decodes beyond its own on both sides and then drops (full-size rows).
+const OVERLAP = 24;
+
+async function splitDecode(bytes, settings, n, size, half, ref) {
+  const k = half ? 2 : 1;
+  const step = Math.ceil(size.height / n / ALIGN) * ALIGN;
+  const stripes = [];
+  for (let y0 = 0; y0 < size.height; y0 += step) {
+    const y1 = Math.min(size.height, y0 + step);
+    const top = Math.max(0, y0 - OVERLAP);
+    const bottom = Math.min(size.height, y1 + OVERLAP);
+    stripes.push({ y0, y1, top, bottom });
+  }
+  const t0 = performance.now();
+  const parts = await Promise.all(stripes.map((s) => decodeOnce(bytes, { ...settings, cropbox: [0, s.top, size.width, s.bottom - s.top] })));
+  const wallMs = Math.round(performance.now() - t0);
+  let checkedRows = 0;
+  let differentRows = 0;
+  const problems = [];
+  parts.forEach(({ img }, i) => {
+    const s = stripes[i];
+    const first = Math.floor((s.y0 - s.top) / k);
+    const count = Math.floor(s.y1 / k) - Math.floor(s.y0 / k);
+    if (img.width !== ref.width || img.height < first + count) {
+      problems.push(`stripe ${i}: got ${img.width}x${img.height}, rows ${s.top}-${s.bottom} asked`);
+      return;
+    }
+    const hashes = rowHashes(img, first, count);
+    for (let r = 0; r < count; r++) {
+      checkedRows++;
+      if (hashes[r] !== ref.hashes[Math.floor(s.y0 / k) + r]) differentRows++;
+    }
+  });
+  return {
+    config: `${half ? 'half' : 'full'}-${n}-stripes`,
+    wallMs,
+    stripes: parts.map((p, i) => ({ rows: `${stripes[i].top}-${stripes[i].bottom}`, size: `${p.img.width}x${p.img.height}`, openMs: p.openMs, imageDataMs: p.imageDataMs })),
+    checkedRows,
+    differentRows,
+    identical: problems.length === 0 && differentRows === 0 && checkedRows === ref.hashes.length,
+    problems,
+  };
+}
+
+/** The extra runs from `?warm=1` and `?tiles=`. */
+async function extraRuns(bytes, entry, file) {
+  const runs = [];
+  if (WARM) {
+    mark(`${file}|half-warm`);
+    const { img, openMs, imageDataMs } = await decodeOnce(bytes, { ...BASE, halfSize: true }, 2000);
+    runs.push({ config: 'half-warm', openMs, imageDataMs, totalMs: openMs + imageDataMs, output: { width: img.width, height: img.height } });
+    log(`half-warm open ${openMs} ms, imageData ${imageDataMs} ms`);
+    await sleep(1500);
+  }
+  if (!TILES.length || !entry.size) return runs;
+  const xtrans = entry.meta?.filters === 9;
+  const settings = [
+    { half: true, s: { ...BASE, halfSize: true } },
+    { half: false, s: { ...BASE, userQual: xtrans ? 2 : 3 } },
+  ];
+  for (const { half, s } of settings) {
+    // The whole decode to compare against, also timed on its own.
+    mark(`${file}|${half ? 'half' : 'full'}-whole`);
+    const whole = await decodeOnce(bytes, s);
+    const ref = { width: whole.img.width, hashes: rowHashes(whole.img) };
+    runs.push({ config: `${half ? 'half' : 'full'}-whole`, wallMs: whole.openMs + whole.imageDataMs, openMs: whole.openMs, imageDataMs: whole.imageDataMs });
+    log(`${half ? 'half' : 'full'}-whole open ${whole.openMs} ms, imageData ${whole.imageDataMs} ms`);
+    whole.img = null;
+    await sleep(1500);
+    for (const n of TILES) {
+      mark(`${file}|${half ? 'half' : 'full'}-${n}-stripes`);
+      try {
+        const r = await splitDecode(bytes, s, n, entry.size, half, ref);
+        runs.push(r);
+        log(`${r.config} wall ${r.wallMs} ms, identical ${r.identical} (${r.differentRows}/${r.checkedRows} rows differ) ${r.problems.join('; ')}`);
+      } catch (e) {
+        runs.push({ config: `${half ? 'half' : 'full'}-${n}-stripes`, error: String(e?.message ?? e) });
+        log(`${half ? 'half' : 'full'}-${n}-stripes ERROR ${e?.message ?? e}`);
+      }
+      await sleep(1500);
+    }
+  }
+  return runs;
+}
+
 async function run() {
   log(`crossOriginIsolated=${crossOriginIsolated} hardwareConcurrency=${navigator.hardwareConcurrency}`);
   const only = new URLSearchParams(location.search).get('only');
@@ -163,6 +296,7 @@ async function run() {
 
         if (cfg.name === 'half') {
           entry.meta = pickMeta(meta);
+          entry.size = { width: meta.width, height: meta.height };
           const mul = entry.meta.cam_mul.slice(0, 3);
           const mx = Math.max(...mul);
           // Expected clip point per channel with highlight=1: 65535 * mul_c / max(mul)
@@ -183,6 +317,7 @@ async function run() {
       await sleep(1500); // sample memory after the worker is gone
       entry.runs.push(run);
     }
+    entry.runs.push(...(await extraRuns(bytes, entry, file)));
     results.push(entry);
   }
   window.__results = results;
