@@ -43,10 +43,11 @@ Two branches, neither merged yet:
   - **A reopened photo skips the decode.** Its half-size image and LibRaw's metadata are kept in the
     browser's storage (OPFS), next to the cached originals
     (`apps/editor/src/lib/immich/decoded-cache.ts`). A full-resolution image is never kept.
-    - **Size:** about 36 MB per 24 MP photo, 67 MB at 45 MP and 92 MB at 61 MP.
+    - **Size:** 36 MB per 24 MP photo, 67 MB at 45 MP and 92 MB at 61 MP, packed to 0.55–0.66 of
+      that (see below).
     - **One limit for both:** originals and decoded images share 800 MB
       (`apps/editor/src/lib/immich/photo-cache.ts`; the originals had 2 GB of their own before),
-      about 4–7 photos of 45–61 MP.
+      about 5–10 photos of 45–61 MP.
       - The least recently opened go first.
       - The photo being edited and the prefetched neighbours stay while the page is open.
       - A file that would only fit by pushing them out isn't kept.
@@ -68,9 +69,17 @@ Two branches, neither merged yet:
     - **Only what fits:** a neighbour is fetched only if it fits in the cache next to the photos
       the page keeps, with room set aside for its decoded image. Its size is estimated from
       Immich's file size and sensor size.
-    - **Compressing the cache doesn't pay.** The RAW files are already compressed. The decoded
-      images shrink 1.5–1.8× with deflate, but unpacking them adds 0.1–0.5 s to every cached open,
-      for 18–28 % more photos in the same space ([spike-results.md](spike-results.md)).
+    - **The decoded images are packed** (`apps/editor/src/lib/immich/pixel-pack.ts`):
+      - **How:** the low bytes of the 16-bit values are stored apart from the high bytes, which
+        repeat a lot, and the result is gzipped.
+      - **Gain:** 1.5–1.8× smaller (Sony 92 → 61 MB, Fuji 39 → 22 MB), so about a quarter more
+        photos fit.
+      - **Where it runs:** in a worker, so neither packing (1.2–2.7 s, after the photo shows) nor
+        unpacking blocks the page.
+      - **Cost:** reading and unpacking a decoded image takes 0.25–0.55 s instead of 0.19–0.27 s.
+        It overlaps reading the original and compiling the shaders, so a cached photo showed after
+        0.64–1.16 s against 0.84–1.1 s unpacked. The small Fuji files even open sooner.
+      - **The RAW files stay as they are:** they are compressed already and shrink only 1–3 %.
     - **Gain:** → and ← then open the photo from the caches, in 0.84–1.0 s instead of 3.4–4.1 s.
       Getting one 45 MP photo ready took about 3 s in the background.
   - **The loading screen lists the steps:** photo info, the original, the decode and the first

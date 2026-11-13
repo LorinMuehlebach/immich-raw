@@ -305,8 +305,24 @@ The editor's timings on a reopened or prefetched photo (`immich-raw:*`, medians)
 
   Compressing took 0.8–4 s per image, in the background.
   - **The RAW files are already compressed.**
-  - **A photo's footprint would shrink only 18–28 %**, because the original stays the same size.
-  - **Every cached open would take 0.1–0.5 s longer.** So the cache stays uncompressed.
+  - **A photo's footprint shrinks 18–28 %**, because the original stays the same size.
+  - **Unpacking adds 0.1–0.5 s** in this test, which unpacks on the page's thread.
+
+  **The editor packs the decoded images** with shuffle + gzip, in a worker. Sony 92 → 61 MB and Fuji
+  39 → 22 MB; five Fuji photos now take 235 MB instead of 320. In the editor
+  (`probe-open-speed.mjs`, 3 runs; uncompressed from the run above):
+
+  | File | Open | Uncompressed | Packed | Decoded image read and unpacked |
+  |---|---|---|---|---|
+  | Sony A7R V ARW | again | 1097 | 1157 | 272 → 543 ms |
+  | Canon R5 CR3 | again | 841 | 1046 | 221 → 365 ms |
+  | | → next | 997 | 985 | 206 → 373 ms |
+  | Fuji RAF | again | 851 | 724 | 193 → 253 ms |
+  | | → next | 840 | 637 | 194 → 228 ms |
+
+  The middle columns are the median ms until the photo shows. Unpacking runs in the worker,
+  alongside reading the original and compiling the shaders, so the photo shows at most 0.2 s later.
+  The packed Fuji images are so much smaller to read that they open sooner.
 - **Smoke test (`e2e/smoke.mjs`, Sony):** 13/13 passed on both builds.
   - Opening took 5.3 s after and 10.5 s before.
   - Saving took 7.6 s after and 14.0 s before, with the PC short of memory.

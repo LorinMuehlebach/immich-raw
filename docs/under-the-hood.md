@@ -22,10 +22,11 @@ and no photo is sent anywhere else: the AI models are downloaded to the browser 
 - **Stored data:** the edit settings live in Immich's asset metadata on the RAW. Over HTTPS the
   browser keeps, in its private storage:
   - the original files, so a reopened photo isn't downloaded again;
-  - their decoded half-size images (never a full-resolution one), so it isn't decoded again either;
+  - their decoded half-size images, packed (never a full-resolution one), so it isn't decoded
+    again either;
   - how long the last opens took, per camera, for the loading screen's estimates.
 
-  The originals and the decoded images share 800 MB, about 4–7 photos of 45–61 MP. The photos
+  The originals and the decoded images share 800 MB, about 5–10 photos of 45–61 MP. The photos
   opened longest ago go first; the open photo stays.
 
   The two photos on either side of the open one in the filmstrip are downloaded and decoded into

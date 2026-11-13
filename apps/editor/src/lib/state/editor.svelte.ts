@@ -152,6 +152,7 @@ import { OPEN_LABELS, beginStep, endStep, newOpenSteps, type OpenStep, type Open
 import {
   cameraKey,
   estimateDecodeMs,
+  estimateCachedMs,
   estimateDownloadMs,
   estimateFullMs,
   estimateInfoMs,
@@ -587,15 +588,20 @@ export class Editor {
       });
       bytesP.then(doneDownload, () => {});
       const doneCacheRead = startMeasure('decoded cache read');
+      const cacheReadStarted = now();
+      let cachedMs: number | undefined;
       const decodedP = readDecoded(asset.checksum).then((photo) => {
-        if (photo) doneCacheRead();
+        if (photo) {
+          doneCacheRead();
+          cachedMs = now() - cacheReadStarted;
+        }
         return photo;
       });
       const decodedKept = hasDecoded(asset.checksum);
       decodedKept.then((kept) => {
         // Say so before the step starts: it takes a fraction of a decode.
         const s = this.openSteps.find((x) => x.id === 'decode');
-        if (kept && s && s.startedAt === null) Object.assign(s, { label: OPEN_LABELS.decodeCached, estimateMs: estimateReadMs(times, sizeGuess) });
+        if (kept && s && s.startedAt === null) Object.assign(s, { label: OPEN_LABELS.decodeCached, estimateMs: estimateCachedMs(times, camera, sizeGuess) });
       });
       const bothKept = Promise.all([decodedKept, hasOriginal(asset.checksum)]).then(([d, o]) => d && o);
       done = startMeasure('recipe and snapshots');
@@ -637,7 +643,7 @@ export class Editor {
         let session: RawSession;
         let decodeMs: number | undefined;
         if (cached) {
-          beginStep(this.openSteps, 'decode', now(), { label: OPEN_LABELS.decodeCached, estimateMs: estimateReadMs(times, bytes.length) });
+          beginStep(this.openSteps, 'decode', now(), { label: OPEN_LABELS.decodeCached, estimateMs: estimateCachedMs(times, camera, bytes.length) });
           session = RawSession.restore(bytes, cached.meta, cached.half);
         } else {
           const started = now();
@@ -688,7 +694,7 @@ export class Editor {
         this.renderNow();
         done();
         endStep(this.openSteps, 'show', now());
-        this.learnOpen(original, { camera, bytes: bytes.length, decodeMs, showMs: now() - showStarted });
+        this.learnOpen(original, { camera, bytes: bytes.length, decodeMs, cachedMs, showMs: now() - showStarted });
         if (!cached) this.keepDecoded(asset.checksum, session);
       } catch (e) {
         if (renderer && this.renderer !== renderer) renderer.dispose();

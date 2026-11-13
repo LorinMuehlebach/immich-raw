@@ -26,13 +26,17 @@ export function canPrefetch(nav: Navigator = navigator, secure = globalThis.isSe
   return !(typeof n.deviceMemory === 'number' && n.deviceMemory < 4);
 }
 
+/** Packed half-size images take 0.55–0.66 of their pixels' bytes (pixel-pack.ts); a bit more to be safe. */
+const PACKED_SHARE = 0.7;
+
 /**
- * Bytes a half-size image takes: a quarter of the pixels, 3 channels of 2 bytes. Without the
- * sensor size, guessed from the RAW file's size (a 41 MB CR3 gives 67 MB).
+ * Bytes a half-size image takes in the cache: a quarter of the pixels, 3 channels of 2 bytes,
+ * packed. Without the sensor size, guessed from the RAW file's size (a 41 MB CR3 gives 67 MB
+ * before packing).
  */
 export function decodedBytesGuess(width: number | null | undefined, height: number | null | undefined, fileBytes: number): number {
-  if (width && height && width * height > 1e6) return Math.round(width * height * 1.5);
-  return Math.round(fileBytes * 1.7);
+  const raw = width && height && width * height > 1e6 ? width * height * 1.5 : fileBytes * 1.7;
+  return Math.round(raw * PACKED_SHARE);
 }
 
 /** Room set aside for decoded images still to come, by checksum (fetched, not decoded yet). */

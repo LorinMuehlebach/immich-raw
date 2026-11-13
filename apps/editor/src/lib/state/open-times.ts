@@ -18,6 +18,8 @@ export const DEFAULT_TIMES = {
   readRate: 400_000,
   /** Half-size decode, ms per MB of RAW file. */
   decodeMsPerMB: 30,
+  /** Unpacking a cached half-size image, ms per MB of RAW file (pixel-pack.ts). */
+  cachedMsPerMB: 8,
   /** Full-resolution decode, ms per MB of RAW file. */
   fullMsPerMB: 110,
   /** From the decoded image to the first picture, ms. */
@@ -26,6 +28,8 @@ export const DEFAULT_TIMES = {
 
 export interface CameraTimes {
   decodeMs?: number;
+  /** Reading and unpacking the cached half-size image. */
+  cachedMs?: number;
   fullMs?: number;
   showMs?: number;
   /** Date.now() of the last open, to forget cameras not seen for a long time. */
@@ -53,6 +57,8 @@ export interface OpenSample {
   /** Read from this browser's cache (the original or the decoded image): bytes and ms. */
   read?: { bytes: number; ms: number };
   decodeMs?: number;
+  /** The half-size image came from the cache: reading and unpacking it. */
+  cachedMs?: number;
   showMs?: number;
 }
 
@@ -73,6 +79,11 @@ export const estimateReadMs = (t: OpenTimes, bytes: number) => 20 + bytes / (t.r
 
 export function estimateDecodeMs(t: OpenTimes, camera: string, bytes: number): number {
   return t.cameras[camera]?.decodeMs ?? (t.decodeMsPerMB ?? DEFAULT_TIMES.decodeMsPerMB) * (bytes / MB);
+}
+
+/** Reading and unpacking a cached half-size image. */
+export function estimateCachedMs(t: OpenTimes, camera: string, bytes: number): number {
+  return t.cameras[camera]?.cachedMs ?? estimateReadMs(t, bytes) + DEFAULT_TIMES.cachedMsPerMB * (bytes / MB);
 }
 
 export function estimateFullMs(t: OpenTimes, camera: string, bytes: number): number {
@@ -100,6 +111,7 @@ export function recordOpen(t: OpenTimes, s: OpenSample, now = Date.now()): OpenT
     cam.decodeMs = average(cam.decodeMs, s.decodeMs);
     if (s.bytes > MB) out.decodeMsPerMB = average(out.decodeMsPerMB, s.decodeMs / (s.bytes / MB));
   }
+  if (usable(s.cachedMs)) cam.cachedMs = average(cam.cachedMs, s.cachedMs);
   if (usable(s.showMs)) {
     cam.showMs = average(cam.showMs, s.showMs);
     out.showMs = average(out.showMs, s.showMs);
@@ -140,7 +152,7 @@ export function normalizeOpenTimes(raw: unknown): OpenTimes {
     if (!c || typeof c !== 'object') continue;
     const r = c as Record<string, unknown>;
     const cam: CameraTimes = { used: num(r.used) ?? 0 };
-    for (const k of ['decodeMs', 'fullMs', 'showMs'] as const) {
+    for (const k of ['decodeMs', 'cachedMs', 'fullMs', 'showMs'] as const) {
       const v = num(r[k]);
       if (v !== undefined) cam[k] = v;
     }

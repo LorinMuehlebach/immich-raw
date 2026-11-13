@@ -4,8 +4,8 @@
 import { OpfsLru } from './opfs-lru.ts';
 
 /**
- * The most the cache takes on disk: 4–7 photos of 45–61 MP with their decoded images (a 45 MP CR3
- * and its decoded image take about 108 MB), so the open photo and both its neighbours fit.
+ * The most the cache takes on disk: 5–10 photos of 45–61 MP with their packed decoded images (a
+ * 45 MP CR3 and its decoded image take about 78 MB), so the open photo and the four around it fit.
  */
 export const PHOTO_CACHE_BYTES = 800 * 1024 ** 2;
 
