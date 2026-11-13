@@ -12,7 +12,7 @@
 import { DECODER, type LinearImage, type RawMeta } from '@immich-raw/decoder';
 import type { CachePart } from './opfs-lru.ts';
 import { decodedName as fileName, photoCache as store } from './photo-cache.ts';
-import type { PackJob, PackReply } from './pixel-pack.worker.ts';
+import type { PackReply, PackWork } from './pixel-pack.worker.ts';
 
 /**
  * Bump when RawSession.open() returns different pixels or metadata without a new DECODER, or the
@@ -117,40 +117,52 @@ export async function parseDecoded(file: Blob, unpack: Unpack): Promise<DecodedP
   return { meta, half: { width: width!, height: height!, data, halfSize: true } };
 }
 
-// ---------------------------------------------------------------- the packing worker
+// ---------------------------------------------------------------- the packing workers
 
-let worker: Worker | null = null;
-let nextId = 0;
-const waiting = new Map<number, { resolve: (r: Uint8Array | Uint16Array) => void; reject: (e: Error) => void }>();
+/**
+ * One worker packs, another unpacks. A worker does one job after another, and opening a photo
+ * mustn't wait for packing a neighbour in the background (1–3 s).
+ */
+class PackWorker {
+  private worker: Worker | null = null;
+  private nextId = 0;
+  private readonly waiting = new Map<number, { resolve: (r: Uint8Array | Uint16Array) => void; reject: (e: Error) => void }>();
 
-function run(job: PackJob, transfer: Transferable[]): Promise<Uint8Array | Uint16Array> {
-  if (!worker) {
+  run(work: PackWork, transfer: Transferable[]): Promise<Uint8Array | Uint16Array> {
+    const w = (this.worker ??= this.start());
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.waiting.set(id, { resolve, reject });
+      w.postMessage({ ...work, id }, transfer);
+    });
+  }
+
+  private start(): Worker {
     const w = new Worker(new URL('./pixel-pack.worker.ts', import.meta.url), { type: 'module' });
     w.onmessage = (e: MessageEvent<PackReply>) => {
       const r = e.data;
-      const job = waiting.get(r.id);
-      waiting.delete(r.id);
+      const job = this.waiting.get(r.id);
+      this.waiting.delete(r.id);
       if (r.ok) job?.resolve(r.result);
       else job?.reject(new Error(r.message));
     };
     w.onerror = () => {
       // Didn't start or crashed: what was waiting fails (nothing is cached), the next job starts a new one.
-      for (const job of waiting.values()) job.reject(new Error('The packing worker failed.'));
-      waiting.clear();
-      worker = null;
+      for (const job of this.waiting.values()) job.reject(new Error('The packing worker failed.'));
+      this.waiting.clear();
+      this.worker = null;
     };
-    worker = w;
+    return w;
   }
-  return new Promise((resolve, reject) => {
-    waiting.set(job.id, { resolve, reject });
-    worker!.postMessage(job, transfer);
-  });
 }
+
+const packer = new PackWorker();
+const unpacker = new PackWorker();
 
 /** A copy goes to the worker: the editor keeps rendering from the original. */
 const packInWorker: Pack = (values) => {
   const copy = values.slice();
-  return run({ id: nextId++, op: 'pack', values: copy }, [copy.buffer]) as Promise<Uint8Array>;
+  return packer.run({ op: 'pack', values: copy }, [copy.buffer]) as Promise<Uint8Array>;
 };
 
-const unpackInWorker: Unpack = (packed, count) => run({ id: nextId++, op: 'unpack', packed, count }, [packed]) as Promise<Uint16Array>;
+const unpackInWorker: Unpack = (packed, count) => unpacker.run({ op: 'unpack', packed, count }, [packed]) as Promise<Uint16Array>;

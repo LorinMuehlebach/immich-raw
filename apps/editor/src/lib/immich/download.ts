@@ -18,18 +18,19 @@ export interface DownloadProgress {
 
 export type OnDownloadProgress = (fraction: number, progress: DownloadProgress) => void;
 
-export async function downloadOriginal(asset: OriginalRef, onProgress?: OnDownloadProgress): Promise<Uint8Array> {
+/** `signal` stops a download (another photo was opened). */
+export async function downloadOriginal(asset: OriginalRef, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
   const name = cacheName(asset.checksum);
   const cached = await readCache(name, onProgress);
   if (cached) return cached;
-  const bytes = await fetchWithProgress(apiUrl(`/assets/${asset.id}/original`), onProgress);
+  const bytes = await fetchWithProgress(apiUrl(`/assets/${asset.id}/original`), onProgress, signal);
   void originals.write(name, [bytes as Uint8Array<ArrayBuffer>]); // best effort, don't block the editor
   return bytes;
 }
 
 /** An original without the cache (e.g. a JPEG in a batch export), with the same stall timeout. */
-export function downloadUncached(id: string, onProgress?: OnDownloadProgress): Promise<Uint8Array> {
-  return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress);
+export function downloadUncached(id: string, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
+  return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress, signal);
 }
 
 /** The original from this browser's cache only, or null. */
@@ -45,8 +46,10 @@ export function hasOriginal(checksum: string, touch = false): Promise<boolean> {
 /** A download gives up when Immich sends nothing for this long (e.g. the server stopped answering). */
 const STALL_MS = 60_000;
 
-async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress): Promise<Uint8Array> {
+async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
   const abort = new AbortController();
+  signal?.throwIfAborted();
+  signal?.addEventListener('abort', () => abort.abort(signal.reason), { once: true });
   let timer = 0;
   const poke = () => {
     clearTimeout(timer);

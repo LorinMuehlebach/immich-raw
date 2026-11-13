@@ -24,6 +24,11 @@ export function pinPhoto(checksum: string): void {
   photoCache.pin(originalName(checksum), decodedName(checksum));
 }
 
+/** Lets go of the pinned photos: another photo was opened in the page. */
+export function unpinPhotos(): void {
+  photoCache.unpinAll();
+}
+
 /** Bytes another photo may take without pushing out a pinned one. */
 export function cacheRoom(): Promise<number> {
   return photoCache.room();

@@ -23,7 +23,16 @@ export default class FakeLibRaw {
     return { width: 8, height: 8, top_margin: 0, left_margin: 0, raw_width: 8, raw_height: 8 };
   }
 
+  private stopped: ((e: Error) => void) | null = null;
+
+  /** Runs until the instance is disposed, like a long decode that gets stopped. */
+  imageData(): Promise<unknown> {
+    return new Promise((_resolve, reject) => (this.stopped = reject));
+  }
+
   dispose(): void {
     fakeLibRawLog().push(`dispose ${this.n}`);
+    this.stopped?.(new Error('LibRaw disposed'));
+    this.stopped = null;
   }
 }

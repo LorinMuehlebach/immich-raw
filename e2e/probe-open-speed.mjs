@@ -74,6 +74,7 @@ try {
               break;
             }
             const before = page.url();
+            const title = await page.title();
             t0 = Date.now();
             await page.keyboard.press('ArrowRight');
             const moved = await page.waitForURL((u) => u.href !== before, { timeout: 10000 }).then(() => true, () => false);
@@ -81,6 +82,9 @@ try {
               console.log(`${file} ${base} next: no next photo, skipped`);
               break;
             }
+            // Builds that switch photos inside the page keep the old canvas until the new photo's
+            // info arrives: wait for its name in the title first.
+            await page.waitForFunction((t) => document.title !== t, title, { timeout: 60000 });
             file = `${file} → next`;
           } else {
             await page.goto(`${base}/immich-raw/?asset=${asset.id}`);

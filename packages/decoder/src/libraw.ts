@@ -144,8 +144,11 @@ function toMeta(m: RawWasmMeta): RawMeta {
  * `onWorking` is called once the worker has the long part (unpacking and processing): from then
  * on the page's thread can be busy without holding up the decode.
  */
-async function decode(bytes: Uint8Array, settings: Record<string, unknown>, withMeta: boolean, label: string, onWorking?: () => void) {
+async function decode(bytes: Uint8Array, settings: Record<string, unknown>, withMeta: boolean, label: string, onWorking?: () => void, signal?: AbortSignal) {
   const raw = await takeLibRaw();
+  // Stopping ends the worker: whatever it was doing fails with "LibRaw disposed".
+  if (signal?.aborted) raw.dispose();
+  signal?.addEventListener('abort', () => raw.dispose(), { once: true });
   try {
     // open() transfers (detaches) the buffer it gets, so always hand it a copy. It also waits
     // for the worker's WebAssembly, unless the instance was started early.
@@ -315,6 +318,7 @@ export class RawSession {
   readonly decoder: DecoderInfo;
   private bytes: Uint8Array | null;
   private fullPromise: Promise<LinearImage> | null = null;
+  private readonly stop = new AbortController();
 
   private constructor(bytes: Uint8Array, meta: RawMeta, half: LinearImage) {
     this.bytes = bytes;
@@ -325,10 +329,10 @@ export class RawSession {
 
   /**
    * Decodes at half size (no demosaic, ~2 s) so editing can start right away. `onWorking`: called
-   * when the worker starts the long part of the decode (see decode()).
+   * when the worker starts the long part of the decode (see decode()). `signal` stops it.
    */
-  static async open(bytes: Uint8Array, onWorking?: () => void): Promise<RawSession> {
-    const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true, 'half decode', onWorking);
+  static async open(bytes: Uint8Array, onWorking?: () => void, signal?: AbortSignal): Promise<RawSession> {
+    const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true, 'half decode', onWorking, signal);
     const m = toMeta(meta!);
     // LibRaw only shrinks mosaic images; a demosaiced (linear, e.g. lossy) DNG comes back at
     // full size. Keep it as the full image and halve it for editing.
@@ -354,7 +358,7 @@ export class RawSession {
       const bytes = this.bytes;
       if (!bytes) return Promise.reject(new Error('Session closed'));
       const { userQual } = demosaicFor(this.meta.isXTrans);
-      this.fullPromise = decode(bytes, { ...BASE_SETTINGS, userQual }, false, 'full decode').then(({ img }) => ({ ...img, halfSize: false }));
+      this.fullPromise = decode(bytes, { ...BASE_SETTINGS, userQual }, false, 'full decode', undefined, this.stop.signal).then(({ img }) => ({ ...img, halfSize: false }));
       this.fullPromise.catch(() => (this.fullPromise = null));
     }
     return this.fullPromise;
@@ -364,8 +368,9 @@ export class RawSession {
     return this.fullPromise !== null;
   }
 
-  /** Drops the file bytes; the half image stays usable. */
+  /** Drops the file bytes and stops a running full-resolution decode; the half image stays usable. */
   close(): void {
     this.bytes = null;
+    this.stop.abort();
   }
 }

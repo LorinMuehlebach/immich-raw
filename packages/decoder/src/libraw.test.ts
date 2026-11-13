@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fakeLibRawLog } from './fake-libraw.ts';
-import { prewarmDecoder, readExtraMeta, setLibRawUrl } from './libraw.ts';
+import { RawSession, prewarmDecoder, readExtraMeta, setLibRawUrl } from './libraw.ts';
+import type { RawMeta } from './types.ts';
 
 const FAKE = new URL('./fake-libraw.ts', import.meta.url).href;
 const bytes = new Uint8Array(16);
@@ -49,5 +50,26 @@ describe('prewarmDecoder', () => {
     await settle();
     const [made, disposed] = fakeLibRawLog();
     expect(disposed).toBe(made!.replace('new', 'dispose'));
+  });
+});
+
+describe('RawSession.close', () => {
+  const meta = { width: 8, height: 8, isXTrans: false } as RawMeta;
+
+  beforeEach(async () => {
+    setLibRawUrl(FAKE);
+    await settle();
+    fakeLibRawLog().length = 0;
+  });
+
+  it('stops a running full-resolution decode', async () => {
+    const session = RawSession.restore(bytes, meta, { width: 4, height: 4, data: new Uint16Array(48), halfSize: true });
+    const full = session.full();
+    full.catch(() => {});
+    await settle();
+    expect(fakeLibRawLog()).toHaveLength(1);
+    session.close();
+    await expect(full).rejects.toThrow('LibRaw disposed');
+    expect(fakeLibRawLog()[1]).toMatch(/^dispose /);
   });
 });

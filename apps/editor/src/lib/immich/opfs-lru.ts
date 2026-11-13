@@ -61,6 +61,11 @@ export class OpfsLru {
     for (const n of names) this.pinned.add(n);
   }
 
+  /** Lets go of every pinned file (another photo is opened in the page). */
+  unpinAll(): void {
+    this.pinned.clear();
+  }
+
   /** Bytes a new file may take without pushing out a pinned one. */
   async room(): Promise<number> {
     const dir = await this.dir();

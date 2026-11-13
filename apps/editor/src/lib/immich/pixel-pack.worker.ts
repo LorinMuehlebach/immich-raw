@@ -2,7 +2,8 @@
 // 61 MP photo's half-size image takes seconds, and unpacking it would hold up opening a photo.
 import { packPixels, unpackPixels } from './pixel-pack.ts';
 
-export type PackJob = { id: number; op: 'pack'; values: Uint16Array } | { id: number; op: 'unpack'; packed: ArrayBuffer; count: number };
+export type PackWork = { op: 'pack'; values: Uint16Array } | { op: 'unpack'; packed: ArrayBuffer; count: number };
+export type PackJob = PackWork & { id: number };
 export type PackReply = { id: number; ok: true; result: Uint8Array | Uint16Array } | { id: number; ok: false; message: string };
 
 const post = (msg: PackReply, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(msg, transfer);

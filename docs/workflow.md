@@ -43,6 +43,10 @@ Below the photo: the RAWs of the album or person you opened the photo from, othe
 taken within 12 hours of it. ← and → go to the previous and next photo. With the culler it also
 shows stacks ([Stacking](stacking.md)).
 
+The next photo opens in the same page, without loading the editor again, and the address bar
+follows: the browser's Back and Forward go through the photos you opened. Unsaved changes ask
+first, as when going back to Immich.
+
 Over HTTPS the editor gets the photos around the open one ready while you edit: the next and
 previous photo, then the two after those. It downloads them as soon as the open photo shows, and
 decodes them once the open photo is decoded at full resolution. Then ← and → open them from the

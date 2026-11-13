@@ -153,28 +153,31 @@
       if (!discarding && (editor.dirty || editor.saving)) e.preventDefault();
     };
     addEventListener('beforeunload', beforeUnload);
+    addEventListener('popstate', onPopState);
     return () => {
       ro.disconnect();
       stage.removeEventListener('wheel', onWheel);
       removeEventListener('beforeunload', beforeUnload);
+      removeEventListener('popstate', onPopState);
     };
   });
 
-  // Leaving with unsaved changes asks first: Yes saves, No discards, Cancel stays.
-  // The target is a function: after saving, "back" points at the new render.
-  // back: returning to Immich, which should show the saved render (see editor.waitForRender).
-  let leaving = $state<{ target: () => string; back: boolean } | null>(null);
+  // Leaving the photo with unsaved changes asks first: Yes saves, No discards, Cancel stays.
+  // go: what happens after the answer. unload: it leaves the page (back to Immich), so the
+  // browser's own "leave page?" question mustn't ask again.
+  let leaving = $state<{ go: () => unknown; unload: boolean } | null>(null);
   let leaveSaving = $state(false);
   let discarding = false;
 
-  async function go(target: () => string, back: boolean) {
-    if (back) await editor.waitForRender();
+  /** Back to Immich. The target is a function: after saving, it points at the new render. */
+  async function toImmich(target: () => string) {
+    await editor.waitForRender();
     location.href = target();
   }
 
-  function leave(target: () => string, back = false) {
-    if (!editor.dirty) void go(target, back);
-    else leaving = { target, back };
+  function leave(go: () => unknown, unload: boolean) {
+    if (!editor.dirty) void go();
+    else leaving = { go, unload };
   }
 
   async function leaveSave() {
@@ -185,23 +188,43 @@
     leaveSaving = false;
     leaving = null;
     // A failed save keeps the editor open; the error is shown.
-    if (ok) await go(l.target, l.back);
+    if (ok) await l.go();
   }
 
   function leaveDiscard() {
     const l = leaving;
     leaving = null;
     if (!l) return;
-    discarding = true;
-    void go(l.target, l.back);
+    if (l.unload) discarding = true;
+    void l.go();
   }
 
   function goBack() {
-    leave(() => editor.backUrl(), true);
+    leave(() => toImmich(() => editor.backUrl()), true);
   }
 
+  /** Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again. */
   function openAsset(id: string) {
-    if (id !== editor.asset?.id) leave(() => editor.urlFor(id));
+    if (id === editor.asset?.id) return;
+    leave(() => {
+      stackFor = null;
+      return editor.switchPhoto(id);
+    }, false);
+  }
+
+  /** Back and Forward between photos opened in this page. */
+  function onPopState() {
+    const id = new URLSearchParams(location.search).get('asset');
+    const open = editor.asset?.id;
+    if (!id || id === open) return;
+    if (editor.dirty || editor.saving) {
+      // Not yet: the open photo's address goes back until the question is answered.
+      if (open) history.pushState(null, '', editor.urlFor(open));
+      if (!editor.saving) openAsset(id);
+      return;
+    }
+    stackFor = null;
+    void editor.switchPhoto(id, 'none');
   }
 
   /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
@@ -650,13 +673,14 @@
         <div class="toast" class:err={!!editor.error}>
           <span>{editor.error ?? editor.notice ?? editor.warning}</span>
           {#if editor.notice && editor.recipe.render && !editor.error && !editor.dirty}
-            <button onclick={() => go(() => editor.backUrl(), true)}>Back to Immich</button>
+            <button onclick={() => toImmich(() => editor.backUrl())}>Back to Immich</button>
           {/if}
           <button class="icon" aria-label="Dismiss" onclick={() => ((editor.notice = null), (editor.error = null), (editor.warning = null))}>✕</button>
         </div>
       {/if}
     </main>
-    {#if editor.status === 'ready' && editor.asset}
+    <!-- Stays while the next photo loads, so it keeps its place and its list. -->
+    {#if editor.asset && editor.status !== 'auth'}
       <Filmstrip
         ctx={editor.ctx}
         current={editor.asset}

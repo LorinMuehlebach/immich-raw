@@ -42,12 +42,17 @@ export function decodedBytesGuess(width: number | null | undefined, height: numb
 /** Room set aside for decoded images still to come, by checksum (fetched, not decoded yet). */
 const reserved = new Map<string, number>();
 
+/** Another photo is open: the room set aside for the old one's neighbours is free again. */
+export function resetPrefetch(): void {
+  reserved.clear();
+}
+
 /**
  * Downloads one photo's original into the cache, unless it is there already, the photo isn't a
  * RAW, or it doesn't fit with its decoded image. The photo's checksum for decodeNeighbour(), or
  * null when skipped.
  */
-export async function fetchNeighbour(id: string): Promise<string | null> {
+export async function fetchNeighbour(id: string, signal?: AbortSignal): Promise<string | null> {
   const asset = await getAssetInfo({ id });
   if (asset.isTrashed || !isRawFilename(asset.originalFileName)) return null;
   const { checksum } = asset;
@@ -62,21 +67,21 @@ export async function fetchNeighbour(id: string): Promise<string | null> {
   pinPhoto(checksum);
   if (decodedBytes) reserved.set(checksum, decodedBytes);
   if (!original) {
-    const bytes = await downloadUncached(asset.id);
+    const bytes = await downloadUncached(asset.id, undefined, signal);
     await cacheOriginal(checksum, bytes);
   }
   return checksum;
 }
 
 /** Decodes a fetched photo at half size into the cache. False when there was nothing to do. */
-export async function decodeNeighbour(checksum: string): Promise<boolean> {
+export async function decodeNeighbour(checksum: string, signal?: AbortSignal): Promise<boolean> {
   try {
     if (await hasDecoded(checksum, true)) return false;
     // Not there when it didn't fit after all: then there is nothing to decode from.
     const bytes = await readCachedOriginal(checksum);
     if (!bytes) return false;
     // A decode of its own, in its own worker, like the editor's; the worker is gone afterwards.
-    const session = await RawSession.open(bytes);
+    const session = await RawSession.open(bytes, undefined, signal);
     await writeDecoded(checksum, session.meta, session.half);
     return true;
   } finally {

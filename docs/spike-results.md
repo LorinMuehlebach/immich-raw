@@ -323,6 +323,16 @@ The editor's timings on a reopened or prefetched photo (`immich-raw:*`, medians)
   The middle columns are the median ms until the photo shows. Unpacking runs in the worker,
   alongside reading the original and compiling the shaders, so the photo shows at most 0.2 s later.
   The packed Fuji images are so much smaller to read that they open sooner.
+- **Switching photos inside the page:** in one session, on the same cached Fuji photos,
+  alternating:
+  - **switching in the page:** 870, 861, 879, 533, 553 and 537 ms;
+  - **loading the page with the photo:** 1387, 1523, 990, 1268, 885 and 873 ms.
+
+  Each time is how long until the photo shows. A switch spends about 0.25 s reading and unpacking
+  the decoded image. The first render takes 1–4 ms with the renderer's shaders already compiled.
+  - **Memory:** over 12 switches between two photos in one tab, the browser stayed at 1.7–2.0 GB.
+  - **One shared worker for packing and unpacking was a mistake:** an open's unpacking waited
+    behind packing a neighbour (1–3 s). Each now has its own worker.
 - **Smoke test (`e2e/smoke.mjs`, Sony):** 13/13 passed on both builds.
   - Opening took 5.3 s after and 10.5 s before.
   - Saving took 7.6 s after and 14.0 s before, with the PC short of memory.

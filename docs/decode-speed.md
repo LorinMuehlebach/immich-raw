@@ -80,8 +80,29 @@ Two branches, neither merged yet:
         It overlaps reading the original and compiling the shaders, so a cached photo showed after
         0.64–1.16 s against 0.84–1.1 s unpacked. The small Fuji files even open sooner.
       - **The RAW files stay as they are:** they are compressed already and shrink only 1–3 %.
-    - **Gain:** → and ← then open the photo from the caches, in 0.84–1.0 s instead of 3.4–4.1 s.
-      Getting one 45 MP photo ready took about 3 s in the background.
+    - **Gain:** → and ← then open the photo from the caches, in 0.84–1.0 s instead of 3.4–4.1 s
+      (with the page loaded again; see the next point). Getting one 45 MP photo ready took about
+      3 s in the background.
+  - **The filmstrip, ← and → switch photos inside the page** (`Editor.switchPhoto`), instead of
+    loading the editor again.
+    - **What stays:** the page and its scripts, the login, the renderer with its compiled shaders,
+      the filmstrip and its list, the decoder's worker and the prefetch queue.
+    - **What goes:** the open photo is put away first (`closePhoto`). Its running full-resolution
+      decode, download and half-size decode are stopped, and everything that belongs to it is
+      reset: edit, history, masks, lens data and the offers.
+    - **Late results:** each open has a number. Background work that finishes later (the lens
+      profile, the sidecar check, Immich's preview) checks it and drops its result if another
+      photo is open by then.
+    - **The address bar follows** (`history.pushState`), so reloading opens the same photo and the
+      browser's Back and Forward go through the photos opened.
+    - **Unsaved changes ask first,** as when leaving.
+    - **Gain:** in one browser session, on the same cached Fuji photos, a switch inside the page
+      showed the photo after 0.53–0.88 s (median 0.86 s). Loading the page with it took
+      0.87–1.52 s (median 1.27 s).
+      - **Where the rest goes:** about 0.25 s is reading and unpacking the decoded image.
+      - **First render:** 1–4 ms, against 40–70 ms after loading the page.
+    - **Memory:** 12 switches in one tab kept the browser at 1.7–2.0 GB, so the old photo's memory
+      is freed.
   - **The loading screen lists the steps:** photo info, the original, the decode and the first
     render. Each step shows how long it took or should take, and the bar shows the time left
     (`apps/editor/src/lib/ui/OpenProgress.svelte`).
@@ -141,32 +162,35 @@ Roughly by gain for the effort.
      metadata says 8190×5462.
    - Expect little for X-Trans: 0.83× the time, and 130 rows differed at the seam with 24 rows of
      overlap.
-4. **Get the photo ready from Immich's own viewer.** The buttons script runs on Immich's pages, at
+4. **Keep the neighbours' decoded images unpacked in memory.** A switch to a prefetched photo then
+   skips reading and unpacking its decoded image (0.25 s of the 0.5 s), at 40–90 MB of memory per
+   photo kept.
+5. **Get the photo ready from Immich's own viewer.** The buttons script runs on Immich's pages, at
    the same address as the editor, so it shares the editor's storage. While a RAW is shown in
    Immich, it could download the original into the cache, so that Edit RAW skips the download.
    Decoding there too would need the decoder in Immich's page, which is heavier.
-5. **Compile the shaders without blocking the page** (`KHR_parallel_shader_compile`). In a new
+6. **Compile the shaders without blocking the page** (`KHR_parallel_shader_compile`). In a new
    browser profile the shaders took 2.7–3.7 s to compile, blocking the page's thread (0.1 s once
    the browser has them cached). The first open after installing or updating the browser waits for
    it. With the extension, the compile runs in the GPU process and the renderer checks for
    completion later, so the compile no longer blocks the page.
-6. **Batch export could use the kept half-size images** for the photos opened before (see 2.).
-7. **Start the full decode's worker early too**, like the half decode's. That saves 40–120 ms.
-8. **Tune the thread counts.**
+7. **Batch export could use the kept half-size images** for the photos opened before (see 2.).
+8. **Start the full decode's worker early too**, like the half decode's. That saves 40–120 ms.
+9. **Tune the thread counts.**
    - More than 4 threads per decode wasn't measured on our files.
    - A batch export started from the editor uses the editor's 4 threads per photo, with 4 photos at
      once.
    - `e2e/bench-export.mjs` can measure both.
-9. **Limits inside LibRaw:**
-   - The X-Trans demosaic stays on one thread, because LibRaw's OpenMP version of it has threads
-     reading pixels that others are writing.
-   - The Sony ARW and Nikon NEF decoders unpack on one thread.
+10. **Limits inside LibRaw:**
+    - The X-Trans demosaic stays on one thread, because LibRaw's OpenMP version of it has threads
+      reading pixels that others are writing.
+    - The Sony ARW and Nikon NEF decoders unpack on one thread.
 
-   Both would need changes in LibRaw itself.
-10. **One compiler for both builds.** The single-threaded build uses Emscripten 5.0.7, the threaded
+    Both would need changes in LibRaw itself.
+11. **One compiler for both builds.** The single-threaded build uses Emscripten 5.0.7, the threaded
     one 6.0.4. Their output is identical today. Building both with 6.x would simplify the Docker build;
     check it with `e2e/probe-decoder-compare.mjs` and bump `DECODER` if anything changes.
-11. **Robustness:**
+12. **Robustness:**
     - One long probe run, all five files in one tab, crashed the tab while the PC was short of
       memory. It didn't happen again in 24 decodes in one tab or in the smoke runs.
     - The threaded build may grow to 4 GB; nothing has tested more than about 2.4 GB.

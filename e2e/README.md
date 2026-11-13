@@ -82,7 +82,8 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   - `cached`: again, so the original (and the decoded image, in builds that keep it) comes from the
     browser's cache;
   - `next`: the filmstrip's next photo, with →, after the editor got it ready in the background.
-    Only RAWs with a neighbour have this; `canon-lr` and the `DSCF…` series do.
+    Builds that switch photos inside the page do so without loading it again. Only RAWs with a
+    neighbour have this; `canon-lr` and the `DSCF…` series do.
   To compare two editor builds, serve the second one at another address (for example a second
   nginx container on the e2e network with `-p 127.0.0.1:8087:80` and that build mounted at
   `/usr/share/nginx/immich-raw`), then pass both:
