@@ -24,12 +24,13 @@ export class RawRenderer {
   /**
    * The photo with `saved` applied at full resolution, as the editor would save it. Without a
    * saved edit it gets the photo's starting settings (a Fujifilm RAW its in-camera film look,
-   * when the film looks are in this browser). Rendered in the colour space and bit depth `out`.
+   * when the film looks are in this browser); a function makes the recipe from those. Rendered in
+   * the colour space and bit depth `out`.
    * `onDecoder`: the decoder that read it, as a save records it in the recipe.
    */
   async render(
     asset: AssetResponseDto,
-    saved: Recipe | null,
+    saved: Recipe | null | ((defaults: Recipe) => Recipe),
     onStep: (step: RawStep, fraction?: number) => void,
     out: OutputColor = SRGB8,
     onDecoder?: (decoder: { name: string; version: string; demosaic: string }) => void,
@@ -43,7 +44,8 @@ export class RawRenderer {
     const camera = cameraInfo(session.meta);
     // Never asks: the kept looks, or a download only if the user agreed to one before.
     const looks = await fujiLooks.quiet();
-    const recipe = saved ?? photoDefaults({ make: session.meta.make, sim, looksReady: !!looks }).recipe;
+    const defaults = () => photoDefaults({ make: session.meta.make, sim, looksReady: !!looks }).recipe;
+    const recipe = typeof saved === 'function' ? saved(defaults()) : (saved ?? defaults());
     const dngLens = dngLensFor(asset.originalFileName, bytes, camera);
     const full = await session.full();
     session.close();

@@ -143,6 +143,7 @@ import { DraftKeeper, canvasJpeg, thumbnailJpeg } from '../drafts/draft-keeper.t
 import { draftKey, savedShows, withDraft, type Draft } from '../drafts/draft-store.ts';
 import { drafts } from '../drafts/drafts.svelte.ts';
 import { describeDraftsSaved, saveDraftPhoto, saveEach } from '../drafts/save-drafts.ts';
+import { syncInto } from '../drafts/sync.ts';
 import { RawRenderer } from '../export/raw-render.ts';
 import { looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
@@ -902,7 +903,8 @@ export class Editor {
       void this.showPreview(asset, stored, viewP, gen, draft?.recipe ?? null);
       this.snapshots = snapshotsIn(items, historyKeyFor(copyId));
       this.storedEdit = !!stored;
-      if (draft && draft.base !== savedShows(stored)) this.draftConflict = { at: draft.updatedAt };
+      // Synced settings (draft.patch) go on whatever is saved; a draft from the editor may be older than the save.
+      if (draft && !draft.patch && draft.base !== savedShows(stored)) this.draftConflict = { at: draft.updatedAt };
       // Film looks kept in this browser (never downloads here).
       const looksP = fujiLooks.load();
       if (stored) {
@@ -1272,6 +1274,32 @@ export class Editor {
   keepOlderDraft(): void {
     this.draftConflict = null;
     void this.draftKeeper.rewrite();
+  }
+
+  /**
+   * Sync Settings: the chosen groups of the open edit's settings go onto these other photos as
+   * drafts (drafts/sync.ts); Save drafts puts them in Immich.
+   */
+  async syncSettings(assetIds: readonly string[], groups: GroupId[]): Promise<void> {
+    const open = this.asset?.id;
+    const targets = assetIds.filter((id) => id !== open);
+    if (!targets.length || !groups.length || this.readOnly) return;
+    this.commit();
+    const patch = pickGroups($state.snapshot(this.recipe) as Recipe, groups);
+    const deps = { draft: (id: string) => drafts.get(id, null), put: (d: Omit<Draft, 'key'>) => drafts.put(d) };
+    let synced = 0;
+    const failed: string[] = [];
+    for (const id of targets) {
+      try {
+        await syncInto(id, patch, deps);
+        looks.forget(id);
+        synced++;
+      } catch (e) {
+        failed.push(errorMessage(e));
+      }
+    }
+    const photos = (n: number) => `${n} ${n === 1 ? 'photo' : 'photos'}`;
+    this.notice = `Settings synced to ${photos(synced)} as drafts; Save drafts in the filmstrip puts them in Immich.${failed.length ? ` ${photos(failed.length)} failed: ${failed[0]}` : ''}`;
   }
 
   /**
@@ -2817,7 +2845,7 @@ export class Editor {
     this.savedJson = editableJson(saved);
     this.storedEdit = !!stored;
     this.snapshots = snapshots;
-    this.draftConflict = draft && draft.base !== savedShows(stored) ? { at: draft.updatedAt } : null;
+    this.draftConflict = draft && !draft.patch && draft.base !== savedShows(stored) ? { at: draft.updatedAt } : null;
     // "Back" may lead to any of this RAW's JPEGs; it goes to the one of the edit open last.
     if (stored?.render?.assetId) this.pastRenders.add(stored.render.assetId);
     this.startHistory(saved, stored ? 'Open (saved edit)' : 'Open', draft);

@@ -44,6 +44,10 @@
     onSaveDrafts?: (assetIds: Set<string>) => void;
     /** The saved JPEG of the photo being edited (its thumbnail follows a save). */
     currentRenderId?: string | null;
+    /** Photos picked with Ctrl/Cmd-click, Shift-click or a long press (stars, flags and sync act on them). */
+    selected?: string[];
+    /** Sync Settings onto these photos (absent: the user can't edit here). */
+    onSync?: (assetIds: string[]) => void;
   }
 
   let {
@@ -59,6 +63,8 @@
     onCurrentDeleted,
     onSaveDrafts,
     currentRenderId = null,
+    selected = $bindable([]),
+    onSync,
   }: Props = $props();
 
   const COLLAPSED_KEY = 'raw-editor.filmstrip.collapsed';
@@ -121,6 +127,63 @@
   let thumbH = $state(Math.min(200, Math.max(48, Number(readJson(HEIGHT_KEY)) || 64)));
   /** Photos of the filmstrip with a draft, the open one also with changes not in its draft yet. */
   const withDrafts = $derived(new Set(items.filter((a) => draftPhotos.has(a.id) || (a.id === current.id && unsaved)).map((a) => a.id)));
+  /** What Save drafts saves: the selected photos' drafts, else every draft in the filmstrip. */
+  const toSave = $derived(selected.length ? new Set(selected.filter((id) => withDrafts.has(id))) : withDrafts);
+
+  // ---------------------------------------------------------------- selection
+  /** Where a Shift-click range starts. */
+  let anchor: string | null = null;
+  /** Touch: after a long press, taps add and remove photos instead of opening them. */
+  let selecting = $state(false);
+  let pressTimer: ReturnType<typeof setTimeout> | null = null;
+  let pressed = false;
+
+  $effect(() => {
+    if (!selected.length) selecting = false;
+  });
+
+  function toggleSelected(id: string) {
+    // The first pick also takes the open photo, as the photo its settings come from.
+    const base = selected.length ? selected : [current.id];
+    selected = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+    anchor = id;
+  }
+
+  function selectRange(to: string) {
+    const ids = strip.map((s) => s.asset.id);
+    const from = ids.indexOf(anchor ?? current.id);
+    const at = ids.indexOf(to);
+    if (from < 0 || at < 0) return;
+    selected = ids.slice(Math.min(from, at), Math.max(from, at) + 1);
+  }
+
+  function clickCell(e: MouseEvent, a: AssetResponseDto) {
+    if (pressed) {
+      pressed = false;
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || selecting) return toggleSelected(a.id);
+    if (e.shiftKey) return selectRange(a.id);
+    selected = [];
+    anchor = a.id;
+    if (a.id !== current.id) onSelect(a.id, $state.snapshot(a) as AssetResponseDto);
+  }
+
+  /** A long press on a touch screen starts picking photos. */
+  function pressStart(e: PointerEvent, id: string) {
+    if (e.pointerType !== 'touch') return;
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      pressed = true;
+      selecting = true;
+      toggleSelected(id);
+    }, 500);
+  }
+
+  function pressEnd() {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = null;
+  }
 
   // Load once per context; reload only if the current asset is not in the list.
   $effect(() => {
@@ -337,9 +400,16 @@
         <button class="headbtn" class:active={panelOpen} onclick={() => (panelOpen = !panelOpen)} title="Stack similar photos and pick the best of each">Auto-stack…</button>
       {/if}
     {/if}
-    {#if onSaveDrafts && withDrafts.size && !collapsed}
-      <button class="headbtn" onclick={() => onSaveDrafts(withDrafts)} title="Render the drafts of these photos and save them to Immich, one photo at a time">
-        Save {withDrafts.size} {withDrafts.size === 1 ? 'draft' : 'drafts'}
+    {#if selected.length && !collapsed}
+      <span class="sel">{selected.length} selected</span>
+      {#if onSync && selected.some((id) => id !== current.id)}
+        <button class="headbtn" onclick={() => onSync([...selected])} title="Put settings of this photo on the selected photos, as drafts">Sync settings…</button>
+      {/if}
+      <button class="chip" onclick={() => (selected = [])} title="Select none (Esc)" aria-label="Select none">✕</button>
+    {/if}
+    {#if onSaveDrafts && toSave.size && !collapsed}
+      <button class="headbtn" onclick={() => onSaveDrafts(toSave)} title="Render the drafts of these photos and save them to Immich, one photo at a time">
+        Save {toSave.size} {toSave.size === 1 ? 'draft' : 'drafts'}
       </button>
     {/if}
     {#if cullError}<span class="err" title={cullError}>{cullError}</span>{/if}
@@ -381,11 +451,16 @@
           <button
             class="cell"
             class:current={a.id === current.id}
+            class:selected={selected.includes(a.id)}
             class:rejected={rejectsKnown ? f.rejected : badge?.tone === 'rejected'}
             role="option"
             aria-selected={a.id === current.id}
             title={tooltipFor(label(a), s.info)}
-            onclick={() => a.id !== current.id && onSelect(a.id, $state.snapshot(a) as AssetResponseDto)}
+            onclick={(e) => clickCell(e, a)}
+            onpointerdown={(e) => pressStart(e, a.id)}
+            onpointerup={pressEnd}
+            onpointerleave={pressEnd}
+            onpointercancel={pressEnd}
             use:centreIf={a.id === current.id}
           >
             <img alt={a.originalFileName} use:thumb={{ id: a.id, draft: f.draft, render: a.id === current.id ? currentRenderId : null }} draggable="false" />
@@ -539,6 +614,16 @@
     opacity: 1;
     border-color: var(--accent);
     background: #2a2f38;
+  }
+  .cell.selected {
+    opacity: 1;
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .sel {
+    font-size: 11px;
+    color: var(--text-bright);
+    margin-left: 6px;
   }
   .cell.rejected img {
     filter: saturate(0.5) brightness(0.8);

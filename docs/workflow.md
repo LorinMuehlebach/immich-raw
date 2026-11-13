@@ -108,6 +108,16 @@ top edge to make the thumbnails bigger.
 They go on the whole shot: the RAW, its camera JPEG and its edits, so Immich shows them whichever
 file is in front of the stack.
 
+**Several photos at once:** Ctrl-click (⌘-click on a Mac) adds a photo to the selection (the open
+photo comes along), Shift-click selects everything from the last photo clicked; on a phone, a long
+press starts selecting and taps add or remove photos. A click alone, or Esc, selects none again.
+- 0-5, P, X and U then go on every selected photo.
+- **Sync settings…** puts settings of the open photo on the other selected photos, with the same
+  choice of groups as Copy Settings. Each gets a [draft](#drafts) with just those settings; they go
+  on top of whatever the photo has when it opens or is saved (its saved edit, or its own starting
+  settings, such as a Fujifilm RAW's film look). **Save N drafts** then saves the selected photos'
+  drafts to Immich.
+
 **Filters** in the filmstrip's header: at least so many stars, only picks (♥), no rejects (✕), and
 edited, not edited or with a draft. The photos they leave out are skipped by ← → ↑ ↓; the open photo
 always stays. The filmstrip remembers them.

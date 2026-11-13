@@ -55,6 +55,11 @@
   let apiKey = $state('');
   let copyOpen = $state(false);
   let neighbours = $state<Neighbours>({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [] });
+  // Photos picked in the filmstrip (Ctrl/Cmd-click, Shift-click, long press): stars, flags and
+  // Sync Settings act on them.
+  let selection = $state<string[]>([]);
+  // Sync Settings is choosing what to sync onto these photos.
+  let syncFor = $state<string[] | null>(null);
   // Stars, pick and reject of the open photo (shown in the title line).
   const flagsText = $derived(editor.asset ? factsText(factsOf(editor.asset.id)) : '');
   // What the culler decided for this photo (shown in the title line).
@@ -264,7 +269,11 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || stackFor) return;
+    if (isTyping(e.target) || copyOpen || syncFor || editor.dngDialog || editor.exportDialog || stackFor) return;
+    if (e.key === 'Escape' && selection.length) {
+      selection = [];
+      return;
+    }
     if (editor.saving) return;
     if (editor.status !== 'ready') {
       if (editor.status === 'loading' || editor.status === 'error') onKeyWhileOpening(e);
@@ -392,7 +401,7 @@
 
   /**
    * 0-5 (stars), P (pick), X (reject; in the crop tool it turns the crop), U (neither) on the
-   * open photo's shot. True when the key was one of them.
+   * selected photos' shots, else the open photo's. True when the key was one of them.
    */
   function flagKey(e: KeyboardEvent): boolean {
     const id = editor.asset?.id;
@@ -405,7 +414,7 @@
     else if (k === 'u') action = { kind: 'clear' };
     if (!action) return false;
     e.preventDefault();
-    void flag([id], action);
+    void flag(selection.length ? [...selection] : [id], action);
     return true;
   }
 
@@ -809,6 +818,8 @@
         onCurrentDeleted={afterCurrentDeleted}
         onSaveDrafts={editor.readOnly ? undefined : (ids) => void editor.saveDrafts(ids)}
         currentRenderId={editor.recipe.render?.assetId ?? null}
+        bind:selected={selection}
+        onSync={editor.readOnly ? undefined : (ids) => (syncFor = ids)}
         startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
@@ -869,6 +880,7 @@
             <div><kbd>←</kbd><kbd>→</kbd> filmstrip, <kbd>↑</kbd><kbd>↓</kbd> stacks</div>
             <div><kbd>0</kbd>–<kbd>5</kbd> stars</div>
             <div><kbd>P</kbd> pick, <kbd>X</kbd> reject, <kbd>U</kbd> neither</div>
+            <div><kbd>Ctrl</kbd>/<kbd>⇧</kbd>+click: select in filmstrip</div>
             <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
             <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
             <div><kbd>Ctrl</kbd>+<kbd>'</kbd> virtual copy</div>
@@ -894,6 +906,20 @@
   <ExportSettingsDialog />
 {:else if editor.exportDialog === 'album'}
   <BatchExportDialog onClose={() => (editor.exportDialog = null)} />
+{/if}
+
+{#if syncFor}
+  <CopySettingsDialog
+    title="Sync Settings"
+    confirmLabel="Sync"
+    initial={DEFAULT_GROUPS}
+    onConfirm={(groups) => {
+      const ids = syncFor;
+      syncFor = null;
+      if (ids) void editor.syncSettings(ids, groups);
+    }}
+    onCancel={() => (syncFor = null)}
+  />
 {/if}
 
 {#if copyOpen}

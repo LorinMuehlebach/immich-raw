@@ -84,11 +84,18 @@ async function savePhoto(draft: Draft, raw: AssetResponseDto, o: SavePhotoOption
   const copy = draft.copyId ? (copiesIn(items).find((c) => c.id === draft.copyId) ?? null) : null;
   if (draft.copyId && !copy) throw new Error('its virtual copy no longer exists');
   const stored = copy ? copy.recipe : storedEdit(items, null);
-  // The saved edit's bookkeeping (its JPEG, to replace) with the draft's edits.
-  const recipe: Recipe = stored ? withDraft(stored, draft) : structuredClone(draft.recipe);
-  if (!stored) delete recipe.render;
-  delete recipe.pending;
-  const image = await o.raws.render(raw, recipe, (s, f) => step(s, f ?? 0), outputColor(o.preset, true), (d) => (recipe.decoder = d));
+  // The saved edit's bookkeeping (its JPEG, to replace) with the draft's edits. Settings synced
+  // onto a photo without an edit go on its own starting settings, known once it is decoded.
+  let recipe: Recipe = stored ? withDraft(stored, draft) : structuredClone(draft.recipe);
+  const make = (r: Recipe) => {
+    delete r.pending;
+    if (!stored) delete r.render;
+    return (recipe = r);
+  };
+  const input = !stored && draft.patch ? (defaults: Recipe) => make(withDraft(defaults, draft)) : make(recipe);
+  let decoder: Recipe['decoder'];
+  const image = await o.raws.render(raw, input, (s, f) => step(s, f ?? 0), outputColor(o.preset, true), (d) => (decoder = d));
+  recipe.decoder = decoder;
   recipe.app = APP_ID;
   const file = await finishExport(image, raw, o.preset, { copyright: o.copyright, owner: raw.owner?.name ?? o.fallbackOwner, forImmich: true, logo: null, onStep: (s) => step(s) });
   const warnings: string[] = [];

@@ -3,7 +3,7 @@
 // with the draft instead of its saved edit, until the draft is saved or discarded. The draft
 // remembers which saved edit it was made from, so a newer save (another tab or device) can be
 // pointed out when the photo opens. Kept in IndexedDB; in memory only, when the browser has none.
-import type { Recipe } from '@immich-raw/recipe';
+import { applyPatch, type Recipe, type SettingsPatch } from '@immich-raw/recipe';
 import { editable, editableJson } from '../state/history.ts';
 
 export interface Draft {
@@ -18,6 +18,11 @@ export interface Draft {
   updatedAt: number;
   /** A small picture of it for the filmstrip (JPEG), if one could be taken. */
   thumb?: Blob;
+  /**
+   * Only these settings (Sync Settings on a photo without a saved edit, whose starting settings
+   * aren't known until it opens): they go on top of its defaults then.
+   */
+  patch?: SettingsPatch;
 }
 
 export const draftKey = (assetId: string, copyId: string | null): string => `${assetId}|${copyId ?? ''}`;
@@ -26,7 +31,8 @@ export const draftKey = (assetId: string, copyId: string | null): string => `${a
 export const savedShows = (stored: Recipe | null): string => (stored ? editableJson(stored) : 'unedited');
 
 /** The saved edit (or the photo's defaults) with the draft's edits on top; bookkeeping stays the saved one's. */
-export function withDraft(base: Recipe, draft: Pick<Draft, 'recipe'>): Recipe {
+export function withDraft(base: Recipe, draft: Pick<Draft, 'recipe' | 'patch'>): Recipe {
+  if (draft.patch) return applyPatch(structuredClone(base), draft.patch);
   return { ...structuredClone(base), ...structuredClone(editable(draft.recipe)) };
 }
 
