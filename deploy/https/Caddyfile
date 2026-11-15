@@ -1,0 +1,21 @@
+# HTTPS in front of immich-raw on a home network (see README.md).
+#
+# The certificate is a normal Let's Encrypt one for a DuckDNS name whose address is the server's
+# LAN IP. Let's Encrypt checks it with the DNS-01 challenge: Caddy writes a TXT record at DuckDNS
+# and Let's Encrypt reads it. With the DNS challenge set, Caddy uses no other challenge, so nothing
+# has to be reachable from the internet.
+#
+# Settings, from the environment:
+#   HTTPS_HOST      the DuckDNS name, e.g. my-photos.duckdns.org
+#   DUCKDNS_TOKEN   the DuckDNS account token; it only sets and clears the TXT record, never the IP
+#   UPSTREAM        where immich-raw is (default immich-raw:80)
+#
+# immich-raw keeps the X-Forwarded-Proto this sends, so Immich knows the page is HTTPS. Caddy has
+# no upload size limit and passes WebSockets as they are, so Immich needs nothing else here.
+
+{$HTTPS_HOST} {
+	tls {
+		dns duckdns {env.DUCKDNS_TOKEN}
+	}
+	reverse_proxy {$UPSTREAM:immich-raw:80}
+}

@@ -73,6 +73,13 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   `E2E_BIND=0.0.0.0 docker compose -f e2e/docker-compose.immich.yml up -d proxy` (also works for the
   gateway). That's plain HTTP, so the editor downloads the RAW on every open. Anyone on the network
   can log in with the test password; run the same command without `E2E_BIND` to close it again.
+- HTTPS with a real certificate (deploy/https): a DuckDNS name set to this PC's LAN address, and
+  `e2e/https.env` with `HTTPS_HOST=<name>.duckdns.org` and `DUCKDNS_TOKEN=<token>` (gitignored).
+  `docker compose -f e2e/docker-compose.immich.yml --profile https up -d --build https` serves the
+  proxy on `https://<name>.duckdns.org:8443` (`E2E_HTTPS_PORT`; `HTTPS_UPSTREAM=gateway:80` for
+  the gateway). `docker compose -f e2e/docker-compose.immich.yml logs https` shows the certificate
+  being issued. It listens on the network, so anyone there can log in with the test password; stop
+  it with `docker compose -f e2e/docker-compose.immich.yml stop https`.
 - Decoder build: `node e2e/probe-decoder-compare.mjs <samples-dir>` decodes the samples with
   `packages/libraw/lib` and the npm libraw-wasm 1.6.0 it replaced, and checks the output is the same.
 - AI masks: `node e2e/probe-ai-masks.mjs <out-dir> <asset-id>` makes a Sky, Subject, Landscape,
