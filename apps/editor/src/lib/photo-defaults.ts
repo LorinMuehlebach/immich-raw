@@ -1,5 +1,7 @@
 // A photo's starting settings: the defaults, except that a Fujifilm RAW starts with the film
-// simulation chosen in the camera (once the Fujifilm film looks are in this browser).
+// simulation chosen in the camera (once the Fujifilm film looks are in this browser), and a
+// developed photo (JPEG, PNG, ...) starts as it is: the camera already applied its tone curve,
+// sharpening, noise reduction and lens corrections.
 import type { FujiFilmSim, FujiFilter, FujiSim } from '@immich-raw/decoder';
 import { defaultRecipe, profileInfo, type Band, type FujiProfileId, type Recipe } from '@immich-raw/recipe';
 
@@ -48,7 +50,20 @@ export interface PhotoDefaults {
   simLabel: string | null;
 }
 
-export function photoDefaults(i: { make: string; sim: Pick<FujiFilmSim, 'sim' | 'filter'> | null; looksReady: boolean }): PhotoDefaults {
+/** The defaults for a developed photo: Linear (no profile curve), no sharpening, noise reduction or lens corrections. */
+export function developedDefaults(): Recipe {
+  const recipe = defaultRecipe();
+  recipe.profile = 'linear';
+  recipe.detail.sharpenAmount = 0;
+  recipe.detail.nrColor = 0;
+  recipe.lens = { ...recipe.lens, profile: false, removeCA: false };
+  return recipe;
+}
+
+/** `developed`: a JPEG, PNG, ... rather than a RAW (RawMeta.rendered). */
+export function photoDefaults(i: { make: string; sim: Pick<FujiFilmSim, 'sim' | 'filter'> | null; looksReady: boolean; developed?: boolean }): PhotoDefaults {
+  // A Fujifilm JPEG has its film simulation baked in already.
+  if (i.developed) return { recipe: developedDefaults(), wanted: null, simLabel: null };
   const recipe = defaultRecipe();
   if (!isFujifilm(i.make)) return { recipe, wanted: null, simLabel: null };
   // No simulation in the file (e.g. a DNG without the maker note): Provia is Fujifilm's standard.

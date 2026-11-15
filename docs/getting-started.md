@@ -5,8 +5,10 @@ your edit goes back into Immich as a JPEG next to the RAW.
 
 ## 1. Open a RAW in Immich and click the iris button
 
-The button is in the photo viewer's toolbar (outlined in red here). It only appears on RAW files,
-and on edited copies, where it opens the RAW again.
+The button is in the photo viewer's toolbar (outlined in red here). On a RAW it opens the RAW; on an
+edited copy, or on a camera JPEG stacked with its RAW, it opens that RAW. Photos without a RAW
+(JPEG, PNG, HEIC, ...) can be edited too: the button is called **Edit** there, and the editor warns
+that the result won't be as good as from a RAW ([JPEGs and other photos](editing.md#jpegs-and-other-photos-that-arent-raws)).
 
 ![The Edit RAW button in Immich's photo viewer](images/getting-started/immich-button.jpg)
 

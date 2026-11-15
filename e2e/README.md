@@ -130,6 +130,15 @@ node e2e/cull.mjs <out-dir>     # end-to-end test on RAW (DNG) and JPEG bursts, 
   place in the stack, switching (menu, reload, unsaved changes), renaming, Escape and deleting. It
   saves to Immich, then removes its copies and their JPEGs again (and a stack made only for them);
   the original edit is not saved. Run it on `fuji` too, whose saved edit must stay in front.
+- Photos that aren't RAWs: `node e2e/probe-non-raw.mjs <out-dir>` uploads a JPEG, a PNG and a TIFF
+  it makes itself and checks:
+  - the warning (the first time in the browser; for the TIFF, which the browser can't read and so
+    opens from Immich's JPEG, every time) and the "not a RAW" tag;
+  - that at the starting settings the render matches the original (bright saturated colours too);
+  - that Convert to DNG isn't offered;
+  - Save (the edit stored on the JPEG, its render in front of the stack) and reopening the edit.
+
+  It deletes everything it uploaded.
 - AI Upscale: `node e2e/probe-upscale.mjs <out-dir> [file name part]` checks one seeded RAW
   (`nikon-z7` by default):
   - the preview patch;

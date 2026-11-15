@@ -249,6 +249,26 @@ describe('burst stacks made by the culler', () => {
   it('same name taken at another time is another capture', () => {
     expect(isSameCapture(raw, at('y', 'DSC1.JPG', '09'), null)).toBe(false);
   });
+
+  it('a burst of camera JPEGs without RAWs: editing one that is not in front keeps the best in front', () => {
+    const j1 = at('j1', 'IMG_1.JPG', '00');
+    const j2 = at('j2', 'IMG_2.JPG', '01');
+    const j3 = at('j3', 'IMG_3.JPG', '02');
+    expect(keepsOtherCaptureInFront(j1, j2, [j2, j1, j3], null)).toBe(true);
+    // The best one itself, or its own render in front: its edit goes in front.
+    expect(keepsOtherCaptureInFront(j2, j2, [j2, j1, j3], null)).toBe(false);
+    expect(keepsOtherCaptureInFront(j1, at('r', 'IMG_1.edit.jpg', '30'), [j2, j1, j3], 'j1')).toBe(false);
+  });
+
+  it("a JPEG stacked only with the editor's renders of it takes the front with its edit", () => {
+    const j1 = at('j1', 'IMG_1.JPG', '00');
+    // Its virtual copy's render is in front: not another capture.
+    const copyRender = at('c', 'IMG_1.copy-1.edit.jpg', '40');
+    expect(keepsOtherCaptureInFront(j1, copyRender, [copyRender, j1], 'j1')).toBe(false);
+    // A render whose source is unknown (gone) in front, and no other photo: not a burst.
+    const orphan = at('o', 'OLD.edit.jpg', '40');
+    expect(keepsOtherCaptureInFront(j1, orphan, [orphan, j1], null)).toBe(false);
+  });
 });
 
 describe('planStack with virtual copies', () => {

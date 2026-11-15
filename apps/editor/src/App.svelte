@@ -14,6 +14,7 @@
   import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
   import { editor } from './lib/state/editor.svelte.ts';
+  import { notRawExplanation, notRawTag } from './lib/image-open.ts';
   import { VIEW_PAD, wheelFactor } from './lib/state/zoom.ts';
   import AiDownloadDialog from './lib/ui/AiDownloadDialog.svelte';
   import FujiLooksDialog from './lib/ui/FujiLooksDialog.svelte';
@@ -617,6 +618,7 @@
       <div class="name">{editor.asset?.originalFileName ?? 'immich-raw'}</div>
       <div class="sub">
         {camera}
+        {#if editor.asset && !editor.isRaw}<span class="not-raw" title={notRawExplanation(editor.asset.originalFileName)}>· {notRawTag(editor.asset.originalFileName)}</span>{/if}
         {#if editor.status === 'ready'}
           {#if editor.fullStatus === 'decoding'}· decoding full resolution{fullLeft >= 1500 ? ` (about ${Math.round(fullLeft / 1000)} s)` : ''}…{/if}
           {#if editor.readOnly}· view only{/if}
@@ -661,7 +663,9 @@
             <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.wholeView}>
               {zoomed ? 'Fit to screen' : 'Zoom to 100 %'}
             </button>
-            <button role="menuitem" onclick={() => fromMenu(() => editor.openDngDialog())} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving}>Convert to DNG…</button>
+            {#if editor.isRaw}
+              <button role="menuitem" onclick={() => fromMenu(() => editor.openDngDialog())} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving}>Convert to DNG…</button>
+            {/if}
             <a role="menuitem" href={LICENSES_URL} target="_blank" rel="noopener" onclick={() => (menuOpen = false)}>Licences and source code</a>
           </div>
         {/if}
@@ -710,7 +714,7 @@
     </div>
     <ExportPanel />
     <UpscalePanel />
-    <DngPanel />
+    {#if editor.isRaw}<DngPanel />{/if}
   {/snippet}
 
   {#if layout === 'desktop'}
@@ -841,6 +845,14 @@
           <button class="primary" onclick={() => editor.acceptFujiOffer()}>Download</button>
           <button onclick={() => editor.dismissFujiOffer()}>Not now</button>
           {#if editor.fujiOffer.reason === 'camera'}<button onclick={() => editor.dismissFujiOffer(true)}>Don't ask again</button>{/if}
+        </div>
+      {:else if editor.notRawNote && editor.status === 'ready'}
+        <div class="banner not-raw-note">
+          <div>
+            <strong>{editor.notRawNote.title}</strong>
+            {editor.notRawNote.text}
+          </div>
+          <button class="primary" onclick={() => editor.dismissNotRawNote()}>OK</button>
         </div>
       {/if}
 
@@ -1054,6 +1066,10 @@
   }
   .flags {
     color: #ffd54a;
+  }
+  .not-raw {
+    color: #e0b43a;
+    cursor: help;
   }
   .flags.rejected {
     color: var(--danger);
@@ -1364,6 +1380,9 @@
   }
   .banner button {
     white-space: nowrap;
+  }
+  .banner.not-raw-note {
+    border-color: #e0b43a;
   }
   .saving {
     position: absolute;

@@ -37,6 +37,11 @@ export interface CameraInfo {
   asShot: TempTint;
   /** EXIF ISO (scales noise reduction to the expected noise); absent = 100. */
   iso?: number;
+  /**
+   * Blend clipped highlights toward neutral (RAWs). Off for a developed image (JPEG, ...): its
+   * clipping is already rendered, and bright saturated colours would turn grey.
+   */
+  reconstructHighlights: boolean;
 }
 
 export function cameraInfo(meta: {
@@ -48,6 +53,7 @@ export function cameraInfo(meta: {
   rgbCam: number[][];
   baselineExposure: number;
   iso?: number;
+  rendered?: boolean;
 }): CameraInfo {
   const camMul = normalizeCamMul(meta.camMul);
   const camXyz = fromRows(meta.camXyz);
@@ -61,8 +67,12 @@ export function cameraInfo(meta: {
     baselineExposure: Number.isFinite(meta.baselineExposure) && Math.abs(meta.baselineExposure) <= 10 ? meta.baselineExposure : 0,
     asShot: tempTintForMultipliers(camXyz, camMul),
     iso: meta.iso && Number.isFinite(meta.iso) && meta.iso > 0 ? meta.iso : undefined,
+    reconstructHighlights: !meta.rendered,
   };
 }
+
+/** uClip for a photo without highlight reconstruction: no channel ever counts as clipped. */
+const NEVER_CLIPS = [1e9, 1e9, 1e9];
 
 export interface DevelopUniforms {
   uWb: number[];
@@ -98,7 +108,7 @@ export function developUniforms(recipe: Recipe, cam: CameraInfo, profile: Profil
   return {
     uWb: ratio.map((r) => r * comp),
     // channel c clips at mul_c / max(mul) before scaling
-    uClip: [0, 1, 2].map((c) => (mul[c]! / mx) * comp * ratio[c]!),
+    uClip: cam.reconstructHighlights ? [0, 1, 2].map((c) => (mul[c]! / mx) * comp * ratio[c]!) : NEVER_CLIPS,
     // Calibration re-interprets the primaries, so it belongs to the camera -> working matrix.
     uCamToWork: mul3(calibrationMatrix(recipe.calibration), cam.camToWork),
     uExposure: 2 ** (b.exposure + cam.baselineExposure + profileExposureEv(profile, recipe.profileAmount)),

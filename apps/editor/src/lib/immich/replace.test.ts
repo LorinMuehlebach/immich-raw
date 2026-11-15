@@ -5,6 +5,7 @@ import { convertBlocked, planReplace } from './replace.ts';
 const raw = (patch: Partial<AssetResponseDto> = {}) =>
   ({
     id: 'raw',
+    originalFileName: 'IMG_1.CR3',
     ownerId: 'me',
     libraryId: null,
     isTrashed: false,
@@ -23,6 +24,8 @@ describe('convert to DNG: replace plan', () => {
     expect(convertBlocked(raw({ libraryId: 'lib' }), { id: 'me' })).toMatch(/external library/);
     expect(convertBlocked(raw({ isTrashed: true }), { id: 'me' })).toMatch(/trash/);
     expect(convertBlocked(raw({ visibility: AssetVisibility.Locked }), { id: 'me' })).toMatch(/locked/);
+    expect(convertBlocked(raw({ originalFileName: 'IMG_1.jpg' }), { id: 'me' })).toMatch(/Only RAW files/);
+    expect(convertBlocked(raw({ originalFileName: 'IMG_1.heic' }), { id: 'me' })).toMatch(/Only RAW files/);
   });
 
   it('copies date (with its zone), location, rating, description, tags and archive state', () => {

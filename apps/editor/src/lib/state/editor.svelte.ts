@@ -11,13 +11,15 @@ import {
   searchAssetFiles,
   updateAssetMetadata,
   updateStack,
+  AssetTypeEnum,
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
-import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage } from '@immich-raw/decoder';
+import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage, type PhotoSession } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
+import { notRawExplanation, openImageSession, previewExplanation } from '../image-open.ts';
 import { isSafeReturnPath } from '@immich-raw/inject/routes';
 import { crsToPatch, isLightroomSidecar, parseXmp } from '@immich-raw/xmp';
 import {
@@ -272,6 +274,10 @@ const HALF_SIZE_NOTICE = 'Showing the half-size preview until the full-resolutio
 const FULL_FAILED_NOTICE = 'The full-resolution decode failed, so zooming in shows the half-size preview.';
 /** For estimates before Immich has said how big the RAW is. */
 const TYPICAL_RAW_BYTES = 50e6;
+/** The browser decodes a JPEG, PNG, ... in well under a second; roughly 20 MB/s plus the setup. */
+const imageDecodeMs = (bytes: number) => 200 + bytes / 20e3;
+/** Set once the warning about editing a photo that isn't a RAW was dismissed in this browser. */
+const NOT_RAW_SEEN_KEY = 'raw-editor.non-raw-warning-seen';
 /** Thrown inside an open when another photo was opened meanwhile; not an error. */
 const SUPERSEDED = Symbol('superseded');
 
@@ -348,11 +354,14 @@ const STEP_LABEL: Record<SaveStep | RenderStep, string> = {
   cleanup: 'Moving the previous version to trash',
 };
 
-/** What Save did with the stack, from the RAW's stack front after saving. */
-function savedNotice(front: string | undefined, rawId: string, renderId: string | null, saved = 'Saved'): string {
-  if (front && front === renderId) return `${saved} to Immich, stacked on top of the RAW.`;
-  if (front === rawId) return `${saved} to Immich, in the RAW's stack behind the RAW.`;
-  return `${saved} to Immich, in the RAW's stack.`;
+/**
+ * What Save did with the stack, from the RAW's stack front after saving. `source`: what the edit
+ * was made from ("RAW", or "original" for a JPEG, PNG, ...).
+ */
+function savedNotice(front: string | undefined, rawId: string, renderId: string | null, saved = 'Saved', source = 'RAW'): string {
+  if (front && front === renderId) return `${saved} to Immich, stacked on top of the ${source}.`;
+  if (front === rawId) return `${saved} to Immich, in the ${source}'s stack behind the ${source}.`;
+  return `${saved} to Immich, in the ${source}'s stack.`;
 }
 
 const UPSCALE_SAVE_LABEL: Record<UpscaleSaveStep, string> = {
@@ -507,7 +516,11 @@ export class Editor {
   dngDialog = $state<DngDialog | null>(null);
 
   camera: CameraInfo | null = null;
-  session: RawSession | null = null;
+  session: PhotoSession | null = null;
+  /** The open photo is a RAW (false: a JPEG, PNG, ... the camera developed already). */
+  isRaw = $state(true);
+  /** The banner about editing a photo that isn't a RAW (null: none, or dismissed). */
+  notRawNote = $state<{ title: string; text: string } | null>(null);
   fullImage: LinearImage | null = null;
   renderer: Renderer | null = null;
   /** AI masks of the open photo (computed in a worker). */
@@ -751,6 +764,8 @@ export class Editor {
     this.copyId = null;
     this.sidecarOffer = null;
     this.fujiOffer = null;
+    this.notRawNote = null;
+    this.isRaw = true;
     this.dngDialog = null;
     this.dngBuilt = null;
     this.exportDialog = null;
@@ -832,7 +847,9 @@ export class Editor {
       done();
       live();
       endStep(this.openSteps, 'info', now());
-      if (!isRawFilename(asset.originalFileName)) throw new Error(`${asset.originalFileName} is not a RAW file.`);
+      const isRaw = isRawFilename(asset.originalFileName);
+      if (!isRaw && asset.type !== AssetTypeEnum.Image) throw new Error(`${asset.originalFileName} is not a photo: the editor opens photos only.`);
+      this.isRaw = isRaw;
       this.asset = asset;
       this.readOnly = !canEdit(asset, this.me!);
       document.title = `${asset.originalFileName} · immich-raw`;
@@ -848,7 +865,12 @@ export class Editor {
       this.fileBytes = asset.exifInfo?.fileSizeInByte ?? 0;
       const sizeGuess = this.fileBytes || TYPICAL_RAW_BYTES;
       this.estimateStep('original', estimateDownloadMs(times, sizeGuess));
-      this.estimateStep('decode', estimateDecodeMs(times, camera, sizeGuess));
+      if (isRaw) this.estimateStep('decode', estimateDecodeMs(times, camera, sizeGuess));
+      else {
+        this.estimateStep('decode', imageDecodeMs(sizeGuess));
+        const s = this.openSteps.find((x) => x.id === 'decode');
+        if (s) s.label = OPEN_LABELS.decodeImage;
+      }
       this.estimateStep('show', estimateShowMs(times, camera));
 
       // The original downloads (or comes from this browser's cache) while the saved edit, the
@@ -866,14 +888,15 @@ export class Editor {
       const doneCacheRead = startMeasure('decoded cache read');
       const cacheReadStarted = now();
       let cachedMs: number | undefined;
-      const decodedP = readDecoded(asset.checksum).then((photo) => {
+      // A developed photo decodes faster than the cache reads.
+      const decodedP = (isRaw ? readDecoded(asset.checksum) : Promise.resolve(null)).then((photo) => {
         if (photo) {
           doneCacheRead();
           cachedMs = now() - cacheReadStarted;
         }
         return photo;
       });
-      const decodedKept = hasDecoded(asset.checksum);
+      const decodedKept = isRaw ? hasDecoded(asset.checksum) : Promise.resolve(false);
       decodedKept.then((kept) => {
         if (gen !== this.photoGen) return;
         // Say so before the step starts: it takes a fraction of a decode.
@@ -936,12 +959,19 @@ export class Editor {
         endStep(this.openSteps, 'original', now());
         this.fileBytes = bytes.length;
         // The film simulation set in the camera (Fujifilm maker note); null for other files.
-        this.fujiSim = readFujiFilmSim(bytes);
+        this.fujiSim = isRaw ? readFujiFilmSim(bytes) : null;
         const cached = await decodedP;
         live();
-        let session: RawSession;
+        let session: PhotoSession;
         let decodeMs: number | undefined;
-        if (cached) {
+        let fromPreview = false;
+        if (!isRaw) {
+          beginStep(this.openSteps, 'decode', now(), { label: OPEN_LABELS.decodeImage, estimateMs: imageDecodeMs(bytes.length) });
+          const opened = await openImageSession(asset, bytes, stop.signal);
+          live();
+          session = opened.session;
+          fromPreview = opened.fromPreview;
+        } else if (cached) {
           beginStep(this.openSteps, 'decode', now(), { label: OPEN_LABELS.decodeCached, estimateMs: estimateCachedMs(times, camera, bytes.length) });
           session = RawSession.restore(bytes, cached.meta, cached.half);
         } else {
@@ -977,7 +1007,7 @@ export class Editor {
         this.camera = cameraInfo(session.meta);
         const looks = await looksP;
         live();
-        this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks });
+        this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks, developed: !isRaw });
         const saved = stored ?? cloneRecipe(this.defaults.recipe);
         if (!stored) {
           this.recipe = draft ? withDraft(saved, draft) : cloneRecipe(saved);
@@ -998,14 +1028,16 @@ export class Editor {
         done();
         endStep(this.openSteps, 'show', now());
         this.learnOpen(original, { camera, bytes: bytes.length, decodeMs, cachedMs, showMs: now() - showStarted });
-        if (!cached) this.keepDecoded(asset.checksum, session);
+        if (!cached && session instanceof RawSession) this.keepDecoded(asset.checksum, session);
+        if (!isRaw) this.showNotRawNote(asset, session, fromPreview);
       } catch (e) {
         if (renderer && this.renderer !== renderer) renderer.dispose();
         throw e;
       }
       // Full resolution is needed for saving and 1:1 zoom; start it in the background.
       this.startFullDecode();
-      if (!stored && !draft) this.checkSidecar(asset.id);
+      // Lightroom's settings for a JPEG assume another starting point than a RAW's.
+      if (!stored && !draft && isRaw) this.checkSidecar(asset.id);
       this.offerFujiLooks();
     }
   }
@@ -1048,6 +1080,28 @@ export class Editor {
     // Read again: another tab may have added an open since this one started.
     this.openTimes = recordOpen(loadOpenTimes(), s);
     saveOpenTimes(this.openTimes);
+  }
+
+  /**
+   * The warning for a photo that isn't a RAW: the first time in this browser, and every time it
+   * opens from Immich's JPEG (the browser can't read the original), which is worth knowing per photo.
+   */
+  private showNotRawNote(asset: AssetResponseDto, session: PhotoSession, fromPreview: boolean): void {
+    const seen = storageGet<boolean>(NOT_RAW_SEEN_KEY) === true;
+    if (seen && !fromPreview) return;
+    const text = [notRawExplanation(asset.originalFileName)];
+    if (fromPreview) text.unshift(previewExplanation(asset.originalFileName, session.meta, { width: asset.width, height: asset.height }));
+    this.notRawNote = { title: fromPreview ? 'Not the original file.' : 'Not a RAW file.', text: text.join(' ') };
+  }
+
+  dismissNotRawNote(): void {
+    this.notRawNote = null;
+    storageSet(NOT_RAW_SEEN_KEY, true);
+  }
+
+  /** What an edit is made from, for messages: "RAW", or "original" for a JPEG, PNG, ... */
+  get sourceWord(): string {
+    return this.isRaw ? 'RAW' : 'original';
   }
 
   /** Keeps the half-size image for the next open of this photo, once the browser has a moment. */
@@ -1182,7 +1236,7 @@ export class Editor {
     this.renderer.setProfileLooks(looks);
     this.fujiOffer = null;
     const wanted = this.defaults.wanted;
-    this.defaults = photoDefaults({ make: this.session.meta.make, sim: this.fujiSim, looksReady: true });
+    this.defaults = photoDefaults({ make: this.session.meta.make, sim: this.fujiSim, looksReady: true, developed: !!this.session.meta.rendered });
     this.renderer.setPhotoDefaults(this.defaults.recipe);
     const untouched = !this.storedEdit && !this.dirty && this.historySteps.length <= 1;
     if (wanted && untouched && !this.readOnly) {
@@ -1719,7 +1773,9 @@ export class Editor {
 
   resetParam(spec: ParamSpec): void {
     if (spec === PARAMS.temp || spec === PARAMS.tint) return this.setWbMode('asShot');
-    this.setParam(spec, spec.default, true);
+    // The photo's own starting value (a JPEG starts without sharpening, ...).
+    const start = getPath(this.defaults.recipe, spec.path);
+    this.setParam(spec, typeof start === 'number' ? start : spec.default, true);
   }
 
   async setProfile(id: ProfileId): Promise<void> {
@@ -2973,7 +3029,7 @@ export class Editor {
     if (!asset || !session || !renderer || this.saving || this.readOnly) return false;
     this.commit();
     this.previewRecipe = null;
-    const step = (s: keyof typeof STEP_LABEL, fraction = 0) => (this.saving = { label: STEP_LABEL[s], fraction });
+    const step = (s: keyof typeof STEP_LABEL, fraction = 0) => (this.saving = { label: s === 'stack' ? `Stacking with the ${this.sourceWord}` : STEP_LABEL[s], fraction });
     try {
       // The Immich copy uses the preset chosen in Export; changing it only takes effect here.
       const preset = structuredClone($state.snapshot(this.exportSettings.presets[this.exportSettings.immichPreset]) as ExportPreset);
@@ -3008,7 +3064,7 @@ export class Editor {
       this.requestRender();
       storageSet(PREVIOUS_KEY, pickGroups(saved, DEFAULT_GROUPS));
       this.hasPrevious = true;
-      this.notice = [savedNotice(this.asset.stack?.primaryAssetId, asset.id, this.savedRenderId, copy ? `Saved ${copy.name}` : 'Saved'), ...warnings, fallback ? COLOR_FALLBACK : '']
+      this.notice = [savedNotice(this.asset.stack?.primaryAssetId, asset.id, this.savedRenderId, copy ? `Saved ${copy.name}` : 'Saved', this.sourceWord), ...warnings, fallback ? COLOR_FALLBACK : '']
         .filter(Boolean)
         .join(' ');
       this.requestRender();
@@ -3026,7 +3082,7 @@ export class Editor {
   /** Renders the current edit at full resolution and makes the file the preset describes. */
   private async renderExport(
     asset: AssetResponseDto,
-    session: RawSession,
+    session: PhotoSession,
     renderer: Renderer,
     preset: ExportPreset,
     step: (s: RenderStep, fraction?: number) => void,
@@ -3043,7 +3099,7 @@ export class Editor {
    * fallback: the recipe's film look isn't in this browser, so it rendered with Color.
    */
   private async renderFull(
-    session: RawSession,
+    session: PhotoSession,
     renderer: Renderer,
     step: (s: RenderStep, fraction?: number) => void,
     out: OutputColor = SRGB8,
@@ -3215,9 +3271,9 @@ export class Editor {
           raw: asset,
           jpeg: new Blob([file.bytes as BlobPart], { type: 'image/jpeg' }),
           info: { scale: s.scale, style: s.style, recipeHash: await recipeHash(recipe), copyId: this.copyId },
-          onProgress: (st, f) => show(UPSCALE_SAVE_LABEL[st], f),
+          onProgress: (st, f) => show(st === 'stack' ? `Stacking with the ${this.sourceWord}` : UPSCALE_SAVE_LABEL[st], f),
         });
-        this.notice = `Saved the ${s.scale}× copy to Immich (${file.width} × ${file.height}), stacked with the RAW.`;
+        this.notice = `Saved the ${s.scale}× copy to Immich (${file.width} × ${file.height}), stacked with the ${this.sourceWord}.`;
       }
       this.error = null;
       return true;

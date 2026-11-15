@@ -28,6 +28,9 @@ function inv3(m: Mat3): Mat3 | null {
   ];
 }
 
+/** XYZ (D65) -> linear sRGB: the cam_xyz of a "camera" that records sRGB (see image.ts). */
+export const XYZ_TO_SRGB: number[][] = inv3(XYZ_RGB)!;
+
 function mul3(a: Mat3, b: Mat3): Mat3 {
   const row = (r: readonly number[]) => [0, 1, 2].map((j) => r[0]! * b[0][j]! + r[1]! * b[1][j]! + r[2]! * b[2][j]!) as [number, number, number];
   return [row(a[0]), row(a[1]), row(a[2])];

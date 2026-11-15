@@ -33,6 +33,15 @@ export function downloadUncached(id: string, onProgress?: OnDownloadProgress, si
   return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress, signal);
 }
 
+/**
+ * Immich's full-size JPEG of a photo (its own conversion, without any edit): for a format the
+ * browser can't read (HEIC outside Safari, TIFF, ...). Without full-size previews turned on in
+ * Immich, it can be the 1440 px preview.
+ */
+export function downloadFullsizePreview(id: string, signal?: AbortSignal): Promise<Uint8Array> {
+  return fetchWithProgress(apiUrl(`/assets/${id}/thumbnail?size=fullsize`), undefined, signal);
+}
+
 /** The original from this browser's cache only, or null. */
 export function readCachedOriginal(checksum: string): Promise<Uint8Array | null> {
   return readCache(cacheName(checksum));

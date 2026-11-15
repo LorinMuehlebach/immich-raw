@@ -1,4 +1,5 @@
-// Decides which RAW the "Edit RAW" button opens for the asset being viewed.
+// Decides what the "Edit RAW" button opens for the asset being viewed: its RAW when there is
+// one, else the photo itself (a JPEG, PNG, ... edits too, though not as well as a RAW).
 
 // Immich v3.3.6/v3.4.0 server/src/utils/mime-types.ts `raw`, minus .psd, .ari and .cin.
 export const RAW_EXTENSIONS = [
@@ -32,6 +33,8 @@ const SAME_CAPTURE_MS = 2000;
 interface AssetLike {
   id: string;
   originalFileName?: string;
+  /** Immich's asset type: 'IMAGE', 'VIDEO', ... */
+  type?: string;
   fileCreatedAt?: string;
   isTrashed?: boolean;
   stack?: { id: string; primaryAssetId?: string; assetCount?: number } | null;
@@ -48,22 +51,28 @@ async function getJson<T>(fetchImpl: FetchLike, url: string): Promise<T | null> 
   }
 }
 
-/** What the Edit RAW button opens: the RAW, and the virtual copy a render was made from (null: the original edit). */
+/**
+ * What the Edit RAW button opens: the photo to edit (a RAW, or a JPEG, PNG, ... when there is no
+ * RAW), and the virtual copy a render was made from (null: the original edit).
+ */
 export interface EditTarget {
-  rawId: string;
+  sourceId: string;
   copyId: string | null;
+  /** The photo to edit is a RAW (false: a JPEG, PNG, ..., which won't edit as well). */
+  isRaw: boolean;
 }
 
 /**
- * Returns what to edit, or null when the button should not show:
+ * Returns what to edit, or null when the button should not show (videos):
  * - a RAW opens itself;
- * - a render made by the editor opens the RAW it came from, and the virtual copy if it is one's;
- * - a camera JPEG stacked with a RAW opens that RAW (in a burst stack: the RAW of its capture).
+ * - a render made by the editor opens the photo it came from, and the virtual copy if it is one's;
+ * - a camera JPEG stacked with a RAW opens that RAW (in a burst stack: the RAW of its capture);
+ * - any other photo opens itself.
  */
 export async function findEditTarget(assetId: string, fetchImpl: FetchLike = fetch, api = '/api'): Promise<EditTarget | null> {
   const asset = await getJson<AssetLike>(fetchImpl, `${api}/assets/${assetId}`);
   if (!asset) return null;
-  if (isRawFilename(asset.originalFileName)) return { rawId: asset.id, copyId: null };
+  if (isRawFilename(asset.originalFileName)) return { sourceId: asset.id, copyId: null, isRaw: true };
 
   const render = await getJson<{ value?: { sourceAssetId?: unknown; copyId?: unknown } }>(
     fetchImpl,
@@ -71,14 +80,19 @@ export async function findEditTarget(assetId: string, fetchImpl: FetchLike = fet
   );
   const source = render?.value?.sourceAssetId;
   const copyId = render?.value?.copyId;
-  if (typeof source === 'string' && source) return { rawId: source, copyId: typeof copyId === 'string' && copyId ? copyId : null };
+  if (typeof source === 'string' && source) {
+    // Renders were only made from RAWs before JPEGs could be edited: unknown counts as a RAW.
+    const from = await getJson<AssetLike>(fetchImpl, `${api}/assets/${source}`);
+    const isRaw = !from || isRawFilename(from.originalFileName);
+    return { sourceId: source, copyId: typeof copyId === 'string' && copyId ? copyId : null, isRaw };
+  }
 
   if (asset.stack?.id) {
     const stack = await getJson<{ assets?: AssetLike[] }>(fetchImpl, `${api}/stacks/${asset.stack.id}`);
     const rawId = rawOfCapture(asset, stack?.assets ?? []);
-    return rawId ? { rawId, copyId: null } : null;
+    if (rawId) return { sourceId: rawId, copyId: null, isRaw: true };
   }
-  return null;
+  return asset.type === 'IMAGE' ? { sourceId: asset.id, copyId: null, isRaw: false } : null;
 }
 
 /**

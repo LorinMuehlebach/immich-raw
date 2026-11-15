@@ -222,7 +222,7 @@
 
   {#if phase === 'setup'}
     <p class="intro">
-      {selection ? 'Renders the selected photos in this tab.' : 'Exports every photo of an album.'} RAWs get their saved edit (RAWs without one get the default settings); other photos are exported as they are, at the preset's size and file type.
+      {selection ? 'Renders the selected photos in this tab.' : 'Exports every photo of an album.'} RAWs get their saved edit (RAWs without one get the default settings), and so do other photos edited in the editor; the rest are exported as they are, at the preset's size and file type.
     </p>
 
     {#if !selection}
@@ -266,7 +266,7 @@
       {:else if plan}
         <div><b>{plural(plan.items.length, 'photo')}</b> to export: {plural(raws, 'RAW')} ({plan.edited} edited){others ? `, ${plural(others, 'other photo')}` : ''}.</div>
         {#if plan.renders}
-          <div class="dim">{plan.renders === 1 ? 'The edited JPEG is' : `The ${plan.renders} edited JPEGs are`} rendered again from {plan.renders === 1 ? 'its RAW' : 'their RAWs'}, so no quality is lost.</div>
+          <div class="dim">{plan.renders === 1 ? 'The edited JPEG is' : `The ${plan.renders} edited JPEGs are`} rendered again from {plan.renders === 1 ? 'its original' : 'their originals'}, so no quality is lost.</div>
         {/if}
         {#if plan.skipped.videos || plan.skipped.jpegTwins}
           <div class="dim">Skipped: {[plan.skipped.videos ? plural(plan.skipped.videos, 'video') : '', plan.skipped.jpegTwins ? plural(plan.skipped.jpegTwins, 'camera JPEG') : ''].filter(Boolean).join(', ')}.</div>
