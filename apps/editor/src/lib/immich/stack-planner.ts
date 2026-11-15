@@ -94,16 +94,22 @@ export function isSameCapture(raw: StackMemberLike, primary: StackMemberLike, pr
   return Math.abs(Date.parse(primary.fileCreatedAt) - Date.parse(raw.fileCreatedAt)) <= SAME_CAPTURE_MS;
 }
 
+const isEditorRender = (name: string) => name.toLowerCase().endsWith('.edit.jpg');
+
 /**
- * A stack of several captures (it holds another RAW) whose front photo is not this RAW's capture:
- * the render joins it without taking the front.
+ * A stack of several captures whose front photo is not the edited photo's capture: the render
+ * joins it without taking the front. Several captures: the stack holds another RAW; for a JPEG,
+ * PNG, ... edited itself (no RAW), another photo that isn't one of the editor's renders.
  */
 export function keepsOtherCaptureInFront(
-  raw: StackMemberLike,
+  source: StackMemberLike,
   primary: StackMemberLike,
   members: StackMemberLike[],
   primaryRenderSource: string | null,
 ): boolean {
-  if (isSameCapture(raw, primary, primaryRenderSource)) return false;
-  return members.some((m) => m.id !== raw.id && !m.isTrashed && isRawFilename(m.originalFileName));
+  if (isSameCapture(source, primary, primaryRenderSource)) return false;
+  const developed = !isRawFilename(source.originalFileName);
+  return members.some(
+    (m) => m.id !== source.id && !m.isTrashed && (isRawFilename(m.originalFileName) || (developed && !isEditorRender(m.originalFileName))),
+  );
 }

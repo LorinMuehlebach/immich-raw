@@ -33,6 +33,23 @@ export interface RawMeta {
   shutter: number;
   aperture: number;
   focalLength: number;
+  /**
+   * A developed image (JPEG, PNG, ...), not a RAW: linear sRGB whose white balance, tone and
+   * sharpening the camera already applied (see image.ts).
+   */
+  rendered?: boolean;
+}
+
+/** A decoded photo as the editor and the export use it: a RAW (RawSession) or a developed image (ImageSession). */
+export interface PhotoSession {
+  readonly meta: RawMeta;
+  /** The image to edit on screen (half size). */
+  readonly half: LinearImage;
+  readonly decoder: DecoderInfo;
+  readonly fullStarted: boolean;
+  /** Full resolution, for saving and 1:1 zoom. */
+  full(): Promise<LinearImage>;
+  close(): void;
 }
 
 export interface DecoderInfo {

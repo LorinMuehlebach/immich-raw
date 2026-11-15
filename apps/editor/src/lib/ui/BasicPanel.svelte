@@ -41,7 +41,8 @@
       {#each PROFILE_GROUPS as g (g.id)}
         <optgroup label={g.label}>
           {#each PROFILES.filter((p) => p.group === g.id) as p (p.id)}
-            <option value={p.id}>{p.label}{p.download && !looksHere ? ' (download)' : ''}</option>
+            <!-- A JPEG, PNG, ... starts with Linear: the photo as the camera developed it. -->
+            <option value={p.id}>{p.id === 'linear' && !editor.isRaw ? 'None (as shot)' : p.label}{p.download && !looksHere ? ' (download)' : ''}</option>
           {/each}
         </optgroup>
       {/each}

@@ -1,8 +1,9 @@
 // Renders RAWs other than the open one (for batch exports) on a WebGL context of its own, so
 // the photo on screen keeps its renderer. Several photos can download and decode at once (each
 // decode runs in a worker of its own and needs up to ~2.4 GB at 61 MP); the GPU renders them one
-// at a time.
-import { RawSession, readFujiFilmSim } from '@immich-raw/decoder';
+// at a time. A JPEG, PNG, ... with a saved edit renders the same way (decoded by the browser).
+import { RawSession, readFujiFilmSim, type PhotoSession } from '@immich-raw/decoder';
+import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA } from '@immich-raw/lens';
 import { Renderer, SRGB8, cameraInfo, type OutputColor, type Pixels } from '@immich-raw/pipeline';
 import type { Recipe } from '@immich-raw/recipe';
@@ -11,6 +12,7 @@ import { prepareAiMasks } from '../ai.svelte.ts';
 import { fujiLooks } from '../fuji-looks.svelte.ts';
 import { photoDefaults } from '../photo-defaults.ts';
 import { downloadOriginal } from '../immich/download.ts';
+import { openImageSession } from '../image-open.ts';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
 import { oneAtATime } from './parallel.ts';
 
@@ -38,13 +40,14 @@ export class RawRenderer {
     onStep('download', 0);
     const bytes = await downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => onStep('download', f));
     onStep('decode');
-    const sim = readFujiFilmSim(bytes);
-    const session = await RawSession.open(bytes);
+    const isRaw = isRawFilename(asset.originalFileName);
+    const sim = isRaw ? readFujiFilmSim(bytes) : null;
+    const session: PhotoSession = isRaw ? await RawSession.open(bytes) : (await openImageSession(asset, bytes)).session;
     onDecoder?.({ name: session.decoder.name, version: session.decoder.version, demosaic: session.decoder.demosaic });
     const camera = cameraInfo(session.meta);
     // Never asks: the kept looks, or a download only if the user agreed to one before.
     const looks = await fujiLooks.quiet();
-    const defaults = () => photoDefaults({ make: session.meta.make, sim, looksReady: !!looks }).recipe;
+    const defaults = () => photoDefaults({ make: session.meta.make, sim, looksReady: !!looks, developed: !isRaw }).recipe;
     const recipe = typeof saved === 'function' ? saved(defaults()) : (saved ?? defaults());
     const dngLens = dngLensFor(asset.originalFileName, bytes, camera);
     const full = await session.full();

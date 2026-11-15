@@ -1,8 +1,28 @@
 import { defaultRecipe } from '@immich-raw/recipe';
 import { describe, expect, it } from 'vitest';
-import { FUJI_BW_FILTERS, fujiSimLabel, photoDefaults } from './photo-defaults.ts';
+import { FUJI_BW_FILTERS, developedDefaults, fujiSimLabel, photoDefaults } from './photo-defaults.ts';
 
 describe('photoDefaults', () => {
+  it('starts a developed photo as it is: Linear, no sharpening, noise reduction or lens corrections', () => {
+    const d = photoDefaults({ make: 'Apple', sim: null, looksReady: true, developed: true });
+    expect(d.recipe.profile).toBe('linear');
+    expect(d.recipe.detail.sharpenAmount).toBe(0);
+    expect(d.recipe.detail.nrColor).toBe(0);
+    expect(d.recipe.detail.nrLuminance).toBe(0);
+    expect(d.recipe.lens).toMatchObject({ profile: false, removeCA: false });
+    expect(d.recipe.wb.mode).toBe('asShot');
+    expect(d).toMatchObject({ wanted: null, simLabel: null });
+    // Everything else is the usual default.
+    expect({ ...d.recipe, profile: 'color', detail: { ...d.recipe.detail, sharpenAmount: 40, nrColor: 25 }, lens: defaultRecipe().lens }).toEqual(defaultRecipe());
+  });
+
+  it('gives a Fujifilm JPEG no film look: the camera applied it already', () => {
+    for (const looksReady of [false, true]) {
+      const d = photoDefaults({ make: 'FUJIFILM', sim: { sim: 'classic-chrome', filter: null }, looksReady, developed: true });
+      expect(d).toEqual({ recipe: developedDefaults(), wanted: null, simLabel: null });
+    }
+  });
+
   it('starts a Fujifilm RAW with its film simulation once the looks are here', () => {
     const d = photoDefaults({ make: 'Fujifilm', sim: { sim: 'classic-chrome', filter: null }, looksReady: true });
     expect(d.recipe.profile).toBe('fuji-classic-chrome');

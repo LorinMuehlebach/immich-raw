@@ -32,7 +32,7 @@ function fakeFetch(routes: Routes) {
 describe('findEditTarget', () => {
   it('returns a RAW itself', async () => {
     const f = fakeFetch({ '/api/assets/raw1': { id: 'raw1', originalFileName: 'IMG_1.CR3' } });
-    expect(await findEditTarget('raw1', f)).toEqual({ rawId: 'raw1', copyId: null });
+    expect(await findEditTarget('raw1', f)).toEqual({ sourceId: 'raw1', copyId: null, isRaw: true });
     expect(f).toHaveBeenCalledTimes(1);
   });
 
@@ -41,7 +41,7 @@ describe('findEditTarget', () => {
       '/api/assets/render1': { id: 'render1', originalFileName: 'IMG_1.edit.jpg' },
       '/api/assets/render1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1' } },
     });
-    expect(await findEditTarget('render1', f)).toEqual({ rawId: 'raw1', copyId: null });
+    expect(await findEditTarget('render1', f)).toEqual({ sourceId: 'raw1', copyId: null, isRaw: true });
   });
 
   it("a virtual copy's render opens that copy", async () => {
@@ -49,7 +49,7 @@ describe('findEditTarget', () => {
       '/api/assets/c1': { id: 'c1', originalFileName: 'IMG_1.copy-2.edit.jpg' },
       '/api/assets/c1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1', copyId: 'k3x9' } },
     });
-    expect(await findEditTarget('c1', f)).toEqual({ rawId: 'raw1', copyId: 'k3x9' });
+    expect(await findEditTarget('c1', f)).toEqual({ sourceId: 'raw1', copyId: 'k3x9', isRaw: true });
   });
 
   it('follows an AI-upscaled copy back to its RAW', async () => {
@@ -57,7 +57,7 @@ describe('findEditTarget', () => {
       '/api/assets/up1': { id: 'up1', originalFileName: 'IMG_1.upscaled-2x.edit.jpg', stack: { id: 's1', primaryAssetId: 'render1', assetCount: 3 } },
       '/api/assets/up1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1', upscale: { scale: 2, style: 'sharp' } } },
     });
-    expect(await findEditTarget('up1', f)).toEqual({ rawId: 'raw1', copyId: null });
+    expect(await findEditTarget('up1', f)).toEqual({ sourceId: 'raw1', copyId: null, isRaw: true });
   });
 
   it('finds the RAW in a camera RAW+JPEG stack', async () => {
@@ -72,13 +72,46 @@ describe('findEditTarget', () => {
         ],
       },
     });
-    expect(await findEditTarget('jpg1', f)).toEqual({ rawId: 'raw1', copyId: null });
+    expect(await findEditTarget('jpg1', f)).toEqual({ sourceId: 'raw1', copyId: null, isRaw: true });
   });
 
-  it('returns null for a plain JPEG and for unknown assets', async () => {
-    const f = fakeFetch({ '/api/assets/jpg2': { id: 'jpg2', originalFileName: 'x.jpg', stack: null } });
-    expect(await findEditTarget('jpg2', f)).toBeNull();
+  it('opens a photo without a RAW itself, not as a RAW', async () => {
+    const f = fakeFetch({
+      '/api/assets/jpg2': { id: 'jpg2', originalFileName: 'x.jpg', type: 'IMAGE', stack: null },
+      '/api/assets/png1': { id: 'png1', originalFileName: 'screen.PNG', type: 'IMAGE' },
+    });
+    expect(await findEditTarget('jpg2', f)).toEqual({ sourceId: 'jpg2', copyId: null, isRaw: false });
+    expect(await findEditTarget('png1', f)).toEqual({ sourceId: 'png1', copyId: null, isRaw: false });
+  });
+
+  it('returns null for videos and unknown assets', async () => {
+    const f = fakeFetch({ '/api/assets/v1': { id: 'v1', originalFileName: 'clip.mp4', type: 'VIDEO', stack: null } });
+    expect(await findEditTarget('v1', f)).toBeNull();
     expect(await findEditTarget('missing', f)).toBeNull();
+  });
+
+  it('follows the render of an edited JPEG back to that JPEG', async () => {
+    const f = fakeFetch({
+      '/api/assets/render2': { id: 'render2', originalFileName: 'x.edit.jpg', type: 'IMAGE' },
+      '/api/assets/render2/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'jpg2' } },
+      '/api/assets/jpg2': { id: 'jpg2', originalFileName: 'x.jpg', type: 'IMAGE' },
+    });
+    expect(await findEditTarget('render2', f)).toEqual({ sourceId: 'jpg2', copyId: null, isRaw: false });
+  });
+
+  it('opens a JPEG stacked with its own render, or in a burst of JPEGs, itself', async () => {
+    const f = fakeFetch({
+      '/api/assets/jpg2': { id: 'jpg2', originalFileName: 'x.jpg', type: 'IMAGE', stack: { id: 's2', primaryAssetId: 'render2', assetCount: 2 } },
+      '/api/stacks/s2': {
+        id: 's2',
+        assets: [
+          { id: 'render2', originalFileName: 'x.edit.jpg', type: 'IMAGE' },
+          { id: 'jpg2', originalFileName: 'x.jpg', type: 'IMAGE' },
+          { id: 'jpg3', originalFileName: 'y.jpg', type: 'IMAGE' },
+        ],
+      },
+    });
+    expect(await findEditTarget('jpg2', f)).toEqual({ sourceId: 'jpg2', copyId: null, isRaw: false });
   });
 
   it('returns null when the network fails', async () => {
@@ -139,6 +172,6 @@ describe('rawOfCapture (stacks holding several captures)', () => {
       '/api/assets/j2': { id: 'j2', originalFileName: 'DSC2.JPG', fileCreatedAt: t('01'), stack: { id: 's' } },
       '/api/stacks/s': { assets: burst },
     });
-    expect(await findEditTarget('j2', f)).toEqual({ rawId: 'r2', copyId: null });
+    expect(await findEditTarget('j2', f)).toEqual({ sourceId: 'r2', copyId: null, isRaw: true });
   });
 });

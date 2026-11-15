@@ -110,6 +110,32 @@ R opens the crop tool: aspect presets (X swaps the orientation), the angle, and 
 
 ![The crop tool with a square crop and a slight angle](images/editing/crop.jpg)
 
+## JPEGs and other photos that aren't RAWs
+
+JPEG, PNG, WebP, HEIC and other photos without a RAW open in the editor too, but they won't edit as
+well. The camera has already set their white balance, contrast and sharpening, and kept only 8 bits
+per colour, so big changes to exposure, highlights or shadows show banding and blown-out areas
+sooner. The editor says so the first time you open one, and the title shows "JPEG, not a RAW" (or
+PNG, HEIC, ...).
+
+What's different from a RAW:
+
+- They start as they are: the profile **None (as shot)**, and no sharpening, noise reduction or lens
+  profile. The camera did those already; you can still add them.
+- White balance starts at As Shot, which reads as about 6500 K (daylight). Lower values warm the
+  photo, higher ones cool it.
+- Clipped highlights can't be recovered: the detail isn't in the file.
+- Convert to DNG isn't offered: there is no sensor data to keep.
+- Chrome, Edge and Firefox can't read HEIC (iPhone) or TIFF files. For those the editor works on
+  Immich's full-size JPEG of the photo and says so every time; without full-size previews turned
+  on in Immich's settings, that's the 1440 px preview. Safari reads HEIC itself.
+- Wide-gamut colours (Display P3 on phones) are reduced to sRGB.
+- The filmstrip lists RAWs only, and the stack window and the auto-stack page open only RAWs in the
+  editor. Open such a photo from Immich instead.
+
+Saving works as for a RAW: the edit is stored with the photo, and the JPEG of your edit is stacked
+on top of it.
+
 ## Next
 
 - [Masks](masks.md): apply most of these to part of the photo.

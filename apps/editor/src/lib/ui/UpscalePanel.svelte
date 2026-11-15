@@ -60,7 +60,7 @@
     </select>
   </div>
   {#if !editor.readOnly}
-    <button class="wide" onclick={() => editor.upscalePhoto('immich')} disabled={busy || !check || !!check.blocked} title="Upscale the edit and save it to Immich as a JPEG, stacked with the RAW (the RAW and your saved edit stay as they are)">
+    <button class="wide" onclick={() => editor.upscalePhoto('immich')} disabled={busy || !check || !!check.blocked} title={`Upscale the edit and save it to Immich as a JPEG, stacked with the ${editor.sourceWord} (the ${editor.sourceWord} and your saved edit stay as they are)`}>
       Save to Immich
     </button>
   {/if}

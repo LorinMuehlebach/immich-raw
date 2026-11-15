@@ -66,6 +66,30 @@ describe('planItems', () => {
     expect(planItems(assets, false).items.map((i) => i.id)).toEqual(['r1', 'j1', 'j2']);
   });
 
+  it('exports an edited JPEG once, with its edit, when its saved JPEG is in the album too', () => {
+    const { items, renders } = planItems(
+      [a('e1', 'IMG_1.edit.jpg', { sourceId: 'j1' }), a('j1', 'IMG_1.jpg'), a('p1', 'IMG_2.jpg'), a('c1', 'IMG_1.copy-1.edit.jpg', { sourceId: 'j1', copyId: 'k1' })],
+      true,
+    );
+    expect(items).toEqual([
+      { kind: 'raw', id: 'j1', name: 'IMG_1.jpg' },
+      { kind: 'image', id: 'p1', name: 'IMG_2.jpg' },
+      { kind: 'raw', id: 'j1', name: 'IMG_1.copy-1.edit.jpg', copyId: 'k1' },
+    ]);
+    expect(renders).toBe(2);
+  });
+
+  it('renders the saved JPEG of an edited JPEG that is not in the album from that JPEG', () => {
+    const plan = planItems([a('e1', 'IMG_1.edit.jpg', { sourceId: 'j1' })], true);
+    expect(plan.items).toEqual([{ kind: 'raw', id: 'j1', name: 'IMG_1.edit.jpg' }]);
+  });
+
+  it('does not count an edited JPEG as a RAW capture for skipping camera JPEGs', () => {
+    const plan = planItems([a('e1', 'IMG_1.edit.jpg', { sourceId: 'j1' }), a('j1', 'IMG_1.jpg'), a('j2', 'IMG_1.JPG')], true);
+    expect(plan.items.map((i) => i.id)).toEqual(['j1', 'j2']);
+    expect(plan.skipped.jpegTwins).toBe(0);
+  });
+
   it('exports a render without a known RAW as an image', () => {
     const plan = planItems([a('e1', 'X.edit.jpg', { sourceId: null })], true);
     expect(plan.items).toEqual([{ kind: 'image', id: 'e1', name: 'X.edit.jpg' }]);

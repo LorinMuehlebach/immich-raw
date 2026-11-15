@@ -19,7 +19,8 @@ Each feature has a guide with screenshots.
 
 - **[Edit from Immich and save back](docs/getting-started.md):** the Edit RAW button, a JPEG of
   your edit stacked with the RAW (in front of it, or behind it) with its date, location, albums,
-  tags and rating, and the edit kept for later.
+  tags and rating, and the edit kept for later. JPEGs and other photos without a RAW can be edited
+  too, with a warning that they won't come out as well.
 - **[Lightroom-style editing](docs/editing.md):** white balance, tone, Auto tone, profiles
   (including Fujifilm film looks), curves, Color Mixer, Color Grading, sharpening and noise
   reduction, lens corrections (Lensfun), transform and Guided Upright, vignette and grain, crop.

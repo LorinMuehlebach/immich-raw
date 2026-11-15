@@ -22,6 +22,7 @@ export const OPEN_LABELS = {
   download: 'Downloading the original',
   originalCached: "Original from this browser's cache",
   decode: 'Decoding the RAW',
+  decodeImage: 'Decoding the photo',
   decodeCached: "Decoded photo from this browser's cache",
   show: 'Rendering',
 } as const;

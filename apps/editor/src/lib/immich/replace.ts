@@ -19,6 +19,7 @@ import {
   type UpdateAssetDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
+import { isRawFilename } from '@immich-raw/inject/raw';
 import { RECIPE_KEY, RENDER_KEY, normalizeRecipe } from '@immich-raw/recipe';
 import { httpStatus } from './api.ts';
 import { copiesIn } from './copies.ts';
@@ -39,10 +40,12 @@ const STEP_LABELS: Record<ReplaceStep, string> = {
   delete: 'deleting the original',
 };
 
-type RawInfo = Pick<AssetResponseDto, 'id' | 'ownerId' | 'libraryId' | 'isTrashed' | 'visibility' | 'tags' | 'stack' | 'exifInfo'>;
+type RawInfo = Pick<AssetResponseDto, 'id' | 'originalFileName' | 'ownerId' | 'libraryId' | 'isTrashed' | 'visibility' | 'tags' | 'stack' | 'exifInfo'>;
 
 /** Why this RAW can't be converted, or null if it can. */
 export function convertBlocked(raw: RawInfo, me: Pick<UserAdminResponseDto, 'id'> | null): string | null {
+  // A JPEG, PNG, ... has no sensor data to keep, and converting deletes the original.
+  if (!isRawFilename(raw.originalFileName)) return 'Only RAW files can be converted to DNG.';
   if (!me || raw.ownerId !== me.id) return 'Only the owner of a photo can convert it.';
   if (raw.libraryId) return 'This photo is in an external library: Immich can\'t delete its file, so converting would not save space.';
   if (raw.isTrashed) return 'This photo is in the trash.';

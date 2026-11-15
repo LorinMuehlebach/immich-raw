@@ -4,7 +4,7 @@
 import type LibRawType from '@immich-raw/libraw';
 import { camXyzFromRgbCam, hasCamXyz } from './color.ts';
 import { startMeasure } from './timing.ts';
-import type { DecoderInfo, LinearImage, RawMeta, SensorData } from './types.ts';
+import type { DecoderInfo, LinearImage, PhotoSession, RawMeta, SensorData } from './types.ts';
 
 // libraw-wasm (our single-threaded build in packages/libraw) is loaded unbundled from its own
 // folder (the app copies packages/libraw/lib there). Its worker and libraw.wasm are found
@@ -291,7 +291,7 @@ export async function decodeBest(bytes: Uint8Array): Promise<{ image: LinearImag
 }
 
 /** 2x2 box downscale of an RGB16 image. */
-function halve(img: { width: number; height: number; data: Uint16Array }): LinearImage {
+export function halve(img: { width: number; height: number; data: Uint16Array }): LinearImage {
   const w = Math.max(1, img.width >> 1);
   const h = Math.max(1, img.height >> 1);
   const out = new Uint16Array(w * h * 3);
@@ -312,7 +312,7 @@ function halve(img: { width: number; height: number; data: Uint16Array }): Linea
   return { width: w, height: h, data: out, halfSize: true };
 }
 
-export class RawSession {
+export class RawSession implements PhotoSession {
   readonly meta: RawMeta;
   readonly half: LinearImage;
   readonly decoder: DecoderInfo;

@@ -1,4 +1,5 @@
-// Adds an "Edit RAW" icon button to Immich's asset viewer toolbar, a "Compare stack" button there
+// Adds an "Edit RAW" icon button to Immich's asset viewer toolbar ("Edit" on a photo that has no
+// RAW), a "Compare stack" button there
 // for photos in a culler stack (opens the editor's stack window), and to the toolbar shown while
 // photos are selected an "Export" button (the editor's export page) and, with two or more photos
 // and the culler installed, an "Auto-stack" button (the editor's auto-stack page).
@@ -133,7 +134,7 @@ const createExportButton = (group: Element) =>
     group,
     EXPORT_BUTTON_ATTR,
     'Export with immich-raw',
-    'Export with immich-raw: renders the selected photos (RAWs with their edit) in the browser',
+    'Export with immich-raw: renders the selected photos (with their edit) in the browser',
     EXPORT_ICON_PATH,
     exportPageUrl,
   );
@@ -166,11 +167,12 @@ function linkTo(button: HTMLButtonElement, url: string): void {
 }
 
 function createButton(bar: Element, target: EditTarget, route: ViewerRoute): HTMLButtonElement {
-  const button = iconButton(bar.querySelector('button'), 'Edit RAW', ICON_PATH);
+  const button = iconButton(bar.querySelector('button'), target.isRaw ? 'Edit RAW' : 'Edit', ICON_PATH);
+  if (!target.isRaw) button.title = "Edit with immich-raw: this photo isn't a RAW, so the result won't be as good as from a RAW";
   button.setAttribute(BUTTON_ATTR, '');
   button.dataset.sourceAsset = route.assetId;
-  button.dataset.rawAsset = target.rawId;
-  linkTo(button, editorUrl(EDITOR_BASE, target.rawId, route.context, location.pathname + location.search, target.copyId));
+  button.dataset.rawAsset = target.sourceId;
+  linkTo(button, editorUrl(EDITOR_BASE, target.sourceId, route.context, location.pathname + location.search, target.copyId));
   return button;
 }
 
