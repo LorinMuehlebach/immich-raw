@@ -59,10 +59,14 @@ look a little different.
   colours match, but the temperature and tint read differently (one photo: 4500 K / +41 in
   Lightroom, 4387 K / +37 here). Lightroom converts with Adobe's two-illuminant camera profile, the
   editor with a single matrix. A sidecar with "As Shot" has no temperature to import.
-- **Fujifilm DR200 and DR400.** The camera underexposes the RAW by 1 or 2 stops at these settings and
-  brightens its own JPEG back. Lightroom does too; the editor adds the same +1 or +2 EV as a
-  baseline exposure (not shown on the Exposure slider), so an imported edit comes out as bright as
-  in Lightroom. A DNG made from such a RAW carries it as its BaselineExposure.
+- **Highlight-protection modes.** At Fujifilm DR200 and DR400 the camera underexposes the RAW by 1
+  or 2 stops and brightens its own JPEG back. Lightroom does too; the editor adds the same +1 or +2
+  EV as a baseline exposure (not shown on the Exposure slider), so an imported edit comes out as
+  bright as in Lightroom. Canon's Highlight Tone Priority (+1 EV) and Nikon's Active D-Lighting
+  (up to +1.33 EV) get the same treatment. The Fujifilm case is checked against Lightroom on a DR400
+  photo; the Canon and Nikon values come from [RapidRAW](https://github.com/CyberTimon/RapidRAW) and
+  only their reading is checked here, not the brightness. A DNG made from such a RAW carries it as
+  its BaselineExposure.
 - **Profiles.** "Adobe Color" becomes the editor's Color profile, an approximation of it. The S-curve
   matches Adobe Color's, but on the one photo compared, Lightroom's shadows were darker and its
   highlights brighter.
