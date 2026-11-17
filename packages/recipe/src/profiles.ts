@@ -23,10 +23,18 @@ export const FUJI_PROFILE_IDS = [
   'fuji-bleach-bypass',
 ] as const;
 
+/**
+ * Adobe's camera profiles (the hue/saturation map of "Adobe Standard", plus the look that makes
+ * "Adobe Color"), made from the user's own Lightroom profile file for the camera. Without that
+ * file for the photo's camera they render as Color.
+ */
+export const CAMERA_PROFILE_IDS = ['adobe-color', 'adobe-standard'] as const;
+
 export type BasicProfileId = (typeof BASIC_PROFILE_IDS)[number];
 export type FujiProfileId = (typeof FUJI_PROFILE_IDS)[number];
-export type ProfileId = BasicProfileId | FujiProfileId;
-export type ProfileGroup = 'basic' | 'fuji';
+export type CameraProfileId = (typeof CAMERA_PROFILE_IDS)[number];
+export type ProfileId = BasicProfileId | FujiProfileId | CameraProfileId;
+export type ProfileGroup = 'basic' | 'fuji' | 'camera';
 
 export interface ProfileInfo {
   id: ProfileId;
@@ -36,15 +44,19 @@ export interface ProfileInfo {
   amount: boolean;
   /** Needs the Fujifilm film looks to be downloaded. */
   download: boolean;
+  /** Needs the camera profile converted from the user's Lightroom (see camera-profile.ts in the pipeline). */
+  camera: boolean;
 }
 
 export const PROFILE_GROUPS: { id: ProfileGroup; label: string }[] = [
   { id: 'basic', label: 'Profiles' },
+  { id: 'camera', label: 'Camera profiles' },
   { id: 'fuji', label: 'Fujifilm film looks' },
 ];
 
-const basic = (id: BasicProfileId, label: string, amount = false): ProfileInfo => ({ id, label, group: 'basic', amount, download: false });
-const fuji = (id: FujiProfileId, label: string): ProfileInfo => ({ id, label, group: 'fuji', amount: true, download: true });
+const basic = (id: BasicProfileId, label: string, amount = false): ProfileInfo => ({ id, label, group: 'basic', amount, download: false, camera: false });
+const fuji = (id: FujiProfileId, label: string): ProfileInfo => ({ id, label, group: 'fuji', amount: true, download: true, camera: false });
+const camera = (id: CameraProfileId, label: string): ProfileInfo => ({ id, label, group: 'camera', amount: true, download: false, camera: true });
 
 export const PROFILES: ProfileInfo[] = [
   basic('color', 'Color'),
@@ -54,6 +66,8 @@ export const PROFILES: ProfileInfo[] = [
   basic('neutral', 'Neutral'),
   basic('monochrome', 'Monochrome'),
   basic('linear', 'Linear'),
+  camera('adobe-color', 'Adobe Color'),
+  camera('adobe-standard', 'Adobe Standard'),
   fuji('fuji-provia', 'Provia/Standard'),
   fuji('fuji-velvia', 'Velvia/Vivid'),
   fuji('fuji-astia', 'Astia/Soft'),
@@ -79,4 +93,8 @@ export function profileInfo(id: ProfileId): ProfileInfo {
 
 export function isFujiProfile(id: ProfileId): id is FujiProfileId {
   return id.startsWith('fuji-');
+}
+
+export function isCameraProfile(id: ProfileId): id is CameraProfileId {
+  return id.startsWith('adobe-');
 }

@@ -3,13 +3,15 @@
 // DNG-style look table (built here); the Fujifilm film looks bring a downloaded look table and
 // tone curve (fuji-looks.ts), plus a display-space LUT for the three looks that only exist
 // as a conversion from Provia.
-import { isFujiProfile, profileInfo, type ProfileId } from '@immich-raw/recipe';
+import { isCameraProfile, isFujiProfile, profileInfo, type ProfileId } from '@immich-raw/recipe';
 import { dngRgbToHsv, type CubeLut, type HueSatTable, type ToneLut } from './dcp.ts';
 import { SRGB_TO_PROPHOTO, decodeSrgb } from './look.ts';
 import { mulVec3, type Vec3 } from './matrices.ts';
 
 /** Data a profile renders with, beyond its constants. */
 export interface ProfileLook {
+  /** Tells apart looks of one profile that differ (a camera profile at another colour temperature). */
+  key?: string;
   lookTable?: HueSatTable;
   toneLut?: ToneLut;
   /** Display-referred sRGB -> sRGB LUT, applied after the tone curve. */
@@ -78,6 +80,12 @@ export function resolveProfile(id: ProfileId, looks: ProfileLooks = {}): Profile
       amount: true,
       look,
     };
+  }
+  if (isCameraProfile(id)) {
+    // The camera's own profile, made from the user's Lightroom: without it, Color.
+    const look = looks[id];
+    if (!look?.lookTable) return { ...resolveProfile('color'), requested: id, missing: true };
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: true, look };
   }
   const row = BASIC[id];
   const inHouse = id === 'vivid' || id === 'portrait' || id === 'landscape';

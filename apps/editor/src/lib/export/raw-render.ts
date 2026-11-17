@@ -9,6 +9,7 @@ import { Renderer, SRGB8, cameraInfo, type OutputColor, type Pixels } from '@imm
 import type { Recipe } from '@immich-raw/recipe';
 import type { AssetResponseDto } from '@immich/sdk';
 import { prepareAiMasks } from '../ai.svelte.ts';
+import { loadCameraProfile } from '../camera-profiles.ts';
 import { fujiLooks } from '../fuji-looks.svelte.ts';
 import { photoDefaults } from '../photo-defaults.ts';
 import { downloadOriginal } from '../immich/download.ts';
@@ -47,6 +48,7 @@ export class RawRenderer {
     const camera = cameraInfo(session.meta);
     // Never asks: the kept looks, or a download only if the user agreed to one before.
     const looks = await fujiLooks.quiet();
+    const cameraProfile = await loadCameraProfile(session.meta.make, session.meta.model);
     const defaults = () => photoDefaults({ make: session.meta.make, sim, looksReady: !!looks, developed: !isRaw }).recipe;
     const recipe = typeof saved === 'function' ? saved(defaults()) : (saved ?? defaults());
     const dngLens = dngLensFor(asset.originalFileName, bytes, camera);
@@ -61,6 +63,7 @@ export class RawRenderer {
       const r = (this.renderer ??= new Renderer(document.createElement('canvas')));
       r.setSource(session.half, camera);
       r.setProfileLooks(looks ?? {});
+      r.setCameraProfile(cameraProfile);
       r.setLens({ profile, ca });
       onStep('render', 0);
       // AI masks are computed from this photo (the models run once per photo and are cached).

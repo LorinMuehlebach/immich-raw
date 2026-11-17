@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PARAMS } from './params.ts';
-import { FUJI_PROFILE_IDS, PROFILES, isProfileId, profileInfo } from './profiles.ts';
+import { CAMERA_PROFILE_IDS, FUJI_PROFILE_IDS, PROFILES, isCameraProfile, isProfileId, profileInfo } from './profiles.ts';
 import { canonicalJson, defaultRecipe, isDefaultRecipe, normalizeRecipe, recipeHash } from './recipe.ts';
 
 describe('defaultRecipe', () => {
@@ -102,19 +102,23 @@ describe('tone curve', () => {
 });
 
 describe('profiles', () => {
-  it('lists every profile once, in both groups', () => {
+  it('lists every profile once, in its group', () => {
     const ids = PROFILES.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(PROFILES.filter((p) => p.group === 'fuji').map((p) => p.id)).toEqual([...FUJI_PROFILE_IDS]);
     expect(PROFILES.filter((p) => p.group === 'basic').map((p) => p.id)).toEqual(['color', 'vivid', 'portrait', 'landscape', 'neutral', 'monochrome', 'linear']);
+    expect(PROFILES.filter((p) => p.group === 'camera').map((p) => p.id)).toEqual([...CAMERA_PROFILE_IDS]);
+    expect(isCameraProfile('adobe-color')).toBe(true);
+    expect(isCameraProfile('color')).toBe(false);
     expect(isProfileId('fuji-classic-chrome')).toBe(true);
     expect(isProfileId('fuji-acros')).toBe(false);
     expect(isProfileId(3)).toBe(false);
   });
 
   it('gives an Amount to the looks only', () => {
-    expect(PROFILES.filter((p) => p.amount).map((p) => p.id)).toEqual(['vivid', 'portrait', 'landscape', ...FUJI_PROFILE_IDS]);
-    expect(profileInfo('fuji-provia')).toMatchObject({ label: 'Provia/Standard', download: true });
+    expect(PROFILES.filter((p) => p.amount).map((p) => p.id)).toEqual(['vivid', 'portrait', 'landscape', ...CAMERA_PROFILE_IDS, ...FUJI_PROFILE_IDS]);
+    expect(profileInfo('fuji-provia')).toMatchObject({ label: 'Provia/Standard', download: true, camera: false });
+    expect(profileInfo('adobe-color')).toMatchObject({ label: 'Adobe Color', download: false, camera: true });
   });
 
   it('keeps every known profile when normalising, and defaults the Amount to 100', () => {

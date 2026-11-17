@@ -1,9 +1,9 @@
 // WebGL2 renderer: fitted preview from a <= 2560 px proxy, 1:1 zoom regions and
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
-import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, type BrushComponent, type PolygonComponent, type ProfileId, type Recipe } from '@immich-raw/recipe';
+import { canonicalJson, defaultRecipe, isCameraProfile, isMaskRefined, isPartRefined, type BrushComponent, type PolygonComponent, type Recipe } from '@immich-raw/recipe';
 import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
-import { cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type ProfileLooks, type ProfileRender } from './color/index.ts';
+import { cameraLookTable, cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type CameraProfileData, type ProfileLook, type ProfileLooks, type ProfileRender } from './color/index.ts';
 import { OUTPUT_SPACE_INFO, SRGB8, type OutputColor } from './color/output-spaces.ts';
 import type { Pixels } from './export/pixels.ts';
 import { buildCurveLut, isCurveNeutral, LUT_SIZE } from './curves.ts';
@@ -163,8 +163,12 @@ export class Renderer {
   private dummy3d: WebGLTexture;
   /** Downloaded profile data (Fujifilm film looks); see setProfileLooks. */
   private looks: ProfileLooks = {};
-  /** Uploaded profile textures by profile (look table, tone curve, film LUT). */
-  private profileTex = new Map<ProfileId, { look?: WebGLTexture; curve?: WebGLTexture; film?: WebGLTexture }>();
+  /** The photo camera's Adobe profile (made from the user's Lightroom), or null. */
+  private cameraProfile: CameraProfileData | null = null;
+  /** Camera profile looks by profile and colour temperature (they depend on the white balance). */
+  private cameraLooks = new Map<string, ProfileLook>();
+  /** Uploaded profile textures by look key (look table, tone curve, film LUT). */
+  private profileTex = new Map<string, { look?: WebGLTexture; curve?: WebGLTexture; film?: WebGLTexture }>();
   /** The photo's own starting settings (e.g. its in-camera film look): what "before" shows. */
   private photoDefaults: Recipe | null = null;
   /** Zoom source cache: a region of a source image uploaded as RGBA16F. */
@@ -301,8 +305,43 @@ export class Renderer {
     this.analysisCache = null;
   }
 
+  /** The Adobe profile of the photo's camera, for the Adobe Color and Adobe Standard profiles. */
+  setCameraProfile(profile: CameraProfileData | null): void {
+    this.cameraProfile = profile;
+    this.cameraLooks.clear();
+    this.freeProfileTextures();
+    this.analysisCache = null;
+  }
+
+  /** The recipe's Adobe profile as a look at the recipe's colour temperature (null without a profile). */
+  private cameraLookFor(recipe: Recipe): ProfileLook | null {
+    const profile = this.cameraProfile;
+    if (!profile || !this.camera || !isCameraProfile(recipe.profile)) return null;
+    const kind = recipe.profile === 'adobe-color' ? 'color' : 'standard';
+    // The maps are blended by temperature; 100 K steps are finer than their change.
+    const kelvin = Math.round((recipe.wb.mode === 'asShot' ? this.camera.asShot.temp : recipe.wb.temp) / 100) * 100;
+    const key = `${recipe.profile}@${kelvin}`;
+    let look = this.cameraLooks.get(key);
+    if (!look) {
+      const lookTable = cameraLookTable(profile, kind, kelvin);
+      if (!lookTable) return null;
+      look = { key, lookTable };
+      // Only the look in use matters; keep the list short as the white balance is dragged.
+      if (this.cameraLooks.size >= 8) {
+        this.cameraLooks.clear();
+        this.freeProfileTextures();
+      }
+      this.cameraLooks.set(key, look);
+    }
+    return look;
+  }
+
   /** What renders for the recipe's profile (Color when a downloaded look is missing). */
   profileFor(recipe: Recipe): ProfileRender {
+    if (isCameraProfile(recipe.profile)) {
+      const look = this.cameraLookFor(recipe);
+      return resolveProfile(recipe.profile, look ? { ...this.looks, [recipe.profile]: look } : this.looks);
+    }
     return resolveProfile(recipe.profile, this.looks);
   }
 
@@ -329,7 +368,8 @@ export class Renderer {
   /** The profile's textures, uploaded once per profile. */
   private profileTextures(p: ProfileRender): { look?: WebGLTexture; curve?: WebGLTexture; film?: WebGLTexture } {
     if (!p.look) return {};
-    let t = this.profileTex.get(p.id);
+    const key = p.look.key ?? p.id;
+    let t = this.profileTex.get(key);
     if (t) return t;
     const gl = this.gl;
     const { lookTable, toneLut, filmLut } = p.look;
@@ -348,7 +388,7 @@ export class Renderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     }
     if (filmLut) t.film = this.ctx.texture3d(filmLut.size, filmLut.size, filmLut.size, cubeTexels(filmLut));
-    this.profileTex.set(p.id, t);
+    this.profileTex.set(key, t);
     return t;
   }
 
