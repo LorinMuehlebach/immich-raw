@@ -23,6 +23,9 @@ photos already uploaded; `deploy/demo/compose.build.yml` builds it from a checko
 - `node e2e/probe-profiles.mjs <out-dir> <asset-ids>`: the profiles: the tone-only ones against a
   baseline build, the Fujifilm Provia look against a RAF's own JPEG, contact sheets
   ([e2e/README.md](../e2e/README.md#variants)).
+- `node e2e/probe-hdr.mjs <out-dir>`: Merge to HDR on a generated bracket, against the editor's
+  Vite dev server on port 5183 (no Immich needed): exposures, alignment, noise, kept highlights and
+  the DNG decoding back; writes the reference shot and the merged photo as PNGs.
 - `node e2e/export.mjs <out-dir>`: the export options (PNG, TIFF, print size, file names), an album
   export as a ZIP (two photos at once), the export button for photos selected in Immich (including
   select all), a saved edit exported from its RAW, WebP, AVIF and JPEG XL with their metadata, and a

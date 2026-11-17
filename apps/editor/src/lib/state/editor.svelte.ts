@@ -15,7 +15,7 @@ import {
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
-import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage, type PhotoSession } from '@immich-raw/decoder';
+import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage, type PhotoSession, type RawMeta } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
@@ -28,6 +28,7 @@ import {
   aspectRatioFor,
   AUTO_PARAM_SPECS,
   DEFAULT_AUTO_PARAMS,
+  autoHdr,
   autoTone,
   bandWeights,
   brushRadius,
@@ -152,6 +153,11 @@ import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/
 import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
 import { canPrefetch, decodeNeighbour, fetchNeighbour, resetPrefetch } from '../immich/prefetch.ts';
 import { cacheDng, convertBlocked, replaceWithDng, type DeleteMode, type ReplaceStep } from '../immich/replace.ts';
+import { buildHdr } from '../hdr/build.ts';
+import { loadBracket, referenceShot, relativeEv, shotOf, type Shot } from '../hdr/brackets.ts';
+import type { Deghost } from '../hdr/merge.ts';
+import { HDR_KEY, saveHdr, type HdrSaveStep } from '../hdr/save.ts';
+import { shotSettings } from '../immich/context.ts';
 import { canEdit, errorMessage, readMetadata, saveRender, writeMetadata, type SaveStep } from '../immich/save.ts';
 import { copiesIn, copyInfo, copyKey, copyValue, historyKeyFor, newCopy, parseCopy, storedEdit, type CopyInfo, type CopyMeta } from '../immich/copies.ts';
 import { History, editable, editableJson, type HistoryStep } from './history.ts';
@@ -320,6 +326,58 @@ export interface DngDialog {
   builtMode: DngMode | null;
   verification: Verification | null;
   error: string | null;
+}
+
+/** One photo of the bracket in the Merge to HDR dialog. */
+export interface HdrFrameRow {
+  id: string;
+  fileName: string;
+  /** ISO, focal length, aperture, shutter. */
+  settings: string;
+  /** Stops relative to the bracket's middle exposure. */
+  ev: number;
+  include: boolean;
+  /** The photo open in the editor. */
+  current: boolean;
+}
+
+/** The Merge to HDR dialog. */
+export interface HdrDialog {
+  /** searching: looking for the bracket; single: none found; options: one found. */
+  phase: 'searching' | 'single' | 'options' | 'building' | 'saving' | 'error';
+  frames: HdrFrameRow[];
+  align: boolean;
+  deghost: Deghost;
+  /** Why merging isn't possible right now, or null. */
+  blocked: string | null;
+  label: string;
+  fraction: number;
+  /** Shown with the single-photo option: why no bracket is offered. */
+  searchNote: string;
+  error: string | null;
+}
+
+const HDR_SAVE_LABEL: Record<HdrSaveStep, string> = {
+  upload: 'Uploading the HDR',
+  details: 'Copying albums, tags and details',
+  stack: 'Stacking it with the bracket',
+};
+
+/**
+ * HDR at the amount Auto picks for the photo, then Auto tone on top (one step, as Auto does).
+ * Measured with `r`, which must show the photo the recipe is for.
+ */
+function withAutoHdr(r: Renderer, base: Recipe, params: AutoParams): Recipe {
+  const recipe = cloneRecipe(base);
+  const samples = r.toneSamples(recipe);
+  const whitePoint = r.profileWhitePoint(recipe);
+  recipe.basic.hdr = clampParam(PARAMS.hdr, autoHdr(samples, { whitePoint, params }));
+  const auto = autoTone(samples, { whitePoint, params, hdr: recipe.basic.hdr });
+  for (const spec of Editor.AUTO_SPECS) {
+    const key = spec.path.split('.')[1] as keyof typeof auto;
+    if (key in auto) setPath(recipe, spec.path, clampParam(spec, auto[key]));
+  }
+  return recipe;
 }
 
 const REPLACE_LABEL: Record<ReplaceStep, string> = {
@@ -514,6 +572,7 @@ export class Editor {
   viewVersion = $state(0);
   lensInfo = $state<LensInfo>({ searching: false, profile: null, lensName: '', autoName: '', candidates: [], caText: '' });
   dngDialog = $state<DngDialog | null>(null);
+  hdrDialog = $state<HdrDialog | null>(null);
 
   camera: CameraInfo | null = null;
   session: PhotoSession | null = null;
@@ -555,6 +614,11 @@ export class Editor {
   private caFrom: 'half' | 'full' | null = null;
   /** The DNG built in the Convert to DNG dialog, waiting for the user's OK. */
   private dngBuilt: BuiltDng | null = null;
+  /** The bracket found for the Merge to HDR dialog. */
+  private hdrAssets: AssetResponseDto[] = [];
+  private hdrStop: AbortController | null = null;
+  /** The open photo is a merged HDR (it starts from Auto with HDR). */
+  private mergedHdr = false;
   returnPath: string | null = null;
   ctx: string | null = null;
   /** The photo's starting settings (its in-camera film look for a Fujifilm RAW). */
@@ -768,6 +832,11 @@ export class Editor {
     this.isRaw = true;
     this.dngDialog = null;
     this.dngBuilt = null;
+    this.hdrStop?.abort();
+    this.hdrStop = null;
+    this.hdrDialog = null;
+    this.hdrAssets = [];
+    this.mergedHdr = false;
     this.exportDialog = null;
     this.tool = 'edit';
     this.before = false;
@@ -912,6 +981,7 @@ export class Editor {
       // The filmstrip's looks and badges go by the same listing.
       if (listed) editStates.remember(asset.id, listed);
       const items = listed ?? [];
+      this.mergedHdr = items.some((i) => i.key === HDR_KEY);
       this.copies = copiesIn(items).map(copyInfo);
       let copyId = new URLSearchParams(location.search).get('copy');
       if (copyId && !this.copies.some((c) => c.id === copyId)) {
@@ -1008,7 +1078,7 @@ export class Editor {
         const looks = await looksP;
         live();
         this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks, developed: !isRaw });
-        const saved = stored ?? cloneRecipe(this.defaults.recipe);
+        let saved = stored ?? cloneRecipe(this.defaults.recipe);
         if (!stored) {
           this.recipe = draft ? withDraft(saved, draft) : cloneRecipe(saved);
           this.savedJson = editableJson(saved);
@@ -1017,6 +1087,15 @@ export class Editor {
         this.renderer = renderer;
         this.renderer.setSource(session.half, this.camera);
         this.renderer.setProfileLooks(looks ?? {});
+        if (this.mergedHdr) {
+          // A merged HDR starts from Auto with HDR, measured on the photo (so after setSource).
+          this.defaults = { ...this.defaults, recipe: withAutoHdr(renderer, this.defaults.recipe, $state.snapshot(this.autoParams) as AutoParams) };
+          if (!stored) {
+            saved = cloneRecipe(this.defaults.recipe);
+            this.recipe = draft ? withDraft(saved, draft) : cloneRecipe(saved);
+            this.savedJson = editableJson(saved);
+          }
+        }
         this.renderer.setPhotoDefaults(this.defaults.recipe);
         this.ai.reset();
         this.startHistory(saved, stored ? 'Open (saved edit)' : 'Open', draft);
@@ -1237,6 +1316,7 @@ export class Editor {
     this.fujiOffer = null;
     const wanted = this.defaults.wanted;
     this.defaults = photoDefaults({ make: this.session.meta.make, sim: this.fujiSim, looksReady: true, developed: !!this.session.meta.rendered });
+    if (this.mergedHdr) this.defaults = { ...this.defaults, recipe: withAutoHdr(this.renderer, this.defaults.recipe, $state.snapshot(this.autoParams) as AutoParams) };
     this.renderer.setPhotoDefaults(this.defaults.recipe);
     const untouched = !this.storedEdit && !this.dirty && this.historySteps.length <= 1;
     if (wanted && untouched && !this.readOnly) {
@@ -1650,6 +1730,7 @@ export class Editor {
     const auto = autoTone(this.toneSamples(recipe), {
       whitePoint: this.renderer.profileWhitePoint(recipe),
       params: $state.snapshot(this.autoParams) as AutoParams,
+      hdr: recipe.basic.hdr,
     });
     const specs = only ? [only] : Editor.AUTO_SPECS;
     for (const spec of specs) {
@@ -1667,6 +1748,15 @@ export class Editor {
       this.changed(true, label);
     }
     this.autoApplied = only ? null : editableJson(after);
+  }
+
+  /** Auto for the HDR slider alone (Shift+double-click): the amount that fits the photo's range. */
+  autoHdrAmount(): void {
+    if (this.readOnlyGuard() || !this.renderer || this.status !== 'ready') return;
+    const recipe = $state.snapshot(this.recipe) as Recipe;
+    const v = clampParam(PARAMS.hdr, autoHdr(this.toneSamples(recipe), { whitePoint: this.renderer.profileWhitePoint(recipe), params: $state.snapshot(this.autoParams) as AutoParams }));
+    setPath(this.recipe, PARAMS.hdr.path, v);
+    this.changed(true, `Auto ${historyLabel(PARAMS.hdr, v)}`);
   }
 
   /** What Auto measures. Cached: only white balance, crop, profile and calibration change it. */
@@ -3546,6 +3636,171 @@ export class Editor {
       d.phase = 'error';
       d.error = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  // ---------------------------------------------------------------- merge to HDR
+
+  /** Opens Merge to HDR and looks for the photo's bracket in Immich. */
+  async openHdrDialog(): Promise<void> {
+    const a = this.asset;
+    if (!a || this.status !== 'ready' || this.hdrDialog) return;
+    const d: HdrDialog = {
+      phase: 'searching',
+      frames: [],
+      align: true,
+      deghost: 'off',
+      blocked: this.saving ? 'Wait until saving has finished.' : null,
+      label: '',
+      fraction: 0,
+      searchNote: '',
+      error: null,
+    };
+    this.hdrDialog = d;
+    this.hdrAssets = [];
+    let bracket: AssetResponseDto[] = [];
+    try {
+      bracket = await loadBracket(a);
+    } catch (e) {
+      console.warn('HDR: looking for the bracket failed', e);
+      d.searchNote = `Looking for a bracket failed: ${errorMessage(e)}`;
+    }
+    if (this.hdrDialog !== d) return;
+    const shots = bracket.map(shotOf).filter((x): x is Shot => !!x);
+    if (shots.length < 2) {
+      d.searchNote ||= 'No bracket found: no photos from the same camera taken right before or after this one at other exposures.';
+      d.phase = 'single';
+      return;
+    }
+    this.hdrAssets = bracket;
+    const ref = referenceShot(shots);
+    d.frames = bracket.map((b, i) => ({
+      id: b.id,
+      fileName: b.originalFileName,
+      settings: shotSettings(b.exifInfo).join(' · '),
+      ev: Math.round(relativeEv(shots[i]!, ref) * 10) / 10,
+      include: true,
+      current: b.id === a.id,
+    }));
+    d.phase = 'options';
+  }
+
+  closeHdrDialog(): void {
+    const d = this.hdrDialog;
+    if (!d || d.phase === 'saving') return;
+    this.hdrStop?.abort();
+    this.hdrStop = null;
+    this.hdrDialog = null;
+    this.hdrAssets = [];
+  }
+
+  setHdrOptions(patch: Partial<Pick<HdrDialog, 'align' | 'deghost'>>): void {
+    const d = this.hdrDialog;
+    if (d?.phase === 'options' || d?.phase === 'error') Object.assign(d, patch);
+  }
+
+  /** Leaves a frame out of the merge or takes it back (at least two stay in). */
+  toggleHdrFrame(id: string): void {
+    const d = this.hdrDialog;
+    if (!d || (d.phase !== 'options' && d.phase !== 'error')) return;
+    const row = d.frames.find((f) => f.id === id);
+    if (!row) return;
+    if (row.include && d.frames.filter((f) => f.include).length <= 2) return;
+    row.include = !row.include;
+  }
+
+  private hdrProgress(label: string, fraction: number): void {
+    if (!this.hdrDialog) return;
+    this.hdrDialog.label = label;
+    this.hdrDialog.fraction = fraction;
+  }
+
+  /** Merges the chosen frames, uploads the HDR DNG, stacks it with the bracket and opens it. */
+  async mergeHdr(): Promise<void> {
+    const d = this.hdrDialog;
+    const a = this.asset;
+    const s = this.session;
+    if (!d || !a || !s || !this.camera || d.blocked || (d.phase !== 'options' && d.phase !== 'error')) return;
+    const chosen = new Set(d.frames.filter((f) => f.include).map((f) => f.id));
+    const frames = this.hdrAssets.filter((f) => chosen.has(f.id));
+    if (frames.length < 2) return;
+    const stop = new AbortController();
+    this.hdrStop = stop;
+    d.phase = 'building';
+    d.error = null;
+    try {
+      // Two big decodes at once can run LibRaw out of memory: let the editor's own finish first.
+      if (this.fullStatus === 'decoding') {
+        this.hdrProgress('Waiting for the full-resolution decode', 0);
+        await s.full().catch(() => {});
+      }
+      const built = await buildHdr({
+        frames: frames.map((asset) => ({ asset, session: asset.id === a.id && s instanceof RawSession ? s : null })),
+        align: d.align,
+        deghost: d.deghost,
+        software: APP_ID,
+        download: (asset, onProgress, signal) => downloadOriginal({ id: asset.id, checksum: asset.checksum }, (f) => onProgress(f), signal),
+        preview: (half, meta) => this.renderHdrPreview(half, meta),
+        onProgress: (label, f) => this.hdrProgress(label, f),
+        signal: stop.signal,
+      });
+      if (this.hdrDialog !== d) return;
+      if (!built.verification.ok) throw new Error(built.verification.text);
+      d.phase = 'saving';
+      const id = await saveHdr({ built, frames, align: d.align, deghost: d.deghost, onProgress: (step, f) => this.hdrProgress(HDR_SAVE_LABEL[step], f) });
+      this.hdrProgress('Opening the HDR', 1);
+      await cacheDng(id, built.bytes);
+      this.hdrStop = null;
+      this.hdrDialog = null;
+      this.hdrAssets = [];
+      await this.switchPhoto(id);
+    } catch (e) {
+      if (this.hdrDialog !== d) return;
+      this.hdrStop = null;
+      if (stop.signal.aborted) {
+        d.phase = 'options';
+        return;
+      }
+      console.error(e);
+      d.phase = 'error';
+      d.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Stops a running merge (nothing has been uploaded until it finishes). */
+  stopHdr(): void {
+    if (this.hdrDialog?.phase === 'building') this.hdrStop?.abort();
+  }
+
+  /**
+   * The merged photo with its starting settings, for the DNG's previews: rendered on a renderer
+   * of its own (the editor's keeps showing the open photo, its masks and caches).
+   */
+  private async renderHdrPreview(half: LinearImage, meta: RawMeta): Promise<ImageData> {
+    const r = new Renderer(document.createElement('canvas'));
+    try {
+      const camera = cameraInfo(meta);
+      r.setSource(half, camera);
+      r.setProfileLooks((await fujiLooks.quiet()) ?? {});
+      const recipe = withAutoHdr(r, defaultRecipe(), $state.snapshot(this.autoParams) as AutoParams);
+      recipe.crop.rotate90 = ((4 - quarterTurnsFromFlip(camera.flip)) % 4) as Recipe['crop']['rotate90'];
+      return await r.exportImage(recipe, half);
+    } finally {
+      r.dispose();
+    }
+  }
+
+  /**
+   * HDR from this photo alone, when there is no bracket: a RAW holds more range than the screen
+   * shows, so HDR at Auto's amount with Auto tone on top brings it out (one history step).
+   */
+  hdrFromPhoto(): void {
+    if (this.readOnlyGuard() || !this.renderer || this.status !== 'ready') return;
+    const recipe = withAutoHdr(this.renderer, $state.snapshot(this.recipe) as Recipe, $state.snapshot(this.autoParams) as AutoParams);
+    this.recipe.basic = recipe.basic;
+    this.hdrDialog = null;
+    this.hdrAssets = [];
+    this.changed(true, `HDR ${recipe.basic.hdr}`);
+    this.autoApplied = null;
   }
 
   /** Where "back" goes: the page the user came from, pointing at the stack's front photo if saved. */

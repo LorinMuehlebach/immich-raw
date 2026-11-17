@@ -5,6 +5,7 @@
 // Exposure 0, as the tone stage sees them. All maths is in stops relative to middle grey.
 // The slider effects mirror toneBase() in shaders.ts.
 import type { BasicParams, ParamSpec } from '@immich-raw/recipe';
+import { HDR_TONE, hdrAmountFor, hdrCurve } from './hdr-tone.ts';
 
 const MID = Math.log2(0.18);
 
@@ -86,29 +87,79 @@ function sliderFor(stops: number, range: number, weight: number, cap: number): n
   return clamp((stops / range / weight) * 100, -cap, cap);
 }
 
-export function autoTone(samples: ArrayLike<number>, opts: { whitePoint: number; params?: Partial<AutoParams> }): AutoTone {
+/** Key of the photo (its typical tone, log2): half median, half trimmed mean, robust to small bright or dark areas. */
+function keyOf(v: Float64Array, pct: (p: number) => number): number {
+  const lo = Math.round(v.length * 0.02);
+  const hi = Math.max(lo + 1, Math.round(v.length * 0.98));
+  let sum = 0;
+  for (let i = lo; i < hi; i++) sum += v[i]!;
+  return 0.5 * pct(0.5) + 0.5 * (sum / (hi - lo));
+}
+
+/** Where the HDR auto amount aims: the brightest 0.5 % this far over white, the darkest 1 % no lower than this. */
+const HDR_TOP_OVER_WHITE = 0.6;
+const HDR_BOTTOM = -6.5;
+/** Below this the result hardly looks different; "HDR from this photo" should be visible. */
+export const HDR_AUTO_MIN = 30;
+
+/**
+ * HDR amount (0..100) that brings the photo's range within reach of the other tone sliders,
+ * measured at the exposure Auto aims for (same samples as autoTone).
+ */
+export function autoHdr(samples: ArrayLike<number>, opts: { whitePoint: number; params?: Partial<AutoParams> }): number {
+  const P = { ...DEFAULT_AUTO_PARAMS, ...opts.params };
+  const v = Float64Array.from(samples).filter(Number.isFinite).sort();
+  if (v.length < 16) return HDR_AUTO_MIN;
+  const pct = (p: number) => v[Math.min(v.length - 1, Math.max(0, Math.round(p * (v.length - 1))))]!;
+  const ev = clamp(TARGET_KEY + P.brightness - keyOf(v, pct), -4, 4);
+  const top = pct(0.995) + ev - MID;
+  const bottom = pct(0.01) + ev - MID;
+  const W = Math.log2(opts.whitePoint / 0.18);
+  const { hi, hiK, lo, loK } = HDR_TONE;
+  const forHighlights = hdrAmountFor(top - hi, W + HDR_TOP_OVER_WHITE - hi, hiK);
+  const forShadows = hdrAmountFor(lo - bottom, lo - HDR_BOTTOM, loK);
+  return Math.round(clamp(Math.max(forHighlights, forShadows) * 100, HDR_AUTO_MIN, 100));
+}
+
+/**
+ * `hdr`: the photo's HDR amount (0..100). The tone stage compresses the base layer by it before
+ * the other sliders act, so Auto measures the photo as compressed.
+ */
+export function autoTone(samples: ArrayLike<number>, opts: { whitePoint: number; params?: Partial<AutoParams>; hdr?: number }): AutoTone {
   const P = { ...DEFAULT_AUTO_PARAMS, ...opts.params };
   const v = Float64Array.from(samples).filter(Number.isFinite).sort();
   const none: AutoTone = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 };
   if (v.length < 16) return none;
   const pct = (p: number) => v[Math.min(v.length - 1, Math.max(0, Math.round(p * (v.length - 1))))]!;
 
-  // Key: half median, half trimmed mean of the log luminance (robust to small bright or dark areas).
-  const lo = Math.round(v.length * 0.02);
-  const hi = Math.max(lo + 1, Math.round(v.length * 0.98));
-  let sum = 0;
-  for (let i = lo; i < hi; i++) sum += v[i]!;
-  const key = 0.5 * pct(0.5) + 0.5 * (sum / (hi - lo));
+  const key = keyOf(v, pct);
 
   // White, in stops above middle grey.
   const W = Math.log2(opts.whitePoint / 0.18);
 
   // Exposure brings the key to the target, but never pushes the bright end more than
   // Highlights can pull back (by default 1.2 stops over white).
+  const hdr = clamp((opts.hdr ?? 0) / 100, 0, 1);
+  const bend = (x: number) => hdrCurve(x, hdr);
   let ev = TARGET_KEY + P.brightness - key;
-  ev = Math.min(ev, W + P.headroom - (pct(0.995) - MID));
+  // The top end after HDR rises with ev and never faster, so the largest ev that keeps it
+  // within reach is found by halving.
+  const fits = (e: number) => bend(pct(0.995) + e - MID) <= W + P.headroom;
+  if (hdr === 0) ev = Math.min(ev, W + P.headroom - (pct(0.995) - MID));
+  else if (!fits(ev)) {
+    let lo = -8;
+    let hi = ev;
+    if (fits(lo)) {
+      for (let i = 0; i < 30; i++) {
+        const m = (lo + hi) / 2;
+        if (fits(m)) lo = m;
+        else hi = m;
+      }
+    }
+    ev = lo;
+  }
   ev = clamp(Math.round(ev * 20) / 20, -4, 4);
-  const q = (p: number) => pct(p) + ev - MID;
+  const q = (p: number) => bend(pct(p) + ev - MID);
 
   // Highlights: pull the top 0.5 % back under white.
   const top = q(0.995);

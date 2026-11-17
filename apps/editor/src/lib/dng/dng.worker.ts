@@ -1,7 +1,7 @@
 // Encodes DNG tiles off the main thread. The main thread cuts the tiles out of the image
 // (extractTile) and transfers them here, so no shared memory is needed: this also works on
 // pages that aren't cross-origin isolated (plain HTTP). The encoded bytes go back the same way.
-import { encodeCfaTileData, lossyTileRgba } from '@immich-raw/dng';
+import { encodeCfaTileData, encodeLinearTileData, lossyTileRgba } from '@immich-raw/dng';
 
 /** One tile: tileWidth x tileHeight pixels, 1 sample each (CFA) or 3 (linear RGB). */
 export interface WorkerTile {
@@ -11,7 +11,8 @@ export interface WorkerTile {
 
 export type WorkerJob =
   | { type: 'cfa'; tileWidth: number; tileHeight: number; components: number; tiles: WorkerTile[] }
-  | { type: 'linear'; tileWidth: number; tileHeight: number; quality: number; tiles: WorkerTile[] };
+  | { type: 'linear'; tileWidth: number; tileHeight: number; quality: number; tiles: WorkerTile[] }
+  | { type: 'linear16'; tileWidth: number; tileHeight: number; tiles: WorkerTile[] };
 
 export type WorkerReply = { type: 'tile'; index: number; bytes: Uint8Array } | { type: 'done' } | { type: 'error'; message: string };
 
@@ -27,6 +28,8 @@ self.onmessage = async (e: MessageEvent<WorkerJob>) => {
       let bytes: Uint8Array;
       if (job.type === 'cfa') {
         bytes = encodeCfaTileData(tile.data, job.tileWidth, job.tileHeight, job.components);
+      } else if (job.type === 'linear16') {
+        bytes = encodeLinearTileData(tile.data, job.tileWidth, job.tileHeight);
       } else {
         const px = lossyTileRgba({ data: tile.data, width: job.tileWidth, height: job.tileHeight }, 0);
         // MozJPEG with 4:4:4: the codes are linear-ish camera RGB, chroma subsampling would
