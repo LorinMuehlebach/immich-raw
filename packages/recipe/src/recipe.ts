@@ -29,6 +29,8 @@ export interface BasicParams {
   shadows: number;
   whites: number;
   blacks: number;
+  /** HDR range compression, 0..100 (merged brackets, or a RAW with more range than the screen). */
+  hdr: number;
   texture: number;
   clarity: number;
   dehaze: number;

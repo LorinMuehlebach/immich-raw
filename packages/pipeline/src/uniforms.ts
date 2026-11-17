@@ -71,6 +71,7 @@ export interface DevelopUniforms {
   uExposure: number;
   uTone: number[];
   uContrast: number;
+  uHdr: number;
   uPresence: number[];
   uProfile: number;
 }
@@ -104,6 +105,7 @@ export function developUniforms(recipe: Recipe, cam: CameraInfo, profile: Profil
     uExposure: 2 ** (b.exposure + cam.baselineExposure + profileExposureEv(profile, recipe.profileAmount)),
     uTone: [b.shadows / 100, b.highlights / 100, b.whites / 100, b.blacks / 100],
     uContrast: b.contrast / 100,
+    uHdr: b.hdr / 100,
     uPresence: [b.vibrance / 100, b.saturation / 100],
     uProfile: profile.base,
   };

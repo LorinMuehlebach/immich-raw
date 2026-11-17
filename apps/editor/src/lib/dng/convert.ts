@@ -140,7 +140,7 @@ export function dngFileName(original: string): string {
   return `${dot > 0 ? original.slice(0, dot) : original}.dng`;
 }
 
-const normMul = (m: number[]): [number, number, number] => {
+export const normMul = (m: number[]): [number, number, number] => {
   const g = m[1] || 1;
   return [m[0]! / g, 1, m[2]! / g];
 };
@@ -150,23 +150,26 @@ export function tiffOrientation(flip: number): number {
   return ({ 0: 1, 1: 2, 2: 4, 3: 3, 4: 5, 5: 8, 6: 6, 7: 7 } as Record<number, number>)[flip] ?? 1;
 }
 
-/** The image to cut into DNG tiles: the CFA mosaic, or linear camera RGB for lossy. */
-type TileSource =
+/** The image to cut into DNG tiles: the CFA mosaic, or linear camera RGB (lossy, or 16-bit lossless). */
+export type TileSource =
   | { type: 'cfa'; data: Uint16Array; width: number; height: number; patternWidth: number }
-  | { type: 'linear'; data: Uint16Array; width: number; height: number; quality: number };
+  | { type: 'linear'; data: Uint16Array; width: number; height: number; quality: number }
+  | { type: 'linear16'; data: Uint16Array; width: number; height: number };
 
 /**
  * Encodes all tiles on a pool of workers. The tiles are cut out here and transferred, a batch
  * at a time, so the workers need no shared memory.
  */
-function encodeTiles(source: TileSource, onProgress: (f: number) => void): Promise<Uint8Array[]> {
+export function encodeTiles(source: TileSource, onProgress: (f: number) => void): Promise<Uint8Array[]> {
   const layout = tileLayout(source.width, source.height);
   const { count, tileWidth, tileHeight } = layout;
   const channels = source.type === 'cfa' ? 1 : 3;
   const settings =
     source.type === 'cfa'
       ? { type: 'cfa' as const, tileWidth, tileHeight, components: cfaComponents(source.width, tileWidth, source.patternWidth) }
-      : { type: 'linear' as const, tileWidth, tileHeight, quality: source.quality };
+      : source.type === 'linear16'
+        ? { type: 'linear16' as const, tileWidth, tileHeight }
+        : { type: 'linear' as const, tileWidth, tileHeight, quality: source.quality };
   const out: Uint8Array[] = new Array(count);
   const workers = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1, count));
   const batch = 6;
@@ -211,7 +214,7 @@ function encodeTiles(source: TileSource, onProgress: (f: number) => void): Promi
   });
 }
 
-async function makePreviews(img: ImageData): Promise<{ preview: DngMetadata['preview']; thumbnail: DngMetadata['thumbnail'] }> {
+export async function makePreviews(img: ImageData): Promise<{ preview: DngMetadata['preview']; thumbnail: DngMetadata['thumbnail'] }> {
   const scaled = (max: number) => {
     const { width, height } = fitLongEdge(img.width, img.height, max);
     return resizeImage(img, width, height);
@@ -252,7 +255,7 @@ export function exifDate(iso: string | null | undefined, timeZone: string | null
   return { date, subSec: local.slice(20, 23), offset };
 }
 
-const exifStamp = (d: Date) => {
+export const exifStamp = (d: Date) => {
   const s = d.toISOString();
   return `${s.slice(0, 4)}:${s.slice(5, 7)}:${s.slice(8, 10)} ${s.slice(11, 19)}`;
 };

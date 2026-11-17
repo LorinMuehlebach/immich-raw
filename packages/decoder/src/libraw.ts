@@ -290,6 +290,16 @@ export async function decodeBest(bytes: Uint8Array): Promise<{ image: LinearImag
   return { image: { ...img, halfSize: false }, ...extraMeta(meta as FullMeta, img.width, img.height) };
 }
 
+/**
+ * Full-resolution decode with the editor's demosaic (as RawSession.full()), without a session:
+ * one frame of an HDR merge. `isXTrans` comes from an earlier open of the same file.
+ */
+export async function decodeFull(bytes: Uint8Array, isXTrans: boolean, signal?: AbortSignal): Promise<LinearImage> {
+  const { userQual } = demosaicFor(isXTrans);
+  const { img } = await decode(bytes, { ...BASE_SETTINGS, userQual }, false, 'full decode', undefined, signal);
+  return { ...img, halfSize: false };
+}
+
 /** 2x2 box downscale of an RGB16 image. */
 function halve(img: { width: number; height: number; data: Uint16Array }): LinearImage {
   const w = Math.max(1, img.width >> 1);

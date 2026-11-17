@@ -35,7 +35,7 @@ export const GROUPS: SettingGroup[] = [
   {
     id: 'tone',
     label: 'Basic Tone',
-    paths: ['basic.exposure', 'basic.contrast', 'basic.highlights', 'basic.shadows', 'basic.whites', 'basic.blacks'],
+    paths: ['basic.exposure', 'basic.contrast', 'basic.highlights', 'basic.shadows', 'basic.whites', 'basic.blacks', 'basic.hdr'],
     defaultOn: true,
   },
   {

@@ -37,6 +37,8 @@ Each feature has a guide with screenshots.
 - **[Stacking and best pick](docs/stacking.md)** (optional culler): bursts and re-takes stacked
   with the best shot in front, the others tagged with why they lost, exposure brackets kept whole
   and close calls marked; from the editor or from Immich's selection.
+- **[HDR](docs/hdr.md):** merge an exposure bracket into one HDR DNG, aligned and deghosted, stacked
+  in front of the bracket; or bring out the range of a single RAW.
 - **[Convert to DNG](docs/dng.md):** replace a RAW with a lossless or a much smaller lossy DNG.
 - **[Phones and tablets](docs/mobile.md):** a touch layout.
 

@@ -29,6 +29,11 @@ export interface LinearRaw {
   height: number;
   /** Interleaved RGB, width * height * 3. */
   data: Uint16Array;
+  /**
+   * 'lossy' (default): 8-bit JPEG tiles behind a linearisation curve (Adobe's lossy DNG).
+   * 'lossless': 16-bit lossless JPEG tiles with 3 components (encodeLinearTile), e.g. a merged HDR.
+   */
+  encoding?: 'lossy' | 'lossless';
 }
 
 export interface DngExif {

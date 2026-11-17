@@ -27,6 +27,7 @@
   import ColorGradingPanel from './lib/ui/ColorGradingPanel.svelte';
   import ColorMixerPanel from './lib/ui/ColorMixerPanel.svelte';
   import ConvertDngDialog from './lib/ui/ConvertDngDialog.svelte';
+  import MergeHdrDialog from './lib/ui/MergeHdrDialog.svelte';
   import CopySettingsDialog from './lib/ui/CopySettingsDialog.svelte';
   import CompareView from './lib/ui/CompareView.svelte';
   import LeaveDialog from './lib/ui/LeaveDialog.svelte';
@@ -34,6 +35,7 @@
   import CropPanel from './lib/ui/CropPanel.svelte';
   import DetailPanel from './lib/ui/DetailPanel.svelte';
   import DngPanel from './lib/ui/DngPanel.svelte';
+  import HdrPanel from './lib/ui/HdrPanel.svelte';
   import Filmstrip from './lib/ui/Filmstrip.svelte';
   import OpenProgress from './lib/ui/OpenProgress.svelte';
   import Scopes from './lib/ui/Scopes.svelte';
@@ -300,7 +302,7 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || syncFor || leaving || editor.dngDialog || editor.exportDialog || stackFor) return;
+    if (isTyping(e.target) || copyOpen || syncFor || leaving || editor.dngDialog || editor.hdrDialog || editor.exportDialog || stackFor) return;
     if (e.key === 'Escape' && selection.length) {
       selection = [];
       return;
@@ -661,6 +663,7 @@
             <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.wholeView}>
               {zoomed ? 'Fit to screen' : 'Zoom to 100 %'}
             </button>
+            <button role="menuitem" onclick={() => fromMenu(() => editor.openHdrDialog())} disabled={editor.status !== 'ready' || !!editor.saving}>Merge to HDR…</button>
             <button role="menuitem" onclick={() => fromMenu(() => editor.openDngDialog())} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving}>Convert to DNG…</button>
             <a role="menuitem" href={LICENSES_URL} target="_blank" rel="noopener" onclick={() => (menuOpen = false)}>Licences and source code</a>
           </div>
@@ -710,6 +713,7 @@
     </div>
     <ExportPanel />
     <UpscalePanel />
+    <HdrPanel />
     <DngPanel />
   {/snippet}
 
@@ -964,6 +968,7 @@
 </div>
 
 <ConvertDngDialog />
+<MergeHdrDialog />
 <AiDownloadDialog />
 <FujiLooksDialog />
 

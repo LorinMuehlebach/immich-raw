@@ -42,6 +42,8 @@ export const PARAMS = {
   shadows: p('basic.shadows', 'Shadows', -100, 100, 0),
   whites: p('basic.whites', 'Whites', -100, 100, 0),
   blacks: p('basic.blacks', 'Blacks', -100, 100, 0),
+  // Basic › Tone › HDR: compresses a wide range towards the midtones (not in Lightroom)
+  hdr: p('basic.hdr', 'HDR', 0, 100, 0, 1, 0, false),
   // Basic › Presence (texture/clarity/dehaze arrive in M2)
   texture: p('basic.texture', 'Texture', -100, 100, 0),
   clarity: p('basic.clarity', 'Clarity', -100, 100, 0),

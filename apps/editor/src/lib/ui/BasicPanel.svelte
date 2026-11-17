@@ -9,7 +9,7 @@
   const TEMP_TRACK = 'linear-gradient(90deg, #3d6fd6, #d8d8d8 45%, #e0b43a)';
   const TINT_TRACK = 'linear-gradient(90deg, #3fae49, #d8d8d8 50%, #c44fc4)';
 
-  const tone: ParamSpec[] = [PARAMS.exposure, PARAMS.contrast, PARAMS.highlights, PARAMS.shadows, PARAMS.whites, PARAMS.blacks];
+  const tone: ParamSpec[] = [PARAMS.exposure, PARAMS.contrast, PARAMS.highlights, PARAMS.shadows, PARAMS.whites, PARAMS.blacks, PARAMS.hdr];
   const presence: ParamSpec[] = [PARAMS.texture, PARAMS.clarity, PARAMS.dehaze, PARAMS.vibrance, PARAMS.saturation];
 
   const set = (spec: ParamSpec) => (v: number) => editor.setParam(spec, v);
@@ -162,7 +162,7 @@
         oncommit={() => editor.commit()}
         onreset={() => editor.resetParam(spec)}
         onalt={alt(spec)}
-        onauto={Editor.AUTO_SPECS.includes(spec) ? () => editor.autoTone(spec) : undefined}
+        onauto={Editor.AUTO_SPECS.includes(spec) ? () => editor.autoTone(spec) : spec === PARAMS.hdr ? () => editor.autoHdrAmount() : undefined}
         disabled={editor.readOnly}
       />
     {/each}

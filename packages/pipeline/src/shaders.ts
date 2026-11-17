@@ -13,6 +13,7 @@
 //   blur x2 + finish: sharpening, post-crop vignetting and grain     (FS_BLUR, FS_FINISH)
 // The analysis (guided-filter coefficients, dehaze) runs at low resolution, cached.
 import { EFFECTS_GLSL } from './effects.ts';
+import { HDR_GLSL } from './hdr-tone.ts';
 
 export const VS_FULLSCREEN = /* glsl */ `#version 300 es
 void main() {
@@ -516,6 +517,7 @@ uniform sampler2D uLut;       // tone curve, 4096x1, per channel
 uniform int uCurve;
 uniform vec4 uTone;           // shadows, highlights, whites, blacks (-1..1)
 uniform float uContrast;      // -1..1
+uniform float uHdr;           // HDR range compression, 0..1 (hdr-tone.ts)
 uniform vec2 uPresence;       // vibrance, saturation (-1..1)
 uniform vec2 uDetailBands;    // clarity, texture (-1..1)
 uniform int uProfile;         // base tone: 0 color, 1 neutral, 2 linear, 3 monochrome (color/profiles.ts)
@@ -571,10 +573,12 @@ vec2 sampleAB(highp sampler2D tex, vec2 t) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+${HDR_GLSL}
 // Tone controls act on the local base layer, in stops relative to middle grey.
 // tone = shadows, highlights, whites, blacks: the global sliders plus any masks.
+// HDR compresses the range first, so the other sliders work on what it leaves.
 float toneBase(float B, vec4 tone, float contrast) {
-  float x = B - MID;
+  float x = hdrCompress(B - MID, uHdr);
   x *= max(1.0 + 0.55 * contrast, 0.05);
   float ws = (1.0 - smoothstep(-5.0, 0.5, x)) * smoothstep(-11.0, -6.0, x);
   x += tone.x * 1.6 * ws;

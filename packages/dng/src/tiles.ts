@@ -90,6 +90,19 @@ export function encodeCfaTile(raw: Pick<CfaRaw, 'data' | 'width' | 'height' | 'p
   return encodeCfaTileWith(raw, index, tile, cfaComponents(raw.width, tileWidth, raw.patternWidth));
 }
 
+/** Lossless JPEG of an RGB tile (16-bit, 3 interleaved components, predictor 1). */
+export function encodeLinearTileData(tile: Uint16Array, tileWidth: number, tileHeight: number): Uint8Array {
+  return encodeLosslessJpeg(tile, tileWidth, tileHeight, 3, 16);
+}
+
+/** Tile `index` of a lossless LinearRaw image (edge tiles padded like encodeCfaTile). */
+export function encodeLinearTile(raw: Pick<LinearRaw, 'data' | 'width' | 'height'>, index: number, tile: number = DNG_TILE): Uint8Array {
+  const layout = tileLayout(raw.width, raw.height, tile);
+  if (!(index >= 0 && index < layout.count)) throw new Error(`Tile ${index} out of range (0..${layout.count - 1})`);
+  if (raw.data.length < raw.width * raw.height * 3) throw new Error('LinearRaw data is shorter than width * height * 3');
+  return encodeLinearTileData(extractTile(raw.data, raw.width, raw.height, layout, index, 3), layout.tileWidth, layout.tileHeight);
+}
+
 // ---------------------------------------------------------------------------------------
 // Lossy encoding curve
 

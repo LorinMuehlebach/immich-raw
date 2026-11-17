@@ -13,6 +13,11 @@ vibrance and saturation.
 photo. Shift+double-click a slider name to set only that slider. The gear next to Auto sets how it
 behaves.
 
+**HDR** (under Tone, not in Lightroom) compresses a wide range: the brightest and darkest areas
+move towards the midtones, the detail stays. Auto tone takes it into account, and
+Shift+double-click on its name picks an amount that fits the photo. It is meant for
+[merged brackets](hdr.md) and for RAWs with more range than the screen shows.
+
 The editor with Basic open is on [Getting started](getting-started.md#2-edit-in-the-browser).
 
 ## Profiles

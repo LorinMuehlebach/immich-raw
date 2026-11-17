@@ -1,8 +1,8 @@
 // DNG writer. Layout follows Adobe DNG Converter:
 //   IFD0       small 8-bit RGB thumbnail (NewSubFileType 1) + all DNG-level tags,
 //              ExifIFD, GPSInfo and SubIFDs pointers
-//   SubIFD 0   the raw image (NewSubFileType 0): lossless JPEG CFA tiles, or lossy JPEG
-//              LinearRaw tiles
+//   SubIFD 0   the raw image (NewSubFileType 0): lossless JPEG CFA tiles, lossy JPEG
+//              LinearRaw tiles, or lossless JPEG LinearRaw tiles (16-bit, 3 components)
 //   SubIFD 1   optional full-size-ish JPEG preview (NewSubFileType 1)
 // then the image data. The whole layout is computed first and the file written into one
 // buffer, so big files cost one allocation and one copy of each tile.
@@ -24,7 +24,7 @@ import {
   TAG,
 } from './tags.ts';
 import { buildOpcodeList, mapPolynomialOpcodes, opcodeVersions, parseOpcodeList, type Opcode } from './opcodes.ts';
-import { LOSSY_POLY, encodeCfaTile, lossyTileRgba, tileLayout } from './tiles.ts';
+import { LOSSY_POLY, encodeCfaTile, encodeLinearTile, lossyTileRgba, tileLayout } from './tiles.ts';
 
 const V1_1 = 0x01010000;
 const V1_4 = 0x01040000;
@@ -182,8 +182,8 @@ function checkRaw(raw: Omit<CfaRaw, 'data'> | Omit<LinearRaw, 'data'>): void {
 
 /**
  * Builds the file from already encoded tiles: lossless JPEG tiles (encodeCfaTile) for 'cfa',
- * baseline JPEGs of lossyTileRgba tiles for 'linear'. `tile` must be the tile size the tiles
- * were made with.
+ * baseline JPEGs of lossyTileRgba tiles for lossy 'linear', 3-component lossless JPEG tiles
+ * (encodeLinearTile) for lossless 'linear'. `tile` must be the tile size the tiles were made with.
  *
  * Lossy files get an OpcodeList2 with one MapPolynomial (LOSSY_POLY) per plane, which turns the
  * 8-bit codes back into linear values in Adobe's pipeline and in LibRaw (lossy_dng_load_raw
@@ -194,7 +194,8 @@ function checkRaw(raw: Omit<CfaRaw, 'data'> | Omit<LinearRaw, 'data'>): void {
  */
 export function assembleDng(meta: DngMetadata, raw: Omit<CfaRaw, 'data'> | Omit<LinearRaw, 'data'>, tiles: Uint8Array[], tile: number = DNG_TILE): Uint8Array {
   checkRaw(raw);
-  const lossy = raw.kind === 'linear';
+  const lossy = raw.kind === 'linear' && raw.encoding !== 'lossless';
+  const linear16 = raw.kind === 'linear' && raw.encoding === 'lossless';
   const layout = tileLayout(raw.width, raw.height, tile);
   if (tiles.length !== layout.count) throw new Error(`Expected ${layout.count} tiles (${layout.across} x ${layout.down} of ${tile} px), got ${tiles.length}`);
   tiles.forEach((t, i) => {
@@ -205,6 +206,13 @@ export function assembleDng(meta: DngMetadata, raw: Omit<CfaRaw, 'data'> | Omit<
       const f = jpegFrameInfo(t);
       if (f.marker !== 0xffc0) throw new Error(`Tile ${i} is not a baseline JPEG (SOF ${f.marker.toString(16)}); progressive and other variants are not allowed in DNG`);
       if (f.precision !== 8 || f.components.length !== 3) throw new Error(`Tile ${i} must be an 8-bit, 3-component JPEG`);
+      if (f.width !== layout.tileWidth || f.height !== layout.tileHeight) throw new Error(`Tile ${i} is ${f.width}x${f.height}, expected ${layout.tileWidth}x${layout.tileHeight}`);
+    });
+  }
+  if (linear16) {
+    tiles.forEach((t, i) => {
+      const f = jpegFrameInfo(t);
+      if (f.marker !== 0xffc3 || f.precision !== 16 || f.components.length !== 3) throw new Error(`Tile ${i} must be a 16-bit, 3-component lossless JPEG`);
       if (f.width !== layout.tileWidth || f.height !== layout.tileHeight) throw new Error(`Tile ${i} is ${f.width}x${f.height}, expected ${layout.tileWidth}x${layout.tileHeight}`);
     });
   }
@@ -232,7 +240,7 @@ export function assembleDng(meta: DngMetadata, raw: Omit<CfaRaw, 'data'> | Omit<
   if (lossy) {
     const ops = mapPolynomialOpcodes(raw.width, raw.height, 3, LOSSY_POLY);
     addList(TAG.OpcodeList2, buildOpcodeList(ops), ops);
-  } else {
+  } else if (!linear16) {
     addList(TAG.OpcodeList1, meta.opcodeList1);
     addList(TAG.OpcodeList2, meta.opcodeList2);
   }
@@ -292,6 +300,11 @@ export function assembleDng(meta: DngMetadata, raw: Omit<CfaRaw, 'data'> | Omit<
     rawIfd.shorts(TAG.Compression, [COMPRESSION_JPEG]);
     rawIfd.shorts(TAG.PhotometricInterpretation, [PHOTOMETRIC_CFA]);
     rawIfd.shorts(TAG.SamplesPerPixel, [1]);
+  } else if (linear16) {
+    rawIfd.shorts(TAG.BitsPerSample, [16, 16, 16]);
+    rawIfd.shorts(TAG.Compression, [COMPRESSION_JPEG]);
+    rawIfd.shorts(TAG.PhotometricInterpretation, [PHOTOMETRIC_LINEAR_RAW]);
+    rawIfd.shorts(TAG.SamplesPerPixel, [3]);
   } else {
     rawIfd.shorts(TAG.BitsPerSample, [8, 8, 8]);
     rawIfd.shorts(TAG.Compression, [COMPRESSION_LOSSY_JPEG]);
@@ -317,7 +330,8 @@ export function assembleDng(meta: DngMetadata, raw: Omit<CfaRaw, 'data'> | Omit<
     if (pw === 2 && ph === 2) rawIfd.rationals(TAG.AntiAliasStrength, [1]);
   } else {
     rawIfd.shorts(TAG.BlackLevel, [0, 0, 0]);
-    rawIfd.longs(TAG.WhiteLevel, [255, 255, 255]);
+    // Lossy: the codes' white (the curve maps 255 to 1). Lossless: 16-bit linear values.
+    rawIfd.longs(TAG.WhiteLevel, linear16 ? [65535, 65535, 65535] : [255, 255, 255]);
   }
   rawIfd.rationals(TAG.DefaultScale, [1, 1]);
   const crop = meta.defaultCrop ?? { x: 0, y: 0, width: raw.width, height: raw.height };
@@ -414,6 +428,8 @@ export async function buildDng(
   const tiles: Uint8Array[] = [];
   if (raw.kind === 'cfa') {
     for (let i = 0; i < count; i++) tiles.push(encodeCfaTile(raw, i));
+  } else if (raw.encoding === 'lossless') {
+    for (let i = 0; i < count; i++) tiles.push(encodeLinearTile(raw, i));
   } else {
     const encode = opts.encodeJpeg;
     if (!encode) throw new Error('buildDng needs opts.encodeJpeg for lossy (linear) images');
