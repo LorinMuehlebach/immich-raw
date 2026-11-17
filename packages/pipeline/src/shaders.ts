@@ -554,7 +554,7 @@ uniform highp sampler2D uProfileCurveTex; // r: curve output at x = max * u^2
 uniform int uSCurveCustom;    // 1: display S-curve strength from uSCurve, else Color's 0.25
 uniform float uSCurve;
 uniform float uBaseFix;       // Adobe profiles: strength of the Lightroom-like tone correction (color/adobe-tone.ts)
-uniform vec2 uBaseKnots[24];  // display lightness -> Lightroom's, increasing
+uniform vec2 uBaseKnots[33];  // display lightness -> Lightroom's, increasing
 uniform vec2 uChromaKnots[10]; // display lightness -> chroma gain (Lightroom is more colourful), increasing
 uniform int uFilmLut;         // 1: display-space 3D LUT after the tone curve
 uniform float uFilmLutAmount;
@@ -780,14 +780,14 @@ vec3 localColor(vec3 enc, vec2 ab) {
 float adobeBaseL(float x) {
   vec2 k = uBaseKnots[0];
   if (x <= k.x) return k.y * x / k.x;
-  for (int i = 1; i < 24; i++) {
+  for (int i = 1; i < 33; i++) {
     vec2 b = uBaseKnots[i];
     if (x <= b.x) {
       vec2 a = uBaseKnots[i - 1];
       return mix(a.y, b.y, (x - a.x) / (b.x - a.x));
     }
   }
-  vec2 e = uBaseKnots[23];
+  vec2 e = uBaseKnots[32];
   return e.y + (1.0 - e.y) * (x - e.x) / (1.0 - e.x);
 }
 

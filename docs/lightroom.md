@@ -71,9 +71,13 @@ look a little different.
   has one for the camera ([below](#camera-profiles-from-lightroom)); without it they show as Color,
   an approximation. Adobe's base tone curve is in Lightroom's engine, not in a profile, so the two
   Adobe profiles use a stand-in fitted to Lightroom exports of one photo (X-T30, DR400): about twice
-  the contrast around mid-grey, more colour in the middle tones, and the Shadows slider at half
-  strength. On that photo it brought the editor 33 % closer to Lightroom; for other cameras and
-  scenes it is an approximation. It only affects the Adobe profiles, so no other edit changes.
+  the contrast around mid-grey, a brighter top end (Lightroom's highlights are lighter than the
+  editor's own curve gives), more colour in the middle tones, and the Shadows slider at half
+  strength. On that photo it brought the editor 33 % closer to Lightroom, and a render with only
+  the exposure raised comes within 0.02 of Lightroom's; for other cameras and scenes it is an
+  approximation. It only affects the Adobe profiles, so no other edit changes. Lightroom also
+  draws strong highlights less colourful when the exposure is raised; copying that made the full
+  edit of the test photo less colourful than Lightroom's, so it isn't done.
 - **Whites, Highlights and Blacks.** They work on the scene's brightness in stops, Lightroom's on
   the brightness of the picture as shown, so on a dark photo they can do almost nothing here. On the
   test photo Whites +50, Highlights -50 and Blacks -50 changed nothing visible in the editor, against

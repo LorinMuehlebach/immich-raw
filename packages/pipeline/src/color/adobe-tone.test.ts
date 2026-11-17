@@ -23,7 +23,7 @@ describe('the Adobe base curve', () => {
       expect(ADOBE_BASE_KNOTS[i]![1]).toBeGreaterThan(ADOBE_BASE_KNOTS[i - 1]![1]);
     }
     expect(ADOBE_BASE_KNOT_UNIFORM).toHaveLength(ADOBE_BASE_KNOTS.length * 2);
-    expect(ADOBE_BASE_KNOTS).toHaveLength(24); // the shader's uBaseKnots[24]
+    expect(ADOBE_BASE_KNOTS).toHaveLength(33); // the shader's uBaseKnots[33]
   });
 
   it('passes through its knots, and keeps black and white where they are', () => {
@@ -52,9 +52,15 @@ describe('the Adobe base curve', () => {
   });
 
   it('rolls off into white instead of overshooting above the last knot', () => {
-    const above = adobeBaseLightness(0.8);
-    expect(above).toBeGreaterThan(0.8);
+    const above = adobeBaseLightness(0.97);
+    expect(above).toBeGreaterThan(0.97);
     expect(above).toBeLessThan(1);
+  });
+
+  it('lifts the highlights, steeply just below the shoulder, as Lightroom does', () => {
+    expect(adobeBaseLightness(0.6213)).toBeCloseTo(0.7894, 4);
+    expect(adobeBaseLightness(0.7)).toBeGreaterThan(0.87);
+    expect((adobeBaseLightness(0.6213) - adobeBaseLightness(0.5702)) / (0.6213 - 0.5702)).toBeGreaterThan(0.8);
   });
 });
 

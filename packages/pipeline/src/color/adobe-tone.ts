@@ -4,13 +4,17 @@
 // a file. It was measured instead: a Fujifilm X-T30 photo (DR400, Adobe Color, every Basic slider at 0)
 // exported from Lightroom, and the editor's own render of the same photo with the Adobe Color
 // profile, compared pixel by pixel (the two agree on lightness to a correlation of 0.99). Binned by
-// brightness rank, the editor's display lightness maps onto Lightroom's as the knots below.
+// brightness rank, the editor's display lightness maps onto Lightroom's as the knots below. The top
+// of the curve comes from a second export of the same photo with Exposure +1.27 and nothing else,
+// which brings the highlights into range (the unexposed photo has almost none); there the editor
+// ended 0.02 to 0.08 of lightness short of Lightroom in its brightest 5 %. Where the two exports
+// overlap they gave the same curve, so it doesn't depend on the exposure.
 //
 // So this is a fit to one photo, a rough stand-in for Adobe's curve rather than the curve itself. It
 // is only used by the Adobe profiles (new ones, so no earlier edit depends on them), where it
 // roughly doubles the contrast around mid-grey: the editor's own curve is flatter than Adobe's.
 // Held out from the fit, the full edit of that photo came 33 % closer (mean OKLab difference 0.073
-// to 0.049, lightness percentiles within 0.03).
+// to 0.049), and with only the exposure raised the render is within 0.02 of Lightroom's.
 
 /** [editor display lightness, Lightroom display lightness], OKLab L, increasing. */
 export const ADOBE_BASE_KNOTS: readonly (readonly [number, number])[] = [
@@ -35,9 +39,18 @@ export const ADOBE_BASE_KNOTS: readonly (readonly [number, number])[] = [
   [0.3654, 0.4001],
   [0.388, 0.4301],
   [0.4093, 0.4596],
-  [0.4345, 0.5071],
-  [0.4775, 0.5845],
-  [0.5392, 0.6878],
+  [0.4198, 0.4879],
+  [0.4583, 0.5503],
+  [0.5, 0.615],
+  [0.5296, 0.6549],
+  [0.551, 0.6837],
+  [0.5702, 0.709],
+  [0.5914, 0.7458],
+  [0.6213, 0.7894],
+  [0.662, 0.8339],
+  [0.6995, 0.8722],
+  [0.7643, 0.9206],
+  [0.9507, 0.9886],
 ];
 
 /** The knots as the shader's vec2 array (uBaseKnots). */
