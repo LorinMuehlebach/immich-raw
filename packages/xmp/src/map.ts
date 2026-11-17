@@ -262,7 +262,9 @@ export function parseCurve(items: string[]): [number, number][] {
 
 /** Lightroom profile names with a counterpart here, in match order. */
 const PROFILE_NAMES: [RegExp, ProfileId][] = [
-  [/^Adobe Color$/i, 'color'],
+  // The camera's own profile files, when they have been converted from Lightroom; otherwise these render as Color.
+  [/^Adobe Color$/i, 'adobe-color'],
+  [/^Adobe Standard$/i, 'adobe-standard'],
   [/^Adobe Vivid$/i, 'vivid'],
   [/^Adobe Portrait$/i, 'portrait'],
   [/^Adobe Landscape$/i, 'landscape'],

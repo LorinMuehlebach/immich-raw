@@ -4,6 +4,8 @@ dist/
 *.log
 # Sample RAW files are downloaded outside the repo (see spikes/README.md)
 samples/
+# Adobe camera profiles converted from the user's own Lightroom (docs/lightroom.md): Adobe's, not ours
+apps/editor/public/camera-profiles/
 # Python (services/culler)
 .venv/
 __pycache__/

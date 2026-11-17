@@ -109,7 +109,7 @@ describe('crsToPatch: preset', () => {
   });
 
   it('maps the Adobe Color profile without a warning', () => {
-    expect(recipe.profile).toBe('color');
+    expect(recipe.profile).toBe('adobe-color');
     expect(result.warnings.some((w) => w.startsWith('Profile'))).toBe(false);
   });
 
@@ -244,7 +244,7 @@ describe('Lightroom sidecar for a Fujifilm RAF', () => {
 
   it('imports the Adobe Color look, not the camera default or Adobe Standard', () => {
     expect(crs.values['Look.Name']).toBe('Adobe Color');
-    expect(recipe.profile).toBe('color');
+    expect(recipe.profile).toBe('adobe-color');
     expect(result.warnings).toEqual([]);
   });
 
@@ -405,7 +405,8 @@ describe('profiles', () => {
 
   it('knows the Adobe and Fujifilm camera-matching names', () => {
     const cases: [string, string, boolean][] = [
-      ['Adobe Color', 'color', true],
+      ['Adobe Color', 'adobe-color', true],
+      ['Adobe Standard', 'adobe-standard', true],
       ['Adobe Vivid', 'vivid', true],
       ['Adobe Portrait', 'portrait', true],
       ['Adobe Landscape', 'landscape', true],
@@ -424,7 +425,6 @@ describe('profiles', () => {
       ['Camera REALA ACE', 'fuji-reala-ace', true],
       ['Camera ACROS+R FILTER', 'monochrome', false],
       ['Camera Vivid', 'vivid', false],
-      ['Adobe Standard', 'color', false],
       ['Vintage 07', 'color', false],
     ];
     for (const [name, id, exact] of cases) expect(profileFromName(name), name).toEqual({ id, exact });
@@ -452,8 +452,8 @@ describe('profiles', () => {
     expect(vivid.recipe.profileAmount).toBe(60);
     expect(vivid.result.groups).toContain('profile');
     const color = imported(xmp('crs:CameraProfile="Adobe Standard"', { name: 'Adobe Color', amount: '0.6' }));
-    expect(color.recipe.profile).toBe('color');
-    expect(color.recipe.profileAmount).toBe(100);
+    expect(color.recipe.profile).toBe('adobe-color');
+    expect(color.recipe.profileAmount).toBe(60);
   });
 
   it('round-trips a film look and its amount through our own fields', () => {

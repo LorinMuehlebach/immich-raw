@@ -67,11 +67,44 @@ look a little different.
   photo; the Canon and Nikon values come from [RapidRAW](https://github.com/CyberTimon/RapidRAW) and
   only their reading is checked here, not the brightness. A DNG made from such a RAW carries it as
   its BaselineExposure.
-- **Profiles.** "Adobe Color" becomes the editor's Color profile, an approximation of it. The S-curve
-  matches Adobe Color's, but on the one photo compared, Lightroom's shadows were darker and its
-  highlights brighter.
+- **Profiles.** "Adobe Color" and "Adobe Standard" use your own Adobe camera profile when the editor
+  has one for the camera ([below](#camera-profiles-from-lightroom)); without it they show as Color,
+  an approximation. Adobe's base tone curve is in Lightroom's engine, not in a profile, so even with
+  the profile a photo can look flatter here than in Lightroom, with lifted blacks and less contrast.
 - **Whites and Blacks.** They act on a narrower part of the tonal range than in Lightroom, so on a
   dark photo they can do little. An edit that leans on them may look flatter here.
+
+## Camera profiles from Lightroom
+
+Most of the colour of "Adobe Color" and "Adobe Standard" is in Adobe's camera profile for the body:
+a hue and saturation map (one for tungsten, one for daylight light, blended by the photo's colour
+temperature) and, for Adobe Color, a look table. On a test photo they took the editor's colour from
+too grey and cool (about 66 % of Lightroom's chroma, a blue-red cast) to 84 % with the cast gone.
+
+Adobe's profiles are Adobe's, so the editor ships none. You convert the ones from your own Lightroom;
+the result stays in a folder that git ignores and is never uploaded anywhere.
+
+1. Find your camera's profile. Lightroom keeps them in
+   `C:\ProgramData\Adobe\CameraRaw\CameraProfiles\Adobe Standard\` (named like
+   `Fujifilm X-T30 Adobe Standard.dcp`); Lightroom's own folder has them too, under
+   `Resources\CameraProfiles\`.
+2. Convert it (Node 22.18 or newer), from the repository root:
+
+   ```sh
+   node packages/pipeline/scripts/convert-camera-profiles.mjs apps/editor/public/camera-profiles "C:/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard/Fujifilm X-T30 Adobe Standard.dcp"
+   ```
+
+   It writes one small JSON file per profile and an `index.json` next to them, and adds to what is
+   already there. Name the cameras you use: a folder converts everything in it.
+3. Reload the editor. Photos from that camera now offer **Camera profiles** in the Profile list, and
+   a Lightroom sidecar that says "Adobe Color" or "Adobe Standard" uses them.
+
+A deployed editor needs the same folder next to its files (`camera-profiles/`, beside `index.html`).
+Don't put it in an image you share: the files are Adobe's. Cameras without a converted profile keep
+working: the two profiles then show as Color.
+
+What the profile does not carry: Adobe's tone curve and baseline exposure per camera, and the
+colour matrices (the editor keeps its own, which on their own did not bring the colour closer).
 
 ## Getting the sidecars into Immich
 
