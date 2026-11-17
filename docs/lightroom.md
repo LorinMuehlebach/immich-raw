@@ -50,6 +50,25 @@ Left out (the banner counts them as not supported):
 - the crop of a mirrored photo;
 - any other setting the editor has no equivalent for. The notes name the panels they come from.
 
+## Where it still looks different
+
+The settings come across as numbers; the rendering behind them isn't Adobe's, so a photo can still
+look a little different.
+
+- **As Shot shows other numbers.** With "As Shot" both use the camera's own white balance, so the
+  colours match, but the temperature and tint read differently (one photo: 4500 K / +41 in
+  Lightroom, 4387 K / +37 here). Lightroom converts with Adobe's two-illuminant camera profile, the
+  editor with a single matrix. A sidecar with "As Shot" has no temperature to import.
+- **Fujifilm DR200 and DR400.** The camera underexposes the RAW by 1 or 2 stops at these settings and
+  brightens its own JPEG back. Lightroom does too; the editor adds the same +1 or +2 EV as a
+  baseline exposure (not shown on the Exposure slider), so an imported edit comes out as bright as
+  in Lightroom. A DNG made from such a RAW carries it as its BaselineExposure.
+- **Profiles.** "Adobe Color" becomes the editor's Color profile, an approximation of it. The S-curve
+  matches Adobe Color's, but on the one photo compared, Lightroom's shadows were darker and its
+  highlights brighter.
+- **Whites and Blacks.** They act on a narrower part of the tonal range than in Lightroom, so on a
+  dark photo they can do little. An edit that leans on them may look flatter here.
+
 ## Getting the sidecars into Immich
 
 The editor only reads the sidecar Immich already has for the RAW, so the RAW and its `.xmp` have to
