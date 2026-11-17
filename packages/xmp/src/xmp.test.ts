@@ -5,6 +5,7 @@ import { applyAffine, editFrame } from '../../pipeline/src/geometry.ts';
 import { cropToLrCrop, lrCropToCrop, type CropContext } from './crop.ts';
 import { recipeToXmp, patchToXmp, formatNumber } from './export.ts';
 import { IMMICH_SIDECAR } from './fixtures/immich.ts';
+import { LR_CC_FUJI_SIDECAR } from './fixtures/lightroom-cc.ts';
 import { LR_PRESET } from './fixtures/preset.ts';
 import { LR_SIDECAR } from './fixtures/sidecar.ts';
 import { ELEMENT_FORM, LEGACY_PV2010 } from './fixtures/variants.ts';
@@ -231,6 +232,40 @@ describe('crsToPatch: other inputs', () => {
   });
 });
 
+// A real-world shape: Lightroom's own sidecar for a Fujifilm RAF whose white balance is As Shot
+// and whose profile is the "Adobe Color" Look (the camera default, Provia, is only in crd:).
+describe('Lightroom sidecar for a Fujifilm RAF', () => {
+  const ctx: CropContext = { flip: 0, uprightWidth: 6240, uprightHeight: 4160 };
+  const { crs, result, recipe } = imported(LR_CC_FUJI_SIDECAR, ctx);
+
+  it('is recognised as a Lightroom sidecar', () => {
+    expect(isLightroomSidecar(LR_CC_FUJI_SIDECAR)).toBe(true);
+  });
+
+  it('imports the Adobe Color look, not the camera default or Adobe Standard', () => {
+    expect(crs.values['Look.Name']).toBe('Adobe Color');
+    expect(recipe.profile).toBe('color');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('keeps As Shot: there is no temperature or tint to read, the camera multipliers stay', () => {
+    expect(crs.values.Temperature).toBeUndefined();
+    expect(crs.values.Tint).toBeUndefined();
+    expect(recipe.wb.mode).toBe('asShot');
+  });
+
+  it("takes the tone values but not the Look's own curve as the master curve", () => {
+    expect(recipe.basic).toMatchObject({ exposure: 1.27, contrast: 7, highlights: -63, shadows: 58, whites: 32, blacks: -23, vibrance: 15, saturation: 1 });
+    expect(crs.lists['Look.Parameters.ToneCurvePV2012']).toHaveLength(7);
+    expect(recipe.toneCurve.point.master).toEqual([[0, 0], [255, 255]]);
+  });
+
+  it('imports the crop of the landscape frame', () => {
+    expect(result.warnings.some((w) => w.includes('rop'))).toBe(false);
+    expectSameCorners(recipe.crop, ctx, { left: 0.041476, top: 0, right: 0.904316, bottom: 0.86284 });
+  });
+});
+
 describe('crop conversion', () => {
   const ctxs: CropContext[] = [
     { flip: 0, uprightWidth: 6000, uprightHeight: 4000 },
@@ -370,6 +405,7 @@ describe('profiles', () => {
 
   it('knows the Adobe and Fujifilm camera-matching names', () => {
     const cases: [string, string, boolean][] = [
+      ['Adobe Color', 'color', true],
       ['Adobe Vivid', 'vivid', true],
       ['Adobe Portrait', 'portrait', true],
       ['Adobe Landscape', 'landscape', true],
