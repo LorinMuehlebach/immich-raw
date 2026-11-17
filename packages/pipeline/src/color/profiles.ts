@@ -4,6 +4,7 @@
 // tone curve (fuji-looks.ts), plus a display-space LUT for the three looks that only exist
 // as a conversion from Provia.
 import { isCameraProfile, isFujiProfile, profileInfo, type ProfileId } from '@immich-raw/recipe';
+import { ADOBE_BASE_KNOT_UNIFORM, ADOBE_CHROMA_KNOT_UNIFORM } from './adobe-tone.ts';
 import { dngRgbToHsv, type CubeLut, type HueSatTable, type ToneLut } from './dcp.ts';
 import { SRGB_TO_PROPHOTO, decodeSrgb } from './look.ts';
 import { mulVec3, type Vec3 } from './matrices.ts';
@@ -37,6 +38,8 @@ export interface ProfileRender {
   whitePoint: number;
   /** Blends in and out with the profile Amount. */
   amount: boolean;
+  /** The Adobe profiles: tone shaped like Lightroom's (adobe-tone.ts). */
+  adobeBase?: boolean;
   look: ProfileLook | null;
 }
 
@@ -85,7 +88,7 @@ export function resolveProfile(id: ProfileId, looks: ProfileLooks = {}): Profile
     // The camera's own profile, made from the user's Lightroom: without it, Color.
     const look = looks[id];
     if (!look?.lookTable) return { ...resolveProfile('color'), requested: id, missing: true };
-    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: true, look };
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: true, adobeBase: true, look };
   }
   const row = BASIC[id];
   const inHouse = id === 'vivid' || id === 'portrait' || id === 'landscape';
@@ -117,6 +120,9 @@ export interface ProfileUniforms {
   uProfileCurveMax: number;
   uSCurveCustom: number;
   uSCurve: number;
+  uBaseFix: number;
+  uBaseKnots: Float32Array;
+  uChromaKnots: Float32Array;
   uFilmLut: number;
   uFilmLutAmount: number;
 }
@@ -139,6 +145,10 @@ export function profileUniforms(p: ProfileRender, amountPct: number): ProfileUni
     uProfileCurveMax: p.look?.toneLut?.max ?? 1,
     uSCurveCustom: p.amount ? 1 : 0,
     uSCurve: p.amount ? Math.max(0, COLOR_S + (p.sCurve - COLOR_S) * a) : COLOR_S,
+    // The Adobe profiles' tone correction fades in with the Amount, like their look.
+    uBaseFix: p.adobeBase ? Math.min(a, 1) : 0,
+    uBaseKnots: ADOBE_BASE_KNOT_UNIFORM,
+    uChromaKnots: ADOBE_CHROMA_KNOT_UNIFORM,
     uFilmLut: on(p.look?.filmLut),
     uFilmLutAmount: a,
   };

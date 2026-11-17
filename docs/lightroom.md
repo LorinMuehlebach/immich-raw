@@ -69,10 +69,15 @@ look a little different.
   its BaselineExposure.
 - **Profiles.** "Adobe Color" and "Adobe Standard" use your own Adobe camera profile when the editor
   has one for the camera ([below](#camera-profiles-from-lightroom)); without it they show as Color,
-  an approximation. Adobe's base tone curve is in Lightroom's engine, not in a profile, so even with
-  the profile a photo can look flatter here than in Lightroom, with lifted blacks and less contrast.
-- **Whites and Blacks.** They act on a narrower part of the tonal range than in Lightroom, so on a
-  dark photo they can do little. An edit that leans on them may look flatter here.
+  an approximation. Adobe's base tone curve is in Lightroom's engine, not in a profile, so the two
+  Adobe profiles use a stand-in fitted to Lightroom exports of one photo (X-T30, DR400): about twice
+  the contrast around mid-grey, more colour in the middle tones, and the Shadows slider at half
+  strength. On that photo it brought the editor 33 % closer to Lightroom; for other cameras and
+  scenes it is an approximation. It only affects the Adobe profiles, so no other edit changes.
+- **Whites, Highlights and Blacks.** They work on the scene's brightness in stops, Lightroom's on
+  the brightness of the picture as shown, so on a dark photo they can do almost nothing here. On the
+  test photo Whites +50, Highlights -50 and Blacks -50 changed nothing visible in the editor, against
+  0.05 to 0.12 of lightness in Lightroom. An edit that leans on them looks flatter here.
 
 ## Camera profiles from Lightroom
 
@@ -103,8 +108,9 @@ A deployed editor needs the same folder next to its files (`camera-profiles/`, b
 Don't put it in an image you share: the files are Adobe's. Cameras without a converted profile keep
 working: the two profiles then show as Color.
 
-What the profile does not carry: Adobe's tone curve and baseline exposure per camera, and the
-colour matrices (the editor keeps its own, which on their own did not bring the colour closer).
+What the profile does not carry: Adobe's tone curve and baseline exposure per camera (see
+"Profiles" above for the stand-in tone), and the colour matrices (the editor keeps its own, which on
+their own did not bring the colour closer).
 
 ## Getting the sidecars into Immich
 

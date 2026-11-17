@@ -553,6 +553,9 @@ uniform float uProfileCurveMax; // scene value at the end of the curve texture
 uniform highp sampler2D uProfileCurveTex; // r: curve output at x = max * u^2
 uniform int uSCurveCustom;    // 1: display S-curve strength from uSCurve, else Color's 0.25
 uniform float uSCurve;
+uniform float uBaseFix;       // Adobe profiles: strength of the Lightroom-like tone correction (color/adobe-tone.ts)
+uniform vec2 uBaseKnots[24];  // display lightness -> Lightroom's, increasing
+uniform vec2 uChromaKnots[10]; // display lightness -> chroma gain (Lightroom is more colourful), increasing
 uniform int uFilmLut;         // 1: display-space 3D LUT after the tone curve
 uniform float uFilmLutAmount;
 uniform highp sampler3D uFilmLutTex; // display sRGB -> sRGB, red along x
@@ -772,6 +775,59 @@ vec3 localColor(vec3 enc, vec2 ab) {
 #endif
 }
 
+// The Adobe profiles' tone: the display lightness mapped onto how Lightroom renders it, through the
+// knots of color/adobe-tone.ts (to black below the first, to white above the last).
+float adobeBaseL(float x) {
+  vec2 k = uBaseKnots[0];
+  if (x <= k.x) return k.y * x / k.x;
+  for (int i = 1; i < 24; i++) {
+    vec2 b = uBaseKnots[i];
+    if (x <= b.x) {
+      vec2 a = uBaseKnots[i - 1];
+      return mix(a.y, b.y, (x - a.x) / (b.x - a.x));
+    }
+  }
+  vec2 e = uBaseKnots[23];
+  return e.y + (1.0 - e.y) * (x - e.x) / (1.0 - e.x);
+}
+
+// Chroma gain at a lightness: held below the first knot, easing back to 1 above the last.
+float adobeChroma(float x) {
+  vec2 k = uChromaKnots[0];
+  if (x <= k.x) return k.y;
+  for (int i = 1; i < 10; i++) {
+    vec2 b = uChromaKnots[i];
+    if (x <= b.x) {
+      vec2 a = uChromaKnots[i - 1];
+      return mix(a.y, b.y, (x - a.x) / (b.x - a.x));
+    }
+  }
+  vec2 e = uChromaKnots[9];
+  return mix(e.y, 1.0, (x - e.x) / (1.0 - e.x));
+}
+
+// Moves the lightness onto Lightroom's and scales the chroma with it (so hue and relative chroma
+// stay), then adds the extra chroma Lightroom has at that lightness.
+vec3 applyBaseFix(vec3 enc) {
+#ifdef WIDE_OUT
+  vec3 lin = decX3(enc);
+#else
+  vec3 lin = vec3(decodeSrgb(enc.r), decodeSrgb(enc.g), decodeSrgb(enc.b));
+#endif
+  vec3 lab = lmsToLab(uSrgbToLms * lin);
+  float L = lab.x;
+  if (L < 1e-4 || L >= 1.0) return enc;
+  float L2 = mix(L, adobeBaseL(L), uBaseFix);
+  lab = vec3(L2, lab.yz * (L2 / L) * mix(1.0, adobeChroma(L2), uBaseFix));
+  lin = uLmsToSrgb * labToLms(lab);
+#ifdef WIDE_OUT
+  return encX3(lin);
+#else
+  lin = clamp(lin, 0.0, 1.0);
+  return vec3(encodeSrgb(lin.r), encodeSrgb(lin.g), encodeSrgb(lin.b));
+#endif
+}
+
 // 1 inside the hue range from..to (radians, may wrap), fading out just beyond it.
 float hueRange(float h, float from, float to) {
   float width = mod(to - from, TAU);
@@ -920,6 +976,7 @@ void main() {
     vec3 c = clamp(enc, 0.0, 1.0);
     enc = mix(c, c * c * (3.0 - 2.0 * c), k) + (1.0 - k) * (enc - c);
   }
+  if (uBaseFix > 0.0) enc = applyBaseFix(enc);
   if (uFilmLut == 1) {
     // Film looks are sRGB tables: they bring colours outside sRGB into it.
     float m = float(textureSize(uFilmLutTex, 0).x);
@@ -936,6 +993,7 @@ void main() {
     if (uSCurveCustom == 0) enc = mix(enc, enc * enc * (3.0 - 2.0 * enc), 0.25);
     else enc = mix(enc, enc * enc * (3.0 - 2.0 * enc), uSCurve);
   }
+  if (uBaseFix > 0.0) enc = applyBaseFix(enc);
   if (uFilmLut == 1) {
     float m = float(textureSize(uFilmLutTex, 0).x);
     vec3 film = textureLod(uFilmLutTex, enc * ((m - 1.0) / m) + 0.5 / m, 0.0).rgb;
