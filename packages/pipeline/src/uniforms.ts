@@ -1,6 +1,7 @@
 // Recipe + camera data -> shader parameters. Pure, so it can be unit-tested.
 import type { Recipe } from '@immich-raw/recipe';
 import {
+  ADOBE_SHADOWS_SCALE,
   LMS_TO_PROPHOTO,
   LMS_TO_SRGB,
   PROPHOTO_TO_LMS,
@@ -113,7 +114,8 @@ export function developUniforms(recipe: Recipe, cam: CameraInfo, profile: Profil
     // Calibration re-interprets the primaries, so it belongs to the camera -> working matrix.
     uCamToWork: mul3(calibrationMatrix(recipe.calibration), cam.camToWork),
     uExposure: 2 ** (b.exposure + cam.baselineExposure + profileExposureEv(profile, recipe.profileAmount)),
-    uTone: [b.shadows / 100, b.highlights / 100, b.whites / 100, b.blacks / 100],
+    // The Adobe profiles lift shadows less, as Lightroom does (blended in with the profile Amount).
+    uTone: [(b.shadows / 100) * (profile.adobeBase ? 1 + (ADOBE_SHADOWS_SCALE - 1) * Math.min(Math.max(recipe.profileAmount / 100, 0), 1) : 1), b.highlights / 100, b.whites / 100, b.blacks / 100],
     uContrast: b.contrast / 100,
     uHdr: b.hdr / 100,
     uPresence: [b.vibrance / 100, b.saturation / 100],
