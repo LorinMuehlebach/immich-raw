@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { env } from 'node:process';
 import { describe, expect, it } from 'vitest';
-import { fujiSimFromCodes, readFujiFilmSim } from './fuji.ts';
+import { fujiDynamicRangeEv, fujiSimFromCodes, readFujiDynamicRange, readFujiFilmSim } from './fuji.ts';
+import { withDynamicRangeBaseline } from './libraw.ts';
+import type { RawMeta } from './types.ts';
 
 /** A Fujifilm maker note: "FUJIFILM", IFD offset 12, then SHORT tags (always little-endian). */
 function makerNote(tags: Record<number, number>): Uint8Array {
@@ -141,5 +143,50 @@ describe('readFujiFilmSim', () => {
   const sample = env.RAW_SAMPLES_DIR ? `${env.RAW_SAMPLES_DIR}/fuji-xt5.RAF` : new URL('../../../samples/fuji-xt5.RAF', import.meta.url);
   it.skipIf(!existsSync(sample))('reads Provia from the X-T5 sample', () => {
     expect(readFujiFilmSim(new Uint8Array(readFileSync(sample)))).toMatchObject({ sim: 'provia', filmMode: 0 });
+  });
+});
+
+describe('dynamic range', () => {
+  const withDr = (dr: number) => raf(exifTiff(makerNote({ 0x1401: 0, 0x1403: dr })));
+
+  it('reads DevelopmentDynamicRange from a RAF', () => {
+    expect(readFujiDynamicRange(withDr(100))).toBe(100);
+    expect(readFujiDynamicRange(withDr(200))).toBe(200);
+    expect(readFujiDynamicRange(withDr(400))).toBe(400);
+  });
+
+  it('is null without the tag, for odd values, for non-RAFs and for broken data', () => {
+    expect(readFujiDynamicRange(raf(exifTiff(makerNote({ 0x1401: 0 }))))).toBeNull();
+    expect(readFujiDynamicRange(withDr(300))).toBeNull();
+    // A DNG/TIFF with the maker note is not a RAF: its own BaselineExposure is the one to use.
+    expect(readFujiDynamicRange(exifTiff(makerNote({ 0x1403: 400 })))).toBeNull();
+    expect(readFujiDynamicRange(new Uint8Array(0))).toBeNull();
+    expect(readFujiDynamicRange(withDr(400).slice(0, 120))).toBeNull();
+  });
+
+  it('turns DR into EV: DR200 is one stop, DR400 two, DR100 none', () => {
+    expect(fujiDynamicRangeEv(withDr(100))).toBe(0);
+    expect(fujiDynamicRangeEv(withDr(200))).toBe(1);
+    expect(fujiDynamicRangeEv(withDr(400))).toBe(2);
+    expect(fujiDynamicRangeEv(raf(exifTiff(makerNote({ 0x1401: 0 }))))).toBe(0);
+  });
+});
+
+describe('withDynamicRangeBaseline', () => {
+  const meta = (baselineExposure: number) => ({ baselineExposure, make: 'FUJIFILM' }) as RawMeta;
+  const dr400 = raf(exifTiff(makerNote({ 0x1403: 400 })));
+
+  it('gives a DR400 RAF a +2 EV baseline', () => {
+    expect(withDynamicRangeBaseline(meta(0), dr400).baselineExposure).toBe(2);
+  });
+
+  it('is idempotent, so a cached meta that already carries it is not brightened twice', () => {
+    const once = withDynamicRangeBaseline(meta(0), dr400);
+    expect(withDynamicRangeBaseline(once, dr400).baselineExposure).toBe(2);
+  });
+
+  it('leaves files with their own baseline and DR100 RAFs alone', () => {
+    expect(withDynamicRangeBaseline(meta(0.5), dr400).baselineExposure).toBe(0.5);
+    expect(withDynamicRangeBaseline(meta(0), raf(exifTiff(makerNote({ 0x1403: 100 })))).baselineExposure).toBe(0);
   });
 });

@@ -83,6 +83,36 @@ export function readFujiFilmSim(bytes: Uint8Array): FujiFilmSim | null {
   }
 }
 
+/**
+ * The dynamic range the shot was taken at (DevelopmentDynamicRange, tag 0x1403): 100, 200 or 400.
+ * What "Auto" or a DR priority picked is in there too. Null for anything that is not a Fujifilm
+ * RAF with the tag.
+ */
+export function readFujiDynamicRange(bytes: Uint8Array): 100 | 200 | 400 | null {
+  try {
+    if (!ascii(bytes, 0, 'FUJIFILMCCD-RAW')) return null;
+    const tiff = exifTiff(bytes);
+    if (!tiff) return null;
+    const note = makerNote(bytes, tiff.start, tiff.le);
+    if (!note) return null;
+    const dr = fujiTags(bytes, note)?.get(0x1403);
+    return dr === 100 || dr === 200 || dr === 400 ? dr : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many EV under the camera exposes a RAF at DR200 (1) or DR400 (2): it lowers the exposure to
+ * keep the highlights, and brightens its own JPEG back up. Adobe's renderer and the camera's JPEG
+ * both come out about that much brighter than the plain RAW, so this is the baseline exposure
+ * the file implies (0 for DR100, an unknown value, or anything that is not a Fujifilm RAF).
+ */
+export function fujiDynamicRangeEv(bytes: Uint8Array): number {
+  const dr = readFujiDynamicRange(bytes);
+  return dr ? Math.log2(dr / 100) : 0;
+}
+
 /** Where the Exif TIFF structure starts, and its byte order. */
 function exifTiff(b: Uint8Array): { start: number; le: boolean } | null {
   if (ascii(b, 0, 'II*\0')) return { start: 0, le: true };

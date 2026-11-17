@@ -3,6 +3,7 @@
 // peak (up to ~1.5 GB at 61 MP) alive for the whole session.
 import type LibRawType from '@immich-raw/libraw';
 import { camXyzFromRgbCam, hasCamXyz } from './color.ts';
+import { fujiDynamicRangeEv } from './fuji.ts';
 import { startMeasure } from './timing.ts';
 import type { DecoderInfo, LinearImage, PhotoSession, RawMeta, SensorData } from './types.ts';
 
@@ -140,6 +141,17 @@ function toMeta(m: RawWasmMeta): RawMeta {
 }
 
 /**
+ * A Fujifilm RAF shot at DR200 or DR400 is 1 or 2 EV under-exposed by design; the baseline exposure
+ * brings it back (see fujiDynamicRangeEv). Only when the file has none of its own, so applying it
+ * again to metadata that already carries it (a cached decode) changes nothing.
+ */
+export function withDynamicRangeBaseline(meta: RawMeta, bytes: Uint8Array): RawMeta {
+  if (meta.baselineExposure !== 0) return meta;
+  const ev = fujiDynamicRangeEv(bytes);
+  return ev ? { ...meta, baselineExposure: ev } : meta;
+}
+
+/**
  * `label` names the timing measures: `immich-raw:<label> open`, `… metadata`, `… imageData`.
  * `onWorking` is called once the worker has the long part (unpacking and processing): from then
  * on the page's thread can be busy without holding up the decode.
@@ -208,7 +220,7 @@ export async function readSensor(bytes: Uint8Array): Promise<SensorData> {
     if (!img || !(img.data instanceof Uint16Array) || img.colors !== 3 || !sensor) throw new Error('The decoder returned no sensor data.');
     const { width, height } = img;
     if (sensor.width < width || sensor.height < height) throw new Error('Unexpected sensor size.');
-    const meta = toMeta(m);
+    const meta = withDynamicRangeBaseline(toMeta(m), bytes);
     const pw = meta.isXTrans ? 6 : 2;
     const ph = pw;
     const at = (x: number, y: number) => sensor.data[(sensor.top_margin + y) * sensor.raw_width + sensor.left_margin + x]!;
@@ -343,7 +355,7 @@ export class RawSession implements PhotoSession {
    */
   static async open(bytes: Uint8Array, onWorking?: () => void, signal?: AbortSignal): Promise<RawSession> {
     const { meta, img } = await decode(bytes, { ...BASE_SETTINGS, halfSize: true }, true, 'half decode', onWorking, signal);
-    const m = toMeta(meta!);
+    const m = withDynamicRangeBaseline(toMeta(meta!), bytes);
     // LibRaw only shrinks mosaic images; a demosaiced (linear, e.g. lossy) DNG comes back at
     // full size. Keep it as the full image and halve it for editing.
     if (img.width > m.width * 0.75) {
@@ -359,7 +371,8 @@ export class RawSession implements PhotoSession {
    * browser's storage), so the half-size decode is skipped. full() decodes as usual.
    */
   static restore(bytes: Uint8Array, meta: RawMeta, half: LinearImage): RawSession {
-    return new RawSession(bytes, meta, { ...half, halfSize: true });
+    // The cached meta may predate the dynamic-range baseline.
+    return new RawSession(bytes, withDynamicRangeBaseline(meta, bytes), { ...half, halfSize: true });
   }
 
   /** Full-resolution decode (5-10 s, X-Trans ~17 s). Started once, shared by all callers. */
