@@ -304,7 +304,7 @@ function dngMetadata(
   if (extra.defaultCrop) m.defaultCrop = extra.defaultCrop;
   if (typeof ex.latitude === 'number' && typeof ex.longitude === 'number') m.gps = { latitude: ex.latitude, longitude: ex.longitude };
   // A RAF that is not a DNG has no baseline exposure of its own; the one its dynamic range setting
-  // implies (DR200/DR400, see withDynamicRangeBaseline) goes into the DNG so it keeps its brightness.
+  // implies (DR200/DR400 and similar, see withHighlightBaseline) goes into the DNG so it keeps its brightness.
   if (!carry && meta.baselineExposure) m.baselineExposure = meta.baselineExposure;
   if (carry) {
     if (carry.colorMatrix2) {

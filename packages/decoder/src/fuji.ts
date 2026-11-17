@@ -95,7 +95,9 @@ export function readFujiDynamicRange(bytes: Uint8Array): 100 | 200 | 400 | null 
     if (!tiff) return null;
     const note = makerNote(bytes, tiff.start, tiff.le);
     if (!note) return null;
-    const dr = fujiTags(bytes, note)?.get(0x1403);
+    // DevelopmentDynamicRange; AutoDynamicRange (0x140b) when a body writes only that one.
+    const tags = fujiTags(bytes, note);
+    const dr = tags?.get(0x1403) ?? tags?.get(0x140b);
     return dr === 100 || dr === 200 || dr === 400 ? dr : null;
   } catch {
     return null;

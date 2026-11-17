@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { env } from 'node:process';
 import { describe, expect, it } from 'vitest';
 import { fujiDynamicRangeEv, fujiSimFromCodes, readFujiDynamicRange, readFujiFilmSim } from './fuji.ts';
-import { withDynamicRangeBaseline } from './libraw.ts';
+import { withHighlightBaseline } from './libraw.ts';
 import type { RawMeta } from './types.ts';
 
 /** A Fujifilm maker note: "FUJIFILM", IFD offset 12, then SHORT tags (always little-endian). */
@@ -164,6 +164,12 @@ describe('dynamic range', () => {
     expect(readFujiDynamicRange(withDr(400).slice(0, 120))).toBeNull();
   });
 
+  it('falls back to AutoDynamicRange when DevelopmentDynamicRange is missing', () => {
+    expect(readFujiDynamicRange(raf(exifTiff(makerNote({ 0x1401: 0, 0x140b: 200 }))))).toBe(200);
+    // DevelopmentDynamicRange wins when both are there.
+    expect(readFujiDynamicRange(raf(exifTiff(makerNote({ 0x1403: 100, 0x140b: 400 }))))).toBe(100);
+  });
+
   it('turns DR into EV: DR200 is one stop, DR400 two, DR100 none', () => {
     expect(fujiDynamicRangeEv(withDr(100))).toBe(0);
     expect(fujiDynamicRangeEv(withDr(200))).toBe(1);
@@ -172,21 +178,21 @@ describe('dynamic range', () => {
   });
 });
 
-describe('withDynamicRangeBaseline', () => {
+describe('withHighlightBaseline', () => {
   const meta = (baselineExposure: number) => ({ baselineExposure, make: 'FUJIFILM' }) as RawMeta;
   const dr400 = raf(exifTiff(makerNote({ 0x1403: 400 })));
 
   it('gives a DR400 RAF a +2 EV baseline', () => {
-    expect(withDynamicRangeBaseline(meta(0), dr400).baselineExposure).toBe(2);
+    expect(withHighlightBaseline(meta(0), dr400).baselineExposure).toBe(2);
   });
 
   it('is idempotent, so a cached meta that already carries it is not brightened twice', () => {
-    const once = withDynamicRangeBaseline(meta(0), dr400);
-    expect(withDynamicRangeBaseline(once, dr400).baselineExposure).toBe(2);
+    const once = withHighlightBaseline(meta(0), dr400);
+    expect(withHighlightBaseline(once, dr400).baselineExposure).toBe(2);
   });
 
   it('leaves files with their own baseline and DR100 RAFs alone', () => {
-    expect(withDynamicRangeBaseline(meta(0.5), dr400).baselineExposure).toBe(0.5);
-    expect(withDynamicRangeBaseline(meta(0), raf(exifTiff(makerNote({ 0x1403: 100 })))).baselineExposure).toBe(0);
+    expect(withHighlightBaseline(meta(0.5), dr400).baselineExposure).toBe(0.5);
+    expect(withHighlightBaseline(meta(0), raf(exifTiff(makerNote({ 0x1403: 100 })))).baselineExposure).toBe(0);
   });
 });
