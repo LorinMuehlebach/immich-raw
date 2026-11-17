@@ -3588,7 +3588,7 @@ export class Editor {
   async openHdrDialog(): Promise<void> {
     const a = this.asset;
     if (!a || this.status !== 'ready' || this.hdrDialog) return;
-    const d: HdrDialog = {
+    this.hdrDialog = {
       phase: 'searching',
       frames: [],
       align: true,
@@ -3599,7 +3599,9 @@ export class Editor {
       searchNote: '',
       error: null,
     };
-    this.hdrDialog = d;
+    // The state's proxy, not the object above: changes must go through it to show, and the
+    // check after the search compares with what this.hdrDialog holds.
+    const d = this.hdrDialog;
     this.hdrAssets = [];
     let bracket: AssetResponseDto[] = [];
     try {
