@@ -27,6 +27,7 @@ e2e/out/
 # Editors and OS files
 .vscode/
 .idea/
+.claude/worktrees/
 .DS_Store
 Thumbs.db
 desktop.ini
