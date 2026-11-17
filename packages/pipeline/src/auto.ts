@@ -5,7 +5,7 @@
 // Exposure 0, as the tone stage sees them. All maths is in stops relative to middle grey.
 // The slider effects mirror toneBase() in shaders.ts.
 import type { BasicParams, ParamSpec } from '@immich-raw/recipe';
-import { HDR_TONE, hdrAmountFor, hdrCurve } from './hdr-tone.ts';
+import { hdrCurve } from './hdr-tone.ts';
 
 const MID = Math.log2(0.18);
 
@@ -115,10 +115,17 @@ export function autoHdr(samples: ArrayLike<number>, opts: { whitePoint: number; 
   const top = pct(0.995) + ev - MID;
   const bottom = pct(0.01) + ev - MID;
   const W = Math.log2(opts.whitePoint / 0.18);
-  const { hi, hiK, lo, loK } = HDR_TONE;
-  const forHighlights = hdrAmountFor(top - hi, W + HDR_TOP_OVER_WHITE - hi, hiK);
-  const forShadows = hdrAmountFor(lo - bottom, lo - HDR_BOTTOM, loK);
-  return Math.round(clamp(Math.max(forHighlights, forShadows) * 100, HDR_AUTO_MIN, 100));
+  // The smallest amount that brings both ends within reach (the curve only ever pulls them in).
+  const fits = (a: number) => hdrCurve(top, a) <= W + HDR_TOP_OVER_WHITE && hdrCurve(bottom, a) >= HDR_BOTTOM;
+  let lo = 0;
+  let hi = 1;
+  if (!fits(1)) return 100;
+  for (let i = 0; i < 20; i++) {
+    const m = (lo + hi) / 2;
+    if (fits(m)) hi = m;
+    else lo = m;
+  }
+  return Math.round(clamp(hi * 100, HDR_AUTO_MIN, 100));
 }
 
 /**
