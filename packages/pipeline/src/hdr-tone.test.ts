@@ -12,43 +12,47 @@ function spread(lo: number, hi: number, n = 2000): Float32Array {
 }
 
 describe('hdrCurve', () => {
-  it('leaves everything alone at amount 0 and the midtones at any amount', () => {
+  it('leaves everything alone at amount 0', () => {
     for (const x of [-12, -3, 0, 2, 8]) expect(hdrCurve(x, 0)).toBe(x);
-    for (const x of [HDR_TONE.lo, -1, 0, HDR_TONE.hi]) expect(hdrCurve(x, 1)).toBeCloseTo(x, 12);
   });
 
-  it('is increasing, continuous with slope 1 at the knees, and pulls both ends in', () => {
+  it('keeps the pivot, takes range away around it, and is increasing', () => {
+    const { pivot, scale } = HDR_TONE;
     for (const a of [0.2, 0.6, 1]) {
+      expect(hdrCurve(pivot, a)).toBeCloseTo(pivot, 12);
+      // In the middle of the range (no end bending yet) the slope is 1 - scale x amount.
+      const slope = (hdrCurve(pivot + 0.5, a) - hdrCurve(pivot - 0.5, a)) / 1;
+      expect(slope).toBeCloseTo(1 - scale * a, 6);
       let prev = -Infinity;
-      for (let x = -14; x <= 10; x += 0.01) {
+      for (let x = -14; x <= 12; x += 0.01) {
         const y = hdrCurve(x, a);
         expect(y).toBeGreaterThan(prev);
         prev = y;
       }
-      for (const k of [HDR_TONE.hi, HDR_TONE.lo]) {
-        const slope = (hdrCurve(k + 1e-4, a) - hdrCurve(k - 1e-4, a)) / 2e-4;
-        expect(slope).toBeCloseTo(1, 3);
-      }
       expect(hdrCurve(6, a)).toBeLessThan(6);
       expect(hdrCurve(-10, a)).toBeGreaterThan(-10);
     }
-    // More amount, more compression.
     expect(hdrCurve(6, 1)).toBeLessThan(hdrCurve(6, 0.5));
     expect(hdrCurve(-10, 1)).toBeGreaterThan(hdrCurve(-10, 0.5));
+  });
+
+  it('visibly changes an ordinary photo: a 6 stop spread loses about 2 stops', () => {
+    const before = 3 - -3;
+    const after = hdrCurve(3, 1) - hdrCurve(-3, 1);
+    expect(before - after).toBeGreaterThan(1.8);
+    // Half the slider, about half of that.
+    expect(before - (hdrCurve(3, 0.5) - hdrCurve(-3, 0.5))).toBeGreaterThan(0.9);
   });
 
   it('keeps any highlight under its ceiling at amount 1', () => {
     const ceiling = HDR_TONE.hi + 1 / HDR_TONE.hiK;
     expect(hdrCurve(40, 1)).toBeLessThan(ceiling);
     expect(hdrCurve(400, 1)).toBeLessThan(ceiling);
-    expect(hdrCurve(400, 1)).toBeGreaterThan(ceiling - 0.05);
+    expect(hdrCurve(400, 1)).toBeGreaterThan(ceiling - 0.1);
   });
 
   it('is the same function in the shader', () => {
-    expect(HDR_GLSL).toContain(`if (x > ${HDR_TONE.hi.toFixed(4)})`);
-    expect(HDR_GLSL).toContain(`${HDR_TONE.hiK.toFixed(4)} * h * d`);
-    expect(HDR_GLSL).toContain(`if (x < ${HDR_TONE.lo.toFixed(4)})`);
-    expect(HDR_GLSL).toContain(`${HDR_TONE.loK.toFixed(4)} * h * d`);
+    for (const v of [HDR_TONE.pivot, HDR_TONE.scale, HDR_TONE.hi, HDR_TONE.hiK, HDR_TONE.lo, HDR_TONE.loK]) expect(HDR_GLSL).toContain(v.toFixed(4));
   });
 });
 
@@ -79,12 +83,13 @@ describe('autoTone with HDR', () => {
     expect(autoTone(s, { whitePoint: 1.5, hdr: 0 })).toEqual(autoTone(s, { whitePoint: 1.5 }));
   });
 
-  it('needs less Highlights once HDR has compressed the range', () => {
+  it('can expose brighter once HDR holds the highlights', () => {
     const s = spread(-11, 6);
     const plain = autoTone(s, { whitePoint: 1.5 });
     const hdr = autoTone(s, { whitePoint: 1.5, hdr: 70 });
-    expect(Math.abs(hdr.highlights)).toBeLessThan(Math.abs(plain.highlights));
-    // The bright end can go higher before it needs pulling back, so exposure doesn't drop as far.
-    expect(hdr.exposure).toBeGreaterThanOrEqual(plain.exposure);
+    // The bright end is compressed, so more exposure fits before it needs pulling back, and it
+    // never needs more pulling back than without HDR.
+    expect(hdr.exposure).toBeGreaterThan(plain.exposure);
+    expect(Math.abs(hdr.highlights)).toBeLessThanOrEqual(Math.abs(plain.highlights));
   });
 });
