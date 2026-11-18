@@ -67,27 +67,34 @@ look a little different.
   photo; the Canon and Nikon values come from [RapidRAW](https://github.com/CyberTimon/RapidRAW) and
   only their reading is checked here, not the brightness. A DNG made from such a RAW carries it as
   its BaselineExposure.
-- **Profiles.** "Adobe Color" and "Adobe Standard" use your own Adobe camera profile when the editor
-  has one for the camera ([below](#camera-profiles-from-lightroom)); without it they show as Color,
-  an approximation. Adobe's base tone curve is in Lightroom's engine, not in a profile, so the two
-  Adobe profiles use a stand-in fitted to Lightroom exports of one photo (X-T30, DR400): about twice
-  the contrast around mid-grey, a brighter top end (Lightroom's highlights are lighter than the
-  editor's own curve gives), more colour in the middle tones, and the Shadows slider at half
-  strength. On that photo it brought the editor 33 % closer to Lightroom, and a render with only
-  the exposure raised comes within 0.02 of Lightroom's; for other cameras and scenes it is an
-  approximation. It only affects the Adobe profiles, so no other edit changes. Lightroom also
-  draws strong highlights less colourful when the exposure is raised; copying that made the full
-  edit of the test photo less colourful than Lightroom's, so it isn't done.
-- **Whites, Highlights and Blacks.** They work on the scene's brightness in stops, Lightroom's on
-  the brightness of the picture as shown, so on a dark photo they can do almost nothing here. On the
-  test photo Whites +50, Highlights -50 and Blacks -50 changed nothing visible in the editor, against
-  0.05 to 0.12 of lightness in Lightroom. An edit that leans on them looks flatter here.
+- **Profiles.** Lightroom's "Adobe Color" and "Adobe Standard" import as **Color** and
+  **Standard**. They take their colour from your own camera profile when the editor has one for
+  the camera ([below](#camera-profiles-from-lightroom)); without it Color is an in-house
+  approximation and Standard isn't offered. Adobe's base tone curve is in Lightroom's engine, not in
+  a profile, so with a camera profile the editor adds a stand-in fitted to Lightroom exports of one
+  photo (X-T30, DR400): about twice the contrast around mid-grey, a brighter top end (Lightroom's
+  highlights are lighter than the editor's own curve gives) and more colour in the middle tones. On
+  that photo a render with only the exposure raised comes within 0.02 of Lightroom's; for other
+  cameras and scenes it is an approximation. Lightroom also draws strong highlights less colourful
+  when the exposure is raised; copying that made the full edit of the test photo less colourful than
+  Lightroom's, so it isn't done.
+- **Shadows, Highlights, Whites and Blacks.** Each works on a band of the photo's own tones, as
+  Lightroom's do: Whites and Highlights near its brightest tones, Blacks and Shadows near its
+  darkest, wherever those sit. (Earlier they acted at fixed brightness, so on a dark photo Whites and
+  Blacks did almost nothing.) The photo's black and white point are measured from the preview and
+  move with Exposure and with each slider. The strength of each slider, and how it grows with the
+  amount (Whites much faster than linearly), are fitted to single-slider Lightroom exports at 20, 50
+  and 80 of the test photo: Whites +80 came from 0.175 to 0.058 mean OKLab difference, Blacks -80
+  from 0.160 to 0.024, and the test edit with Exposure at 0 from 0.048 to 0.037. The same edit with
+  Exposure +1.27 stays at about 0.05 and renders a little darker than Lightroom (0.02 to 0.04 of
+  lightness): Lightroom's sliders and exposure interact in ways one photo can't pin down. Lightroom's
+  Whites and Blacks also raise the picture's local contrast; the editor now does too, but not fully.
 
 ## Camera profiles from Lightroom
 
-Most of the colour of "Adobe Color" and "Adobe Standard" is in Adobe's camera profile for the body:
-a hue and saturation map (one for tungsten, one for daylight light, blended by the photo's colour
-temperature) and, for Adobe Color, a look table. On a test photo they took the editor's colour from
+Most of the colour of Color and Standard (Lightroom's "Adobe Color" and "Adobe Standard") is in Adobe's
+camera profile for the body: a hue and saturation map (one for tungsten, one for daylight light,
+blended by the photo's colour temperature) and, for Color, a look table. On a test photo they took the editor's colour from
 too grey and cool (about 66 % of Lightroom's chroma, a blue-red cast) to 84 % with the cast gone.
 
 Adobe's profiles are Adobe's, so the editor ships none. You convert the ones from your own Lightroom;
@@ -106,7 +113,7 @@ the result stays in a folder that git ignores and is never uploaded anywhere.
    It writes one small JSON file per profile and an `index.json` next to them, and adds to what is
    already there. Name the cameras you use: a folder converts everything in it.
 3. Reload the editor. Photos from that camera now offer **Camera profiles** in the Profile list, and
-   a Lightroom sidecar that says "Adobe Color" or "Adobe Standard" uses them.
+   a Lightroom sidecar that says "Adobe Color" or "Adobe Standard" gets Color or Standard.
 
 A deployed editor needs the same folder next to its files (`camera-profiles/`, beside `index.html`).
 Don't put it in an image you share: the files are Adobe's. Cameras without a converted profile keep

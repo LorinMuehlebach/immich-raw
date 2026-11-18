@@ -1,7 +1,7 @@
 // WebGL2 renderer: fitted preview from a <= 2560 px proxy, 1:1 zoom regions and
 // full-resolution tiled export. All three run the same pass chain (see shaders.ts),
 // and share one cached analysis per recipe/frame, so they match.
-import { canonicalJson, defaultRecipe, isCameraProfile, isMaskRefined, isPartRefined, type BrushComponent, type PolygonComponent, type Recipe } from '@immich-raw/recipe';
+import { canonicalJson, defaultRecipe, isMaskRefined, isPartRefined, usesCameraProfile, type BrushComponent, type PolygonComponent, type Recipe } from '@immich-raw/recipe';
 import { BrushRasterizer, packBrushAtlas, packMaskAtlas, type MaskMap } from './brush.ts';
 import { cameraLookTable, cubeTexels, hueSatTexels, profileExposureEv, profileUniforms, profileWhitePoint, resolveProfile, toGlMat3, type CameraProfileData, type ProfileLook, type ProfileLooks, type ProfileRender } from './color/index.ts';
 import { OUTPUT_SPACE_INFO, SRGB8, type OutputColor } from './color/output-spaces.ts';
@@ -17,6 +17,7 @@ import { colorFeature, maskFrameScale, maskUniforms, type MaskResources } from '
 import { histogramOf, type Histogram, type ScopeImage } from './scopes.ts';
 import { PolygonRasterizer, polygonKey } from './polygon.ts';
 import * as S from './shaders.ts';
+import { DEFAULT_ANCHORS, toneAnchors, type ToneAnchors } from './tone-windows.ts';
 import { developUniforms, finishUniforms, lookUniforms, STATIC_UNIFORMS, type CameraInfo } from './uniforms.ts';
 
 export interface SourceImage {
@@ -164,6 +165,7 @@ export class Renderer {
   /** Downloaded profile data (Fujifilm film looks); see setProfileLooks. */
   private looks: ProfileLooks = {};
   /** The photo camera's Adobe profile (made from the user's Lightroom), or null. */
+  private anchorCache: { key: string; anchors: ToneAnchors } | null = null;
   private cameraProfile: CameraProfileData | null = null;
   /** Camera profile looks by profile and colour temperature (they depend on the white balance). */
   private cameraLooks = new Map<string, ProfileLook>();
@@ -258,6 +260,7 @@ export class Renderer {
     this.proxyWidth = pw;
     this.proxyHeight = ph;
     this.analysisCache = null;
+    this.anchorCache = null;
   }
 
   private uploadRgb16(img: SourceImage, x: number, y: number, w: number, h: number, into?: WebGLTexture): WebGLTexture {
@@ -305,19 +308,20 @@ export class Renderer {
     this.analysisCache = null;
   }
 
-  /** The Adobe profile of the photo's camera, for the Adobe Color and Adobe Standard profiles. */
+  /** The camera's own profile (made from the user's Lightroom), for the Color and Standard profiles. */
   setCameraProfile(profile: CameraProfileData | null): void {
     this.cameraProfile = profile;
     this.cameraLooks.clear();
     this.freeProfileTextures();
     this.analysisCache = null;
+    this.anchorCache = null;
   }
 
-  /** The recipe's Adobe profile as a look at the recipe's colour temperature (null without a profile). */
+  /** The recipe's profile as a look from the camera's own profile, at the recipe's colour temperature (null without one). */
   private cameraLookFor(recipe: Recipe): ProfileLook | null {
     const profile = this.cameraProfile;
-    if (!profile || !this.camera || !isCameraProfile(recipe.profile)) return null;
-    const kind = recipe.profile === 'adobe-color' ? 'color' : 'standard';
+    if (!profile || !this.camera || !usesCameraProfile(recipe.profile)) return null;
+    const kind = recipe.profile;
     // The maps are blended by temperature; 100 K steps are finer than their change.
     const kelvin = Math.round((recipe.wb.mode === 'asShot' ? this.camera.asShot.temp : recipe.wb.temp) / 100) * 100;
     const key = `${recipe.profile}@${kelvin}`;
@@ -338,7 +342,7 @@ export class Renderer {
 
   /** What renders for the recipe's profile (Color when a downloaded look is missing). */
   profileFor(recipe: Recipe): ProfileRender {
-    if (isCameraProfile(recipe.profile)) {
+    if (usesCameraProfile(recipe.profile)) {
       const look = this.cameraLookFor(recipe);
       return resolveProfile(recipe.profile, look ? { ...this.looks, [recipe.profile]: look } : this.looks);
     }
@@ -448,8 +452,21 @@ export class Renderer {
     }
   }
 
-  private baseUniforms(recipe: Recipe, camera: CameraInfo, frame: FrameInfo, an: Analysis['dehaze'] | null) {
-    const u = developUniforms(recipe, camera, this.profileFor(recipe));
+  /**
+   * The photo's black and white point, which the tone sliders work relative to (tone-windows.ts).
+   * Measured from the preview proxy and kept until the white balance, crop, profile or
+   * calibration changes; the default points when no tone slider (or mask) needs them.
+   */
+  private toneAnchorsFor(recipe: Recipe): ToneAnchors {
+    const b = recipe.basic;
+    if (!b.shadows && !b.highlights && !b.whites && !b.blacks && recipe.masks.length === 0) return DEFAULT_ANCHORS;
+    const key = canonicalJson({ wb: recipe.wb, crop: recipe.crop, transform: recipe.transform, calibration: recipe.calibration, profile: recipe.profile, profileAmount: recipe.profileAmount, lens: recipe.lens });
+    if (this.anchorCache?.key !== key) this.anchorCache = { key, anchors: toneAnchors(this.toneSamples(recipe)) ?? DEFAULT_ANCHORS };
+    return this.anchorCache.anchors;
+  }
+
+  private baseUniforms(recipe: Recipe, camera: CameraInfo, frame: FrameInfo, an: Analysis['dehaze'] | null, anchors: ToneAnchors = this.toneAnchorsFor(recipe)) {
+    const u = developUniforms(recipe, camera, this.profileFor(recipe), anchors);
     return {
       ...u,
       uCamToWork: toGlMat3(u.uCamToWork),
@@ -763,7 +780,7 @@ export class Renderer {
     const w = Math.max(8, Math.round(frame.width * s));
     const h = Math.max(8, Math.round(frame.height * s));
     const t = this.target('an.stats', w, h, gl.RGBA32F);
-    this.ctx.draw(this.p.linear, t, { uSrc: proxy.tex, uTrans: this.dummy }, { ...this.baseUniforms(r, camera, frame, null), uFramePx: [w, h] });
+    this.ctx.draw(this.p.linear, t, { uSrc: proxy.tex, uTrans: this.dummy }, { ...this.baseUniforms(r, camera, frame, null, DEFAULT_ANCHORS), uFramePx: [w, h] });
     const px = new Float32Array(w * h * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, px);

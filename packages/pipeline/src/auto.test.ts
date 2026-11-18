@@ -34,11 +34,11 @@ describe('autoTone', () => {
     expect(r.contrast).toBeLessThanOrEqual(0);
   });
 
-  it('adds contrast to a flat image, and leaves Whites/Blacks where they would not reach', () => {
+  it('adds contrast to a flat image and gives it a real black (Whites and Blacks follow the photo\'s own range)', () => {
     const r = autoTone(spread(TARGET - 1, TARGET + 1), opts);
     expect(r.contrast).toBeGreaterThan(10);
-    expect(r.blacks).toBe(0);
-    expect(r.whites).toBe(0);
+    expect(r.blacks).toBeLessThan(0);
+    expect(r.whites).toBeGreaterThanOrEqual(0);
   });
 
   it('sets a black point for deep shadows and eases off crushed ones', () => {

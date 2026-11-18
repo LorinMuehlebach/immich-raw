@@ -3,11 +3,10 @@
 //
 // Input: log2 luminance samples of the (cropped) frame with the current white balance at
 // Exposure 0, as the tone stage sees them. All maths is in stops relative to middle grey.
-// The slider effects mirror toneBase() in shaders.ts.
+// The slider effects come from tone-windows.ts, the same maths as toneBase() in shaders.ts.
 import type { BasicParams, ParamSpec } from '@immich-raw/recipe';
 import { hdrCurve } from './hdr-tone.ts';
-
-const MID = Math.log2(0.18);
+import { MID, TONE_WINDOWS, applyTone, bentAnchors, toneAnchors, toneWeight, type ToneAmounts, type ToneAnchors } from './tone-windows.ts';
 
 /** Brightness the image's key (typical tone) is moved to: a little under middle grey. */
 const TARGET_KEY = Math.log2(0.16);
@@ -63,28 +62,22 @@ export function normalizeAutoParams(input: unknown): AutoParams {
   return out;
 }
 
-const smooth = (a: number, b: number, x: number) => {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-// Slider weights at x stops from middle grey (same curves as the shader).
-const shadowWeight = (x: number) => (1 - smooth(-5, 0.5, x)) * smooth(-11, -6, x);
-const highlightWeight = (x: number) => smooth(-0.5, 2.5, x);
-const whiteWeight = (x: number) => smooth(0.5, 3, x);
-const blackWeight = (x: number) => 1 - smooth(-9, -3.5, x);
-
-/** Stops a slider at ±100 moves a tone with full weight (shader constants). */
-const RANGE = { shadows: 1.6, highlights: 1.6, whites: 1, blacks: 1.5 };
+type Stage = keyof ToneAmounts;
 
 /**
- * Slider value (-100..100) that moves tone x by `stops`, limited to ±cap. 0 where the
- * slider barely reaches that tone: maxing it out there would change almost nothing.
+ * Slider value (-100..100) that moves tone x by `stops`, limited to ±cap, given the photo's black
+ * and white point at that stage. 0 where the slider barely reaches that tone: maxing it out there
+ * would change almost nothing.
  */
-function sliderFor(stops: number, range: number, weight: number, cap: number): number {
+function sliderFor(stage: Stage, stops: number, x: number, anchors: ToneAnchors, cap: number): number {
+  const weight = toneWeight(stage, x, anchors.black, anchors.white);
   if (Math.abs(stops) < 1e-6 || weight < 0.3) return 0;
-  return clamp((stops / range / weight) * 100, -cap, cap);
+  const w = TONE_WINDOWS[stage];
+  // Invert toneStops(): stops = sign * 0.5 * (|a| / 0.5) ^ exponent * gain, for the weight-scaled move.
+  const amount = Math.sign(stops) * 0.5 * (Math.abs(stops) / weight / (0.5 * w.gain)) ** (1 / w.exponent);
+  return clamp(amount * 100, -cap, cap);
 }
 
 /** Key of the photo (its typical tone, log2): half median, half trimmed mean, robust to small bright or dark areas. */
@@ -168,28 +161,47 @@ export function autoTone(samples: ArrayLike<number>, opts: { whitePoint: number;
   ev = clamp(Math.round(ev * 20) / 20, -4, 4);
   const q = (p: number) => bend(pct(p) + ev - MID);
 
-  // Highlights: pull the top 0.5 % back under white.
-  const top = q(0.995);
-  const hiScale = P.highlights / 100;
-  const highlights = top > W - 0.4 ? clamp(-sliderFor(top - (W - 0.5), RANGE.highlights, highlightWeight(top), 80) * hiScale, -100, 100) : 0;
-  const topAfter = top + (highlights / 100) * RANGE.highlights * highlightWeight(top);
-
-  // Whites: lift a dull top end towards white, or tame what still clips.
+  // The sliders work in the shader's order (Shadows, Highlights, Whites, Blacks), each on the tones
+  // and the black and white point the one before left, so each is chosen from that state.
+  const photo = toneAnchors(samples);
+  if (!photo) return none;
+  const state = {
+    anchors: bentAnchors(photo, ev, hdr),
+    top: q(0.995),
+    near: q(0.999),
+    dark: q(0.1),
+    bottom: q(0.005),
+    low: q(0.05),
+  };
+  const apply = (stage: Stage, slider: number) => {
+    if (!slider) return;
+    const amounts: ToneAmounts = { shadows: 0, highlights: 0, whites: 0, blacks: 0, [stage]: slider / 100 };
+    const r = applyTone([state.top, state.near, state.dark, state.bottom, state.low], state.anchors, amounts, stage);
+    [state.top, state.near, state.dark, state.bottom, state.low] = r.tones as [number, number, number, number, number];
+    state.anchors = r.anchors;
+  };
   const wbScale = P.whitesBlacks / 100;
-  let whites = 0;
-  if (topAfter < W - 1) whites = sliderFor(W - 0.7 - topAfter, RANGE.whites, whiteWeight(topAfter), 35);
-  else if (q(0.999) > W + 0.4) whites = -sliderFor(q(0.999) - (W + 0.2), RANGE.whites, whiteWeight(q(0.999)), 35);
-  whites = clamp(whites * wbScale, -100, 100);
 
   // Shadows: open up the darkest 10 % when they sit deep in the shadows.
-  const dark = q(0.1);
-  const shadows = dark < -3.5 ? clamp(sliderFor(-3.5 - dark, RANGE.shadows, shadowWeight(dark), 65) * (P.shadows / 100), -100, 100) : 0;
+  const shadows = state.dark < -3.5 ? clamp(sliderFor('shadows', -3.5 - state.dark, state.dark, state.anchors, 65) * (P.shadows / 100), -100, 100) : 0;
+  apply('shadows', shadows);
+
+  // Highlights: pull the top 0.5 % back under white.
+  const hiScale = P.highlights / 100;
+  const highlights = state.top > W - 0.4 ? clamp(sliderFor('highlights', W - 0.5 - state.top, state.top, state.anchors, 80) * hiScale, -100, 100) : 0;
+  apply('highlights', highlights);
+
+  // Whites: lift a dull top end towards white, or tame what still clips.
+  let whites = 0;
+  if (state.top < W - 1) whites = sliderFor('whites', W - 0.7 - state.top, state.top, state.anchors, 35);
+  else if (state.near > W + 0.4) whites = sliderFor('whites', W + 0.2 - state.near, state.near, state.anchors, 35);
+  whites = clamp(whites * wbScale, -100, 100);
+  apply('whites', whites);
 
   // Blacks: give a flat image a real black; ease off where large areas are crushed.
-  const bottom = q(0.005);
   let blacks = 0;
-  if (bottom > -6) blacks = -sliderFor(bottom + 6.5, RANGE.blacks, blackWeight(bottom), 35);
-  else if (q(0.05) < -9.5) blacks = sliderFor(-9.5 - q(0.05), RANGE.blacks, blackWeight(q(0.05)), 20);
+  if (state.bottom > -6) blacks = sliderFor('blacks', -6.5 - state.bottom, state.bottom, state.anchors, 35);
+  else if (state.low < -9.5) blacks = sliderFor('blacks', -9.5 - state.low, state.low, state.anchors, 20);
   blacks = clamp(blacks * wbScale, -100, 100);
 
   // Contrast: a short tonal range gets more, a very long one a little less.

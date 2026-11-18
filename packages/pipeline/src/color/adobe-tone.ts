@@ -80,12 +80,6 @@ export const ADOBE_CHROMA_KNOTS: readonly (readonly [number, number])[] = [
 export const ADOBE_CHROMA_KNOT_UNIFORM = Float32Array.from(ADOBE_CHROMA_KNOTS.flat());
 
 /**
- * Lightroom's Shadows slider lifts about 40 % of what the editor's does at the same value, measured
- * on the same photo (+0.013 against +0.035 of lightness at +50), so the Adobe profiles scale it.
- */
-export const ADOBE_SHADOWS_SCALE = 0.5;
-
-/**
  * The chroma gain at one display lightness: held at the first knot below it, and easing back to 1
  * (white has no colour to scale) above the last.
  */

@@ -4,8 +4,8 @@
 // user's own copy (packages/pipeline/scripts/convert-camera-profiles.mjs) into a compact JSON file
 // that stays out of git, and the editor loads it for the camera that took the photo.
 //
-// What is used: the hue/saturation map ("Adobe Standard") and the look table that makes "Adobe
-// Color". The DCP has one map per calibration illuminant; the two are blended by the photo's
+// What is used: the hue/saturation map (the editor's Standard) and the look table that Lightroom's "Adobe
+// Color" adds on top of it (the editor's Color). The DCP has one map per calibration illuminant; the two are blended by the photo's
 // colour temperature, as the DNG specification describes. Adobe's matrices are left out: on their
 // own they are colourimetric, and the colour of an Adobe profile is in these tables.
 import { applyLookCpu, dngHsvToRgb, dngRgbToHsv, type HueSatTable } from './dcp.ts';

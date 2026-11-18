@@ -14,6 +14,7 @@
 // The analysis (guided-filter coefficients, dehaze) runs at low resolution, cached.
 import { EFFECTS_GLSL } from './effects.ts';
 import { HDR_GLSL } from './hdr-tone.ts';
+import { toneGlsl } from './tone-windows.ts';
 
 export const VS_FULLSCREEN = /* glsl */ `#version 300 es
 void main() {
@@ -516,6 +517,7 @@ uniform highp sampler2D uABMid; // guided-filter coefficients, medium radius (cl
 uniform sampler2D uLut;       // tone curve, 4096x1, per channel
 uniform int uCurve;
 uniform vec4 uTone;           // shadows, highlights, whites, blacks (-1..1)
+uniform vec2 uToneAnchor;     // the photo's black and white point at the current Exposure (stops from middle grey)
 uniform float uContrast;      // -1..1
 uniform float uHdr;           // HDR range compression, 0..1 (hdr-tone.ts)
 uniform vec2 uPresence;       // vibrance, saturation (-1..1)
@@ -577,21 +579,24 @@ vec2 sampleAB(highp sampler2D tex, vec2 t) {
 }
 
 ${HDR_GLSL}
+${toneGlsl()}
 // Tone controls act on the local base layer, in stops relative to middle grey.
 // tone = shadows, highlights, whites, blacks: the global sliders plus any masks.
 // HDR compresses the range first, so the other sliders work on what it leaves.
+// Each slider works on a band of the photo's own range (tone-windows.ts): Shadows and Blacks near
+// its black point, Highlights and Whites near its white point. Every stage moves the two points
+// along with the tones, so the next one works on what the last one left.
 float toneBase(float B, vec4 tone, float contrast) {
   float x = hdrCompress(B - MID, uHdr);
-  x *= max(1.0 + 0.55 * contrast, 0.05);
-  float ws = (1.0 - smoothstep(-5.0, 0.5, x)) * smoothstep(-11.0, -6.0, x);
-  x += tone.x * 1.6 * ws;
-  float wh = smoothstep(-0.5, 2.5, x);
-  x += tone.y * 1.6 * wh;
-  float ww = smoothstep(0.5, 3.0, x);
-  x += tone.z * 1.0 * ww;
-  float wb = 1.0 - smoothstep(-9.0, -3.5, x);
-  x += tone.w * 1.5 * wb;
-  return x + MID;
+  float cs = max(1.0 + 0.55 * contrast, 0.05);
+  x *= cs;
+  vec4 t = sign(tone) * 0.5 * pow(abs(tone) / 0.5, TONE_EXP) * TONE_GAIN;
+  vec3 v = vec3(x, hdrCompress(uToneAnchor.x, uHdr) * cs, hdrCompress(uToneAnchor.y, uHdr) * cs); // tone, black point, white point
+  v += t.x * (1.0 - smoothstep(vec3(v.y + TONE_SHADOWS.x), vec3(v.y + TONE_SHADOWS.y), v));
+  v += t.y * smoothstep(vec3(v.z - TONE_HIGHLIGHTS.x), vec3(v.z + TONE_HIGHLIGHTS.y), v);
+  v += t.z * smoothstep(vec3(v.z - TONE_WHITES.x), vec3(v.z + TONE_WHITES.y), v);
+  v += t.w * (1.0 - smoothstep(vec3(v.y - TONE_BLACKS.x), vec3(v.y + TONE_BLACKS.y), v));
+  return v.x + MID;
 }
 
 // Scales a detail band; the soft limit keeps strong edges from overshooting into halos.
