@@ -3,7 +3,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { normalizeMasks, type Mask } from './masks.ts';
 import { ALL_PARAMS, PARAMS, clampParam, getPath, setPath, type Band, type Wheel } from './params.ts';
-import { isProfileId, type ProfileId } from './profiles.ts';
+import { profileIdOf, type ProfileId } from './profiles.ts';
 
 export const RECIPE_SCHEMA = 1;
 export const RECIPE_KEY = 'raw-editor.recipe';
@@ -315,7 +315,7 @@ export function normalizeRecipe(input: unknown): Recipe {
     if (typeof v === 'number') setPath(r, spec.path, clampParam(spec, v));
   }
 
-  if (isProfileId(src.profile)) r.profile = src.profile;
+  r.profile = profileIdOf(src.profile) ?? r.profile;
   const wb = isObject(src.wb) ? src.wb : {};
   if (wb.mode === 'custom' || wb.mode === 'asShot') r.wb.mode = wb.mode;
 

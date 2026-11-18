@@ -14,6 +14,7 @@
 // The analysis (guided-filter coefficients, dehaze) runs at low resolution, cached.
 import { EFFECTS_GLSL } from './effects.ts';
 import { HDR_GLSL } from './hdr-tone.ts';
+import { toneGlsl } from './tone-windows.ts';
 
 export const VS_FULLSCREEN = /* glsl */ `#version 300 es
 void main() {
@@ -516,6 +517,7 @@ uniform highp sampler2D uABMid; // guided-filter coefficients, medium radius (cl
 uniform sampler2D uLut;       // tone curve, 4096x1, per channel
 uniform int uCurve;
 uniform vec4 uTone;           // shadows, highlights, whites, blacks (-1..1)
+uniform vec2 uToneAnchor;     // the photo's black and white point at the current Exposure (stops from middle grey)
 uniform float uContrast;      // -1..1
 uniform float uHdr;           // HDR range compression, 0..1 (hdr-tone.ts)
 uniform vec2 uPresence;       // vibrance, saturation (-1..1)
@@ -554,7 +556,7 @@ uniform highp sampler2D uProfileCurveTex; // r: curve output at x = max * u^2
 uniform int uSCurveCustom;    // 1: display S-curve strength from uSCurve, else Color's 0.25
 uniform float uSCurve;
 uniform float uBaseFix;       // Adobe profiles: strength of the Lightroom-like tone correction (color/adobe-tone.ts)
-uniform vec2 uBaseKnots[24];  // display lightness -> Lightroom's, increasing
+uniform vec2 uBaseKnots[33];  // display lightness -> Lightroom's, increasing
 uniform vec2 uChromaKnots[10]; // display lightness -> chroma gain (Lightroom is more colourful), increasing
 uniform int uFilmLut;         // 1: display-space 3D LUT after the tone curve
 uniform float uFilmLutAmount;
@@ -577,21 +579,24 @@ vec2 sampleAB(highp sampler2D tex, vec2 t) {
 }
 
 ${HDR_GLSL}
+${toneGlsl()}
 // Tone controls act on the local base layer, in stops relative to middle grey.
 // tone = shadows, highlights, whites, blacks: the global sliders plus any masks.
 // HDR compresses the range first, so the other sliders work on what it leaves.
+// Each slider works on a band of the photo's own range (tone-windows.ts): Shadows and Blacks near
+// its black point, Highlights and Whites near its white point. Every stage moves the two points
+// along with the tones, so the next one works on what the last one left.
 float toneBase(float B, vec4 tone, float contrast) {
   float x = hdrCompress(B - MID, uHdr);
-  x *= max(1.0 + 0.55 * contrast, 0.05);
-  float ws = (1.0 - smoothstep(-5.0, 0.5, x)) * smoothstep(-11.0, -6.0, x);
-  x += tone.x * 1.6 * ws;
-  float wh = smoothstep(-0.5, 2.5, x);
-  x += tone.y * 1.6 * wh;
-  float ww = smoothstep(0.5, 3.0, x);
-  x += tone.z * 1.0 * ww;
-  float wb = 1.0 - smoothstep(-9.0, -3.5, x);
-  x += tone.w * 1.5 * wb;
-  return x + MID;
+  float cs = max(1.0 + 0.55 * contrast, 0.05);
+  x *= cs;
+  vec4 t = sign(tone) * 0.5 * pow(abs(tone) / 0.5, TONE_EXP) * TONE_GAIN;
+  vec3 v = vec3(x, hdrCompress(uToneAnchor.x, uHdr) * cs, hdrCompress(uToneAnchor.y, uHdr) * cs); // tone, black point, white point
+  v += t.x * (1.0 - smoothstep(vec3(v.y + TONE_SHADOWS.x), vec3(v.y + TONE_SHADOWS.y), v));
+  v += t.y * smoothstep(vec3(v.z - TONE_HIGHLIGHTS.x), vec3(v.z + TONE_HIGHLIGHTS.y), v);
+  v += t.z * smoothstep(vec3(v.z - TONE_WHITES.x), vec3(v.z + TONE_WHITES.y), v);
+  v += t.w * (1.0 - smoothstep(vec3(v.y - TONE_BLACKS.x), vec3(v.y + TONE_BLACKS.y), v));
+  return v.x + MID;
 }
 
 // Scales a detail band; the soft limit keeps strong edges from overshooting into halos.
@@ -780,14 +785,14 @@ vec3 localColor(vec3 enc, vec2 ab) {
 float adobeBaseL(float x) {
   vec2 k = uBaseKnots[0];
   if (x <= k.x) return k.y * x / k.x;
-  for (int i = 1; i < 24; i++) {
+  for (int i = 1; i < 33; i++) {
     vec2 b = uBaseKnots[i];
     if (x <= b.x) {
       vec2 a = uBaseKnots[i - 1];
       return mix(a.y, b.y, (x - a.x) / (b.x - a.x));
     }
   }
-  vec2 e = uBaseKnots[23];
+  vec2 e = uBaseKnots[32];
   return e.y + (1.0 - e.y) * (x - e.x) / (1.0 - e.x);
 }
 

@@ -196,20 +196,23 @@ describe('cameraLookTable', () => {
 });
 
 describe('camera profiles in the profile list', () => {
-  it('render as Color until the camera profile is loaded', () => {
-    for (const id of ['adobe-color', 'adobe-standard'] as const) {
-      const p = resolveProfile(id);
-      expect(p).toMatchObject({ id: 'color', requested: id, missing: true, base: 0, look: null });
-      expect(profileUniforms(p, 100)).toEqual(profileUniforms(resolveProfile('color'), 100));
-    }
+  it('render as the in-house Color until the camera profile is loaded (Standard is then flagged missing)', () => {
+    expect(resolveProfile('color')).toMatchObject({ id: 'color', requested: 'color', missing: false, base: 0, look: null });
+    const p = resolveProfile('standard');
+    expect(p).toMatchObject({ id: 'color', requested: 'standard', missing: true, base: 0, look: null });
+    expect(profileUniforms(p, 100)).toEqual(profileUniforms(resolveProfile('color'), 100));
   });
 
-  it('render with the look once it is loaded, blending in with the Amount', () => {
+  it('take the camera profile\'s colour once it is loaded; Standard blends in with the Amount, Color has none', () => {
     const lookTable = cameraLookTable(parseDcp(sampleDcp()), 'color', 4500)!;
-    const p = resolveProfile('adobe-color', { 'adobe-color': { key: 'adobe-color@4500', lookTable } });
-    expect(p).toMatchObject({ id: 'adobe-color', requested: 'adobe-color', missing: false, base: 0, amount: true });
-    expect(profileUniforms(p, 100)).toMatchObject({ uLook: 1, uLookAmount: 1, uLookSrgb: 0, uProfileCurve: 0, uFilmLut: 0 });
-    expect(profileUniforms(p, 60)).toMatchObject({ uLook: 1, uLookAmount: 0.6 });
-    expect(profileUniforms(p, 0).uLook).toBe(0); // 0 % is exactly Color
+    const standard = resolveProfile('standard', { standard: { key: 'standard@4500', lookTable } });
+    expect(standard).toMatchObject({ id: 'standard', requested: 'standard', missing: false, base: 0, amount: true });
+    expect(profileUniforms(standard, 100)).toMatchObject({ uLook: 1, uLookAmount: 1, uLookSrgb: 0, uProfileCurve: 0, uFilmLut: 0 });
+    expect(profileUniforms(standard, 60)).toMatchObject({ uLook: 1, uLookAmount: 0.6 });
+    expect(profileUniforms(standard, 0).uLook).toBe(0); // 0 % is exactly Color
+
+    const color = resolveProfile('color', { color: { key: 'color@4500', lookTable } });
+    expect(color).toMatchObject({ id: 'color', missing: false, amount: false });
+    expect(profileUniforms(color, 40)).toMatchObject({ uLook: 1, uLookAmount: 1 }); // no Amount: always in full
   });
 });

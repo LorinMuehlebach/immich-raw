@@ -3,7 +3,7 @@
 // DNG-style look table (built here); the Fujifilm film looks bring a downloaded look table and
 // tone curve (fuji-looks.ts), plus a display-space LUT for the three looks that only exist
 // as a conversion from Provia.
-import { isCameraProfile, isFujiProfile, profileInfo, type ProfileId } from '@immich-raw/recipe';
+import { isFujiProfile, profileInfo, usesCameraProfile, type BasicProfileId, type ProfileId } from '@immich-raw/recipe';
 import { ADOBE_BASE_KNOT_UNIFORM, ADOBE_CHROMA_KNOT_UNIFORM } from './adobe-tone.ts';
 import { dngRgbToHsv, type CubeLut, type HueSatTable, type ToneLut } from './dcp.ts';
 import { SRGB_TO_PROPHOTO, decodeSrgb } from './look.ts';
@@ -57,7 +57,7 @@ export const FUJI_BASELINE_EV = -0.05;
 
 type Row = Pick<ProfileRender, 'base' | 'baselineEv' | 'sCurve' | 'whitePoint'>;
 
-const BASIC: Record<'color' | 'neutral' | 'linear' | 'monochrome' | 'vivid' | 'portrait' | 'landscape', Row> = {
+const BASIC: Record<Exclude<BasicProfileId, 'standard'>, Row> = {
   color: { base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE },
   neutral: { base: 1, baselineEv: 0.35, sCurve: 0, whitePoint: 1.8 },
   linear: { base: 2, baselineEv: 0, sCurve: 0, whitePoint: 1 },
@@ -84,12 +84,12 @@ export function resolveProfile(id: ProfileId, looks: ProfileLooks = {}): Profile
       look,
     };
   }
-  if (isCameraProfile(id)) {
-    // The camera's own profile, made from the user's Lightroom: without it, Color.
-    const look = looks[id];
-    if (!look?.lookTable) return { ...resolveProfile('color'), requested: id, missing: true };
-    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: true, adobeBase: true, look };
+  if (usesCameraProfile(id) && looks[id]?.lookTable) {
+    // The camera's own profile, made from the user's Lightroom. Color has no Amount; Standard has.
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: id === 'standard', adobeBase: true, look: looks[id] };
   }
+  // Standard without the camera's profile has nothing to show: Color, flagged as missing.
+  if (id === 'standard') return { ...resolveProfile('color'), requested: id, missing: true };
   const row = BASIC[id];
   const inHouse = id === 'vivid' || id === 'portrait' || id === 'landscape';
   return { id, requested: id, missing: false, ...row, amount: profileInfo(id).amount, look: inHouse ? { lookTable: inHouseLook(id) } : null };

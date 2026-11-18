@@ -1,7 +1,7 @@
 // The camera profiles converted from the user's Lightroom (see docs/lightroom.md): small JSON files
 // under camera-profiles/ next to the editor, with an index.json that says which camera each is for.
 // They are not part of the repository (Adobe's profiles are Adobe's), so a missing folder, index or
-// file just means there is no profile for the camera, and the Adobe profiles render as Color.
+// file just means there is no profile for the camera: Color then renders in-house and Standard isn't offered.
 import { cameraProfileFromJson, type CameraProfileData } from '@immich-raw/pipeline';
 
 const DIR = `${import.meta.env.BASE_URL}camera-profiles/`;

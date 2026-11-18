@@ -14,7 +14,7 @@ import {
   PARAMS,
   TRANSFORM_PARAMS,
   clampParam,
-  isProfileId,
+  profileIdOf,
   normalizeCurve,
   patchGroups,
   profileInfo,
@@ -262,9 +262,9 @@ export function parseCurve(items: string[]): [number, number][] {
 
 /** Lightroom profile names with a counterpart here, in match order. */
 const PROFILE_NAMES: [RegExp, ProfileId][] = [
-  // The camera's own profile files, when they have been converted from Lightroom; otherwise these render as Color.
-  [/^Adobe Color$/i, 'adobe-color'],
-  [/^Adobe Standard$/i, 'adobe-standard'],
+  // These take the colour of the camera's own profile when it has been converted from Lightroom; otherwise Color renders in-house and Standard as Color.
+  [/^Adobe Color$/i, 'color'],
+  [/^Adobe Standard$/i, 'standard'],
   [/^Adobe Vivid$/i, 'vivid'],
   [/^Adobe Portrait$/i, 'portrait'],
   [/^Adobe Landscape$/i, 'landscape'],
@@ -380,8 +380,8 @@ export function crsToPatch(crs: CrsSettings, ctx?: CropContext): ImportResult {
   const lookName = v['Look.Name'];
   let profile: ProfileId | null = null;
   let fromLook = false;
-  if (isProfileId(crs.extra.Profile)) {
-    profile = crs.extra.Profile;
+  if (profileIdOf(crs.extra.Profile)) {
+    profile = profileIdOf(crs.extra.Profile);
   } else if (v.Treatment === 'Black & White' || v.ConvertToGrayscale === 'True') {
     profile = 'monochrome';
   } else {
