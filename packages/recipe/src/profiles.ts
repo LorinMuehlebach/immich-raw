@@ -2,10 +2,10 @@
 // (color/profiles.ts); this table is what the recipe, the UI and XMP import share.
 
 /**
- * In-house profiles, available for every camera. "Color" and "Standard" take the colour of the
+ * In-house profiles, available for every camera. Color is built into the editor (its colour was
+ * fitted to Lightroom renders, with no Adobe data in it). Standard takes its colour from the
  * camera's own profile when the editor has one for the photo's camera (made from the user's own
- * Lightroom profile file, see CAMERA_LOOK_IDS); without it Color is the in-house approximation and
- * Standard isn't offered.
+ * Lightroom profile file, see CAMERA_LOOK_IDS) and isn't offered without it.
  */
 export const BASIC_PROFILE_IDS = ['color', 'standard', 'vivid', 'portrait', 'landscape', 'neutral', 'monochrome', 'linear'] as const;
 
@@ -29,10 +29,10 @@ export const FUJI_PROFILE_IDS = [
 ] as const;
 
 /**
- * The profiles that read the camera's own profile (the hue/saturation map for Standard, plus the look
- * table that makes Color), converted from the user's Lightroom profile file for the camera.
+ * The profiles that read the camera's own profile (its hue/saturation map), converted from the user's
+ * Lightroom profile file for the camera.
  */
-export const CAMERA_LOOK_IDS = ['color', 'standard'] as const;
+export const CAMERA_LOOK_IDS = ['standard'] as const;
 
 /** Names an earlier version stored for the same profiles. */
 const LEGACY_PROFILE_IDS: Record<string, ProfileId> = { 'adobe-color': 'color', 'adobe-standard': 'standard' };
@@ -105,7 +105,7 @@ export function isFujiProfile(id: ProfileId): id is FujiProfileId {
   return id.startsWith('fuji-');
 }
 
-/** Profiles that take their colour from the camera's own profile when there is one. */
+/** Profiles that take their colour from the camera's own profile (and aren't offered without one). */
 export function usesCameraProfile(id: ProfileId): id is CameraLookId {
   return (CAMERA_LOOK_IDS as readonly string[]).includes(id);
 }

@@ -4,7 +4,6 @@ import type { HueSatTable } from './dcp.ts';
 import { profileUniforms, resolveProfile } from './profiles.ts';
 
 const table: HueSatTable = { hueDivisions: 4, satDivisions: 3, valDivisions: 1, srgbValues: false, data: new Float32Array(4 * 3 * 3).fill(1) };
-const cameraColor = () => resolveProfile('color', { color: { key: 'color@4500', lookTable: table } });
 const cameraStandard = () => resolveProfile('standard', { standard: { key: 'standard@4500', lookTable: table } });
 
 describe('the Adobe base curve', () => {
@@ -82,14 +81,14 @@ describe('the camera-profile tone correction in the shader uniforms', () => {
     expect(profileUniforms(p, 0).uBaseFix).toBe(0);
     expect(profileUniforms(p, 150).uBaseFix).toBe(1); // above 100 % only the colour grows
     expect(profileUniforms(p, 100).uBaseKnots).toBe(ADOBE_BASE_KNOT_UNIFORM);
-    expect(profileUniforms(cameraColor(), 30).uBaseFix).toBe(1);
+    expect(profileUniforms(resolveProfile('color'), 30).uBaseFix).toBe(1);
   });
 
-  it('is off for the in-house profiles and the other looks', () => {
-    for (const id of ['color', 'vivid', 'neutral', 'monochrome', 'linear'] as const) expect(profileUniforms(resolveProfile(id), 100).uBaseFix).toBe(0);
+  it('is off for the other profiles', () => {
+    for (const id of ['vivid', 'neutral', 'monochrome', 'linear'] as const) expect(profileUniforms(resolveProfile(id), 100).uBaseFix).toBe(0);
   });
 
-  it('is off without the camera profile: Standard is then just Color', () => {
+  it('is the same without the camera profile: Standard is then just Color', () => {
     expect(profileUniforms(resolveProfile('standard'), 100)).toEqual(profileUniforms(resolveProfile('color'), 100));
   });
 });

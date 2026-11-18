@@ -197,9 +197,9 @@ describe('cameraLookTable', () => {
 
 describe('camera profiles in the profile list', () => {
   it('render as the in-house Color until the camera profile is loaded (Standard is then flagged missing)', () => {
-    expect(resolveProfile('color')).toMatchObject({ id: 'color', requested: 'color', missing: false, base: 0, look: null });
+    expect(resolveProfile('color')).toMatchObject({ id: 'color', requested: 'color', missing: false, base: 0, adobeBase: true });
     const p = resolveProfile('standard');
-    expect(p).toMatchObject({ id: 'color', requested: 'standard', missing: true, base: 0, look: null });
+    expect(p).toMatchObject({ id: 'color', requested: 'standard', missing: true, base: 0 });
     expect(profileUniforms(p, 100)).toEqual(profileUniforms(resolveProfile('color'), 100));
   });
 
@@ -211,8 +211,10 @@ describe('camera profiles in the profile list', () => {
     expect(profileUniforms(standard, 60)).toMatchObject({ uLook: 1, uLookAmount: 0.6 });
     expect(profileUniforms(standard, 0).uLook).toBe(0); // 0 % is exactly Color
 
+    // Color never reads the camera's profile: it has its own colour.
     const color = resolveProfile('color', { color: { key: 'color@4500', lookTable } });
+    expect(color.look?.key).toBe('color-fitted');
     expect(color).toMatchObject({ id: 'color', missing: false, amount: false });
-    expect(profileUniforms(color, 40)).toMatchObject({ uLook: 1, uLookAmount: 1 }); // no Amount: always in full
+    expect(profileUniforms(color, 40)).toMatchObject({ uLook: 1, uLookAmount: 1, uBaseFix: 1 }); // no Amount: always in full
   });
 });

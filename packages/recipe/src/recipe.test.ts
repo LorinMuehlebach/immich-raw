@@ -107,7 +107,7 @@ describe('profiles', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(PROFILES.filter((p) => p.group === 'fuji').map((p) => p.id)).toEqual([...FUJI_PROFILE_IDS]);
     expect(PROFILES.filter((p) => p.group === 'basic').map((p) => p.id)).toEqual(['color', 'standard', 'vivid', 'portrait', 'landscape', 'neutral', 'monochrome', 'linear']);
-    expect(usesCameraProfile('color')).toBe(true);
+    expect(usesCameraProfile('color')).toBe(false);
     expect(usesCameraProfile('standard')).toBe(true);
     expect(usesCameraProfile('vivid')).toBe(false);
     expect(isProfileId('fuji-classic-chrome')).toBe(true);
