@@ -27,9 +27,9 @@ const fujiLooks = (): ProfileLooks => ({
   },
 });
 
-describe('the four tone-only profiles render as before', () => {
+describe('the tone-only profiles render as before', () => {
   // Constants that used to live in uniforms.ts (PROFILE_BASELINE, PROFILE_INDEX) and auto.ts.
-  const before: Record<string, [number, number, number]> = { color: [0, 0.35, 1.5], neutral: [1, 0.35, 1.8], linear: [2, 0, 1], monochrome: [3, 0.35, 1.5] };
+  const before: Record<string, [number, number, number]> = { neutral: [1, 0.35, 1.8], linear: [2, 0, 1], monochrome: [3, 0.35, 1.5] };
 
   for (const [id, [base, ev, white]] of Object.entries(before)) {
     it(id, () => {
@@ -60,7 +60,7 @@ describe('resolveProfile', () => {
   it('renders Color when a Fujifilm look is not downloaded', () => {
     for (const id of FUJI_PROFILE_IDS) {
       const p = resolveProfile(id);
-      expect(p).toMatchObject({ id: 'color', requested: id, missing: true, base: 0, amount: false, look: null });
+      expect(p).toMatchObject({ id: 'color', requested: id, missing: true, base: 0, amount: false });
       expect(profileUniforms(p, 150)).toEqual(profileUniforms(resolveProfile('color'), 100));
     }
   });

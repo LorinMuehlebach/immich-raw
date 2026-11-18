@@ -6,6 +6,7 @@
 import { isFujiProfile, profileInfo, usesCameraProfile, type BasicProfileId, type ProfileId } from '@immich-raw/recipe';
 import { ADOBE_BASE_KNOT_UNIFORM, ADOBE_CHROMA_KNOT_UNIFORM } from './adobe-tone.ts';
 import { dngRgbToHsv, type CubeLut, type HueSatTable, type ToneLut } from './dcp.ts';
+import { fittedColorLook } from './fitted-color.ts';
 import { SRGB_TO_PROPHOTO, decodeSrgb } from './look.ts';
 import { mulVec3, type Vec3 } from './matrices.ts';
 
@@ -85,11 +86,15 @@ export function resolveProfile(id: ProfileId, looks: ProfileLooks = {}): Profile
     };
   }
   if (usesCameraProfile(id) && looks[id]?.lookTable) {
-    // The camera's own profile, made from the user's Lightroom. Color has no Amount; Standard has.
-    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: id === 'standard', adobeBase: true, look: looks[id] };
+    // Standard: the camera's own profile, made from the user's Lightroom.
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: true, adobeBase: true, look: looks[id] };
   }
   // Standard without the camera's profile has nothing to show: Color, flagged as missing.
   if (id === 'standard') return { ...resolveProfile('color'), requested: id, missing: true };
+  if (id === 'color') {
+    // Color: the colour built from scratch (fitted-color.ts) with the fitted tone correction, for every camera.
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: false, adobeBase: true, look: { key: 'color-fitted', lookTable: fittedColorLook() } };
+  }
   const row = BASIC[id];
   const inHouse = id === 'vivid' || id === 'portrait' || id === 'landscape';
   return { id, requested: id, missing: false, ...row, amount: profileInfo(id).amount, look: inHouse ? { lookTable: inHouseLook(id) } : null };

@@ -321,7 +321,7 @@ export class Renderer {
   private cameraLookFor(recipe: Recipe): ProfileLook | null {
     const profile = this.cameraProfile;
     if (!profile || !this.camera || !usesCameraProfile(recipe.profile)) return null;
-    const kind = recipe.profile;
+    const kind = recipe.profile; // 'standard'
     // The maps are blended by temperature; 100 K steps are finer than their change.
     const kelvin = Math.round((recipe.wb.mode === 'asShot' ? this.camera.asShot.temp : recipe.wb.temp) / 100) * 100;
     const key = `${recipe.profile}@${kelvin}`;
