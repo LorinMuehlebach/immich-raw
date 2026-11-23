@@ -95,7 +95,7 @@ look a little different.
   amount (Whites much faster than linearly), are fitted to Lightroom exports of three X-T30 photos by
   searching the constants in `tone-windows.ts`: a dark DR400 scene (single sliders at 20, 50 and 80,
   and a combined edit), a daylight DR100 portrait (one combined edit) and a second portrait
-  (Highlights, Whites, Blacks and Contrast at -40, -20, +20 and +40). The search compares how far each slider shifts the lightness at each lightness with what
+  (Highlights, Whites, Blacks and Contrast at -40, -20, +20 and +40, Shadows at -40 and +40, and a neutral export to measure against). The search compares how far each slider shifts the lightness at each lightness with what
   Lightroom's export shows; the mean colour difference is dominated by fine detail (0.02 whatever the
   slider does), so it barely moved. Fitting the dark scene alone had made the windows too wide for a
   bright photo: Highlights -66, Shadows +45, Whites -56, Blacks -42 on the first portrait was 0.080
@@ -108,8 +108,9 @@ look a little different.
   The same edit with Exposure +1.27 on the dark scene was about 0.05 before the refits (not measured
   again) and rendered a little darker than Lightroom (0.02 to 0.04 of lightness): Lightroom's sliders
   and exposure interact in ways these photos can't pin down. Lightroom's Whites and Blacks also raise
-  the picture's local contrast; the editor now does too, but not fully. Shadows has no single-slider
-  export of a bright photo yet.
+  the picture's local contrast; the editor now does too, but not fully. Shadows at +-40 on the second
+  portrait was 0.6 times Lightroom's strength before the last fit (lightness shift 0.034 against
+  0.059 at its peak) and is now within about 0.01 of it.
 - **Contrast.** Stretches the tones about a pivot. Lightroom's pivot is near the middle of the picture's
   lightness (OKLab L about 0.57); the editor's was at scene middle grey, which the profile puts
   higher (L about 0.7), so Contrast +40 darkened the shadows too much and brightened the highlights too

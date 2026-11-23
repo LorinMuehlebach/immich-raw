@@ -9,7 +9,8 @@
 //
 // The amounts and windows are fitted to Lightroom exports of three X-T30 photos: a dark DR400 scene
 // (single sliders at 20, 50 and 80, and a combined edit), a daylight DR100 portrait (one combined edit)
-// and a second portrait (Highlights, Whites and Blacks at +-20 and +-40). The constants were searched by
+// and a second portrait (Highlights, Whites and Blacks at +-20 and +-40, Shadows at +-40; its neutral export is
+// the baseline). The constants were searched by
 // coordinate descent on how far the lightness shift each slider makes (by lightness) is from
 // Lightroom's; the mean colour difference is too dominated by fine detail to steer. With the dark scene
 // alone the windows came out too wide for a bright photo.
@@ -32,10 +33,10 @@ export const TONE_WINDOWS = {
    * from `width` below the white point to `lead` above it, Whites the same, Blacks from `lead` below
    * the black point (negative: above) to `width` above it.
    */
-  shadows: { gain: 0.66, exponent: 0.46, start: 0.58, end: 5.2 },
-  highlights: { gain: 1.03, exponent: 0.94, width: 3.98, lead: 1.08 },
-  whites: { gain: 2.6, exponent: 3.37, width: 4.38, lead: 2.45 },
-  blacks: { gain: 2.02, exponent: 3.64, lead: -0.06, width: 6.78 },
+  shadows: { gain: 0.9, exponent: 0.46, start: 0.73, end: 5.2 },
+  highlights: { gain: 1.03, exponent: 0.84, width: 4.23, lead: 1.43 },
+  whites: { gain: 2.6, exponent: 3.37, width: 4.38, lead: 2.76 },
+  blacks: { gain: 2.02, exponent: 3.75, lead: 0, width: 6.57 },
   /** Contrast stretches the tones (in stops) about a pivot a little below middle grey, by `gain` per unit of the slider (-1..1); Lightroom's pivots near the middle of the picture's display lightness. */
   contrast: { gain: 0.48, pivot: -0.93 },
 } as const;
