@@ -71,14 +71,16 @@ look a little different.
   Both are built into the editor and carry no Adobe data: the colour of each is a smooth function of
   hue (chroma gain and hue turn per 15 degrees of OKLab hue), a chroma gain by lightness, and a tone
   curve, all fitted to Lightroom exports (X-T30). Color is the more colourful of the two and has the
-  deeper shadows; Standard lifts the shadows and ends a little lower. Two photos went into the fit,
-  a dark DR400 scene and a daylight portrait at DR100, and they do not share one tone curve (the
+  deeper shadows; Standard lifts the shadows and ends a little lower. Three photos went into the fit,
+  a dark DR400 scene and two daylight portraits at DR100, and the first two do not share one tone curve (the
   DR100 one has deeper shadows and a longer highlight roll-off), so each profile has a curve at 0 EV
   and at +2 EV baseline exposure, and the photo's own baseline exposure (Fujifilm DR, Canon HTP,
   Nikon ADL) picks the mix; the middle values are a guess. Against Lightroom's own exports with every
-  slider at 0 the mean OKLab difference is 0.012 for Standard on the DR400 photo (colour alone
-  0.002) and 0.020 to 0.024 on the portrait (colour alone 0.005); most of what is left is fine detail
-  (see Sharpening above). The fit only knows the hues those two photos have, so expect it to be least
+  slider at 0 the mean OKLab difference is 0.012 for Color and Standard on the DR400 photo (colour alone
+  0.003) and 0.021 to 0.024 on the portraits (colour alone 0.005 to 0.006); most of what is left is fine detail
+  (see Sharpening above). How colourful Lightroom renders a photo also varies a little from photo to photo (its chroma is 10 percent
+  below the editor's on the dark scene and 5 percent above it on the brightest portrait, with Color); the
+  fit takes the middle. It only knows the hues those photos have, so expect it to be least
   exact on saturated blues, magentas and reds. The numbers are in
   `packages/pipeline/src/color/adobe-fit-data.ts`. Neither profile has an Amount slider here, so a
   Lightroom Look amount is ignored. Lightroom also draws strong highlights less colourful when the
