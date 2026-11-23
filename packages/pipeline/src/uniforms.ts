@@ -88,6 +88,7 @@ export interface DevelopUniforms {
   uToneHighlights: number[];
   uToneWhites: number[];
   uToneBlacks: number[];
+  uToneContrast: number[];
   uContrast: number;
   uHdr: number;
   uPresence: number[];

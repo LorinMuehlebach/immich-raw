@@ -92,19 +92,30 @@ look a little different.
   darkest, wherever those sit. (Earlier they acted at fixed brightness, so on a dark photo Whites and
   Blacks did almost nothing.) The photo's black and white point are measured from the preview and
   move with Exposure and with each slider. The strength of each slider, and how it grows with the
-  amount (Whites much faster than linearly), are fitted to Lightroom exports of two X-T30 photos by
-  searching the constants in `tone-windows.ts` for the lowest mean OKLab difference: on a dark DR400
-  scene (single-slider exports at 20, 50 and 80, and a combined edit) and on a daylight DR100 portrait
-  (one combined edit, counted four times). Fitting the dark scene alone had made the windows too wide
-  for a bright photo: Highlights -66, Shadows +45, Whites -56, Blacks -42 on the portrait was 0.080
-  from Lightroom and is now 0.029, with the dark scene's single sliders about where they were (0.011
-  to 0.014 for Highlights and Shadows, 0.023 for Blacks -80, 0.046 for Blacks -50, 0.058 for
-  Whites +80). Blacks on the dark scene got a little worse for it, and Whites +80 is still the worst.
-  The same edit with Exposure +1.27 on the dark scene was about 0.05 before this refit (not measured
-  again) and rendered a little darker than Lightroom (0.02 to 0.04 of lightness): Lightroom's sliders and exposure interact in ways these
-  photos can't pin down. Lightroom's Whites and Blacks also raise the picture's local contrast; the
-  editor now does too, but not fully. Only one combined edit of the bright photo went in, so the
-  single sliders on bright photos are still unchecked.
+  amount (Whites much faster than linearly), are fitted to Lightroom exports of three X-T30 photos by
+  searching the constants in `tone-windows.ts`: a dark DR400 scene (single sliders at 20, 50 and 80,
+  and a combined edit), a daylight DR100 portrait (one combined edit) and a second portrait
+  (Highlights, Whites, Blacks and Contrast at -40, -20, +20 and +40). The search compares how far each slider shifts the lightness at each lightness with what
+  Lightroom's export shows; the mean colour difference is dominated by fine detail (0.02 whatever the
+  slider does), so it barely moved. Fitting the dark scene alone had made the windows too wide for a
+  bright photo: Highlights -66, Shadows +45, Whites -56, Blacks -42 on the first portrait was 0.080
+  from Lightroom, then 0.029. The windows are a compromise between the photos: Lightroom's Blacks and
+  Whites grow about linearly with the amount on the second portrait but much faster than linearly on
+  the dark scene, so Blacks -50 on the dark scene is a little worse now (0.056), Whites +80 a little
+  better (0.047), and on the second portrait Whites and Blacks at +-20 are weaker than Lightroom's
+  (about 0.01 to 0.02 of lightness). Highlights and Whites at +-20 to +-40 on it are within 0.01
+  to 0.03 of lightness. Exposure -2, -1, +1 and +2 on it match within 0.02 of lightness, unchanged.
+  The same edit with Exposure +1.27 on the dark scene was about 0.05 before the refits (not measured
+  again) and rendered a little darker than Lightroom (0.02 to 0.04 of lightness): Lightroom's sliders
+  and exposure interact in ways these photos can't pin down. Lightroom's Whites and Blacks also raise
+  the picture's local contrast; the editor now does too, but not fully. Shadows has no single-slider
+  export of a bright photo yet.
+- **Contrast.** Stretches the tones about a pivot. Lightroom's pivot is near the middle of the picture's
+  lightness (OKLab L about 0.57); the editor's was at scene middle grey, which the profile puts
+  higher (L about 0.7), so Contrast +40 darkened the shadows too much and brightened the highlights too
+  little. The pivot is now about one stop below middle grey (`TONE_WINDOWS.contrast`, fitted on
+  Contrast -40 to +40 of the second portrait: 0.022 to 0.011 mean lightness-shift error).
+  Positive Contrast is still a little further from Lightroom than negative.
 
 ## Getting the sidecars into Immich
 

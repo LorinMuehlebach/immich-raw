@@ -105,7 +105,15 @@ describe('the shader uniforms', () => {
     const u = toneWindowUniforms();
     expect(u.uToneGain).toEqual([TONE_WINDOWS.shadows.gain, TONE_WINDOWS.highlights.gain, TONE_WINDOWS.whites.gain, TONE_WINDOWS.blacks.gain]);
     expect(u.uToneBlacks).toEqual([TONE_WINDOWS.blacks.lead, TONE_WINDOWS.blacks.width]);
+    expect(u.uToneContrast).toEqual([TONE_WINDOWS.contrast.gain, TONE_WINDOWS.contrast.pivot]);
     expect(Object.values(u).flat().every(Number.isFinite)).toBe(true);
+  });
+
+  it('put Contrast\'s pivot below middle grey and keep its strength', () => {
+    expect(TONE_WINDOWS.contrast.pivot).toBeLessThan(0);
+    expect(TONE_WINDOWS.contrast.pivot).toBeGreaterThan(-2);
+    expect(TONE_WINDOWS.contrast.gain).toBeGreaterThan(0.3);
+    expect(TONE_WINDOWS.contrast.gain).toBeLessThan(0.7);
   });
 });
 
