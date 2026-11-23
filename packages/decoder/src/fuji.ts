@@ -62,7 +62,7 @@ export function fujiSimFromCodes(filmMode: number | null, saturation: number | n
 }
 
 const MAX_ENTRIES = 1024;
-const ascii = (b: Uint8Array, at: number, text: string) =>
+export const ascii = (b: Uint8Array, at: number, text: string) =>
   at >= 0 && at + text.length <= b.length && [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
 
 /** Reads the in-camera film simulation from a RAF (or a DNG/TIFF that kept the maker note). */
@@ -116,7 +116,7 @@ export function fujiDynamicRangeEv(bytes: Uint8Array): number {
 }
 
 /** Where the Exif TIFF structure starts, and its byte order. */
-function exifTiff(b: Uint8Array): { start: number; le: boolean } | null {
+export function exifTiff(b: Uint8Array): { start: number; le: boolean } | null {
   if (ascii(b, 0, 'II*\0')) return { start: 0, le: true };
   if (ascii(b, 0, 'MM\0*')) return { start: 0, le: false };
   if (!ascii(b, 0, 'FUJIFILMCCD-RAW')) return null;
@@ -149,7 +149,7 @@ function exifTiff(b: Uint8Array): { start: number; le: boolean } | null {
   return null;
 }
 
-interface Entry {
+export interface Entry {
   tag: number;
   type: number;
   count: number;
@@ -157,7 +157,7 @@ interface Entry {
   field: number;
 }
 
-function readIfd(dv: DataView, at: number, le: boolean): Entry[] | null {
+export function readIfd(dv: DataView, at: number, le: boolean): Entry[] | null {
   if (at < 0 || at + 2 > dv.byteLength) return null;
   const n = dv.getUint16(at, le);
   if (n > MAX_ENTRIES || at + 2 + n * 12 > dv.byteLength) return null;
@@ -170,7 +170,7 @@ function readIfd(dv: DataView, at: number, le: boolean): Entry[] | null {
 }
 
 /** Absolute offset of the Fujifilm maker note ("FUJIFILM" + IFD offset). */
-function makerNote(b: Uint8Array, tiff: number, le: boolean): number | null {
+export function makerNote(b: Uint8Array, tiff: number, le: boolean): number | null {
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const ifd0 = readIfd(dv, tiff + dv.getUint32(tiff + 4, le), le);
   const exifPtr = ifd0?.find((e) => e.tag === 0x8769);

@@ -15,7 +15,7 @@ import {
   type AssetResponseDto,
   type UserAdminResponseDto,
 } from '@immich/sdk';
-import { RawSession, prewarmDecoder, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type LinearImage, type PhotoSession, type RawMeta } from '@immich-raw/decoder';
+import { RawSession, prewarmDecoder, readFujiCamera, readFujiFilmSim, setLibRawUrl, startMeasure, type FujiFilmSim, type FujiSetting, type FujiTagValue, type LinearImage, type PhotoSession, type RawMeta } from '@immich-raw/decoder';
 import { isRawFilename } from '@immich-raw/inject/raw';
 import { estimateLateralCA, findCamera, lensDisplayName, searchLenses, type LensCorrection, type LensQuery, type LensfunDb } from '@immich-raw/lens';
 import { dngLensFor, lensQueryFor, loadLensDb, pickLensProfile } from '../lens-profile.ts';
@@ -149,7 +149,8 @@ import { drafts } from '../drafts/drafts.svelte.ts';
 import { describeDraftsSaved, saveDraftPhoto, saveEach } from '../drafts/save-drafts.ts';
 import { syncInto } from '../drafts/sync.ts';
 import { RawRenderer } from '../export/raw-render.ts';
-import { draftSource, looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
+import { watchEmbeddedPreview } from '../immich/embedded-preview.ts';
+import { draftSource, embeddedSource, looks, previewSource, viewShows, viewSource, type LookHint } from '../immich/looks.ts';
 import { downloadOriginal, hasOriginal, type DownloadProgress } from '../immich/download.ts';
 import { pinPhoto, unpinPhotos } from '../immich/photo-cache.ts';
 import { canPrefetch, decodeNeighbour, fetchNeighbour, resetPrefetch } from '../immich/prefetch.ts';
@@ -625,6 +626,9 @@ export class Editor {
   /** The photo's starting settings (its in-camera film look for a Fujifilm RAW). */
   private defaults: PhotoDefaults = { recipe: defaultRecipe(), wanted: null, simLabel: null };
   private fujiSim: FujiFilmSim | null = null;
+  /** What the camera wrote about the shot (a Fujifilm RAF's maker note): the settings to read, and every tag by number. */
+  cameraSettings = $state<FujiSetting[]>([]);
+  cameraTags: ReadonlyMap<number, FujiTagValue> = new Map();
   /** The RAW had a saved edit when it was opened. */
   private storedEdit = false;
   /** Renders this RAW had before (the page Immich returns to may show one of them). */
@@ -868,6 +872,8 @@ export class Editor {
     this.stroke = null;
     this.defaults = { recipe: defaultRecipe(), wanted: null, simLabel: null };
     this.fujiSim = null;
+    this.cameraSettings = [];
+    this.cameraTags = new Map();
     this.storedEdit = false;
     this.pastRenders = new Set();
     this.savedRenderId = null;
@@ -948,12 +954,15 @@ export class Editor {
       beginStep(this.openSteps, 'original', now());
       const doneDownload = startMeasure('download');
       const original = { from: null as DownloadProgress['from'] | null, endedAt: 0 };
+      // The camera's own JPEG is in the start of a RAF: it can show before the rest has arrived.
+      const embedded = watchEmbeddedPreview();
       const bytesP = downloadOriginal({ id: asset.id, checksum: asset.checksum }, (_f, p) => {
         if (gen !== this.photoGen) return;
         original.from = p.from;
         if (p.received >= p.total && p.total > 0) original.endedAt = now();
         this.originalProgress(p);
-      }, stop.signal);
+      }, stop.signal, isRaw ? embedded.onData : undefined);
+      if (!isRaw) embedded.onData(new Uint8Array(0), true);
       bytesP.then(doneDownload, () => {});
       const doneCacheRead = startMeasure('decoded cache read');
       const cacheReadStarted = now();
@@ -994,7 +1003,7 @@ export class Editor {
       const stored = storedEdit(items, copyId);
       const draft = this.readOnly ? null : copyId === urlCopy ? await draftP : await drafts.get(asset.id, copyId);
       live();
-      void this.showPreview(asset, stored, viewP, gen, draft);
+      void this.showPreview(asset, stored, viewP, gen, draft, embedded.ready);
       this.snapshots = snapshotsIn(items, historyKeyFor(copyId));
       this.storedEdit = !!stored;
       // Synced settings (draft.patch) go on whatever is saved; a draft from the editor may be older than the save.
@@ -1031,6 +1040,9 @@ export class Editor {
         this.fileBytes = bytes.length;
         // The film simulation set in the camera (Fujifilm maker note); null for other files.
         this.fujiSim = isRaw ? readFujiFilmSim(bytes) : null;
+        const fujiCamera = isRaw ? readFujiCamera(bytes) : null;
+        this.cameraSettings = fujiCamera?.settings ?? [];
+        this.cameraTags = fujiCamera?.tags ?? new Map();
         const cached = await decodedP;
         live();
         let session: PhotoSession;
@@ -1335,10 +1347,11 @@ export class Editor {
    * - the picture of its draft (drafts/), when it has one;
    * - what the editor showed last time, if the saved edit is still the same (keepViewIfPlain);
    * - the saved JPEG's preview in Immich, for a photo with a saved edit;
+   * - the camera's own JPEG inside the RAW (Fujifilm RAF), which comes with the first megabytes of the file;
    * - Immich's preview of the RAW (its own conversion: brighter, more saturated, without the edit).
    * The filmstrip's look of it (switchPhoto) may show already: the same picture isn't fetched again.
    */
-  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number, draft: Draft | null): Promise<void> {
+  private async showPreview(asset: AssetResponseDto, stored: Recipe | null, viewP: Promise<KeptView | null>, gen: number, draft: Draft | null, embedded: Promise<Blob | null>): Promise<void> {
     const show = (b: Blob, source: string) => {
       if (gen !== this.photoGen || this.status === 'ready' || source === this.previewSource) return;
       if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
@@ -1351,6 +1364,12 @@ export class Editor {
     if (view && view.shows === shows) return show(view.image, viewSource(shows));
     for (const id of [stored?.render?.assetId, asset.id]) {
       if (!id || gen !== this.photoGen) continue;
+      if (id === asset.id) {
+        // The camera's JPEG replaces Immich's conversion of the RAW, which the filmstrip may have put up already (not an edit's look).
+        const camera = await embedded;
+        if (camera && gen === this.photoGen && (this.previewSource === null || this.previewSource === previewSource(id))) return show(camera, embeddedSource(asset.checksum));
+        if (gen !== this.photoGen) return;
+      }
       if (this.previewSource === previewSource(id)) return;
       const b = await fetch(apiUrl(`/assets/${id}/thumbnail?size=preview`), { headers: authHeaders(), credentials: 'same-origin' })
         .then((r) => (r.ok ? r.blob() : null))

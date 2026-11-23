@@ -18,12 +18,21 @@ export interface DownloadProgress {
 
 export type OnDownloadProgress = (fraction: number, progress: DownloadProgress) => void;
 
-/** `signal` stops a download (another photo was opened). */
-export async function downloadOriginal(asset: OriginalRef, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
+/** The start of a file as it arrives (`done`: all of it). */
+export type OnData = (bytes: Uint8Array, done: boolean) => void;
+
+/**
+ * `signal` stops a download (another photo was opened). `onData` gets the bytes that have arrived so far as
+ * they come (the whole file once, `done`, when it is cached or finished), for what needs only the start of it.
+ */
+export async function downloadOriginal(asset: OriginalRef, onProgress?: OnDownloadProgress, signal?: AbortSignal, onData?: OnData): Promise<Uint8Array> {
   const name = cacheName(asset.checksum);
   const cached = await readCache(name, onProgress);
-  if (cached) return cached;
-  const bytes = await fetchWithProgress(apiUrl(`/assets/${asset.id}/original`), onProgress, signal);
+  if (cached) {
+    onData?.(cached, true);
+    return cached;
+  }
+  const bytes = await fetchWithProgress(apiUrl(`/assets/${asset.id}/original`), onProgress, signal, onData);
   void originals.write(name, [bytes as Uint8Array<ArrayBuffer>]); // best effort, don't block the editor
   return bytes;
 }
@@ -55,7 +64,7 @@ export function hasOriginal(checksum: string, touch = false): Promise<boolean> {
 /** A download gives up when Immich sends nothing for this long (e.g. the server stopped answering). */
 const STALL_MS = 60_000;
 
-async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
+async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress, signal?: AbortSignal, onData?: OnData): Promise<Uint8Array> {
   const abort = new AbortController();
   signal?.throwIfAborted();
   signal?.addEventListener('abort', () => abort.abort(signal.reason), { once: true });
@@ -66,7 +75,7 @@ async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress, s
   };
   poke();
   try {
-    return await readBody(await fetch(url, { credentials: 'same-origin', headers: authHeaders(), signal: abort.signal }), poke, onProgress);
+    return await readBody(await fetch(url, { credentials: 'same-origin', headers: authHeaders(), signal: abort.signal }), poke, onProgress, onData);
   } catch (e) {
     throw abort.signal.aborted ? abort.signal.reason : e;
   } finally {
@@ -74,7 +83,7 @@ async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress, s
   }
 }
 
-async function readBody(res: Response, poke: () => void, onProgress?: OnDownloadProgress): Promise<Uint8Array> {
+async function readBody(res: Response, poke: () => void, onProgress?: OnDownloadProgress, onData?: OnData): Promise<Uint8Array> {
   if (!res.ok) throw new Error(`Could not download the original (HTTP ${res.status}).`);
   poke();
   const total = Number(res.headers.get('Content-Length')) || 0;
@@ -82,6 +91,7 @@ async function readBody(res: Response, poke: () => void, onProgress?: OnDownload
   if (!res.body) {
     const buf = new Uint8Array(await res.arrayBuffer());
     onProgress?.(1, { from: 'network', received: buf.length, total: buf.length });
+    onData?.(buf, true);
     return buf;
   }
   const reader = res.body.getReader();
@@ -103,16 +113,22 @@ async function readBody(res: Response, poke: () => void, onProgress?: OnDownload
       chunks.push(value);
     }
     received += value.length;
+    if (out) onData?.(out.subarray(0, received), false);
     if (total > 0) onProgress?.(Math.min(1, received / total), { from: 'network', received, total });
   }
   onProgress?.(1, { from: 'network', received, total: Math.max(total, received) });
-  if (out) return received === out.length ? out : out.subarray(0, received);
+  if (out) {
+    const all = received === out.length ? out : out.subarray(0, received);
+    onData?.(all, true);
+    return all;
+  }
   const joined = new Uint8Array(received);
   let offset = 0;
   for (const c of chunks) {
     joined.set(c, offset);
     offset += c.length;
   }
+  onData?.(joined, true);
   return joined;
 }
 
