@@ -25,6 +25,8 @@ export const viewShows = (stored: Recipe | null): string => savedShows(stored);
 export const viewSource = (shows: string): string => `view:${shows}`;
 export const draftSource = (draft: Recipe): string => `draft:${editableJson(draft)}`;
 export const previewSource = (assetId: string): string => `preview:${assetId}`;
+/** The camera's own JPEG inside a RAW (embedded-preview.ts). */
+export const embeddedSource = (checksum: string): string => `embedded:${checksum}`;
 
 export interface LookDeps {
   readView(checksum: string): Promise<KeptView | null>;

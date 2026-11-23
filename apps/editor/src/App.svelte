@@ -21,6 +21,7 @@
   import { FUJI_LOOKS_MB } from './lib/fuji-looks.svelte.ts';
   import BasicPanel from './lib/ui/BasicPanel.svelte';
   import CalibrationPanel from './lib/ui/CalibrationPanel.svelte';
+  import CameraPanel from './lib/ui/CameraPanel.svelte';
   import EffectsPanel from './lib/ui/EffectsPanel.svelte';
   import BatchExportDialog from './lib/ui/BatchExportDialog.svelte';
   import ExportPanel from './lib/ui/ExportPanel.svelte';
@@ -950,6 +951,7 @@
             <TransformPanel />
             <EffectsPanel />
             <CalibrationPanel />
+            <CameraPanel />
           {/if}
           <div class="keys">
             <div><kbd>\</kbd> before/after</div>

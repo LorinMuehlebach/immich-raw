@@ -1,6 +1,7 @@
 export * from './types.ts';
 export { highlightModeEv, readHighlightMode, type HighlightMode } from './highlight.ts';
 export { fujiDynamicRangeEv, fujiSimFromCodes, readFujiDynamicRange, readFujiFilmSim, type FujiFilmSim, type FujiFilter, type FujiSim } from './fuji.ts';
+export { describeFujiCamera, rafPreviewRange, readFujiCamera, readFujiTags, readRafPreview, type FujiSetting, type FujiTagValue } from './fuji-camera.ts';
 export { IMAGE_DECODER, ImageSession, exposureSeconds, imageMeta, linearFromRgba, type ImageExif } from './image.ts';
 export { DECODER, RawSession, decodeBest, decodeFull, prewarmDecoder, readExtraMeta, readSensor, setLibRawUrl } from './libraw.ts';
 export { startMeasure } from './timing.ts';

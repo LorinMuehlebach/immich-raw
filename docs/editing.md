@@ -28,6 +28,12 @@ Neg., Eterna, Eterna Bleach Bypass) for photos from any camera.
 - Vivid, Portrait, Landscape and the film looks have an Amount slider (0 to 200 %).
 - A Fujifilm RAW opens with the film simulation it was shot with. Acros and the other monochrome
   simulations open as Monochrome, with a B&W mix for the red, yellow or green filter.
+- While a Fujifilm RAW loads, the picture on screen is the camera's own JPEG, which every RAF carries in
+  its first few megabytes: it shows as soon as those have arrived, before the rest of the file has
+  downloaded and well before the RAW is decoded. Other RAWs show Immich's preview as before. The
+  **Camera** section at the bottom of the right-hand panels lists what the camera wrote about the
+  shot (film simulation, dynamic range, white balance, sharpness, highlight and shadow tone, grain,
+  Color Chrome and more); it is read only.
 - Lightroom's names for these profiles ("Adobe Vivid", "Camera CLASSIC CHROME") are recognised when
   importing presets and sidecars ([Lightroom import](lightroom.md)).
 
