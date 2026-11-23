@@ -4,7 +4,6 @@ export * from './temperature.ts';
 export * from './wb.ts';
 export * from './look.ts';
 export * from './dcp.ts';
-export * from './camera-profile.ts';
 export * from './adobe-tone.ts';
 export * from './profiles.ts';
 export * from './fuji-looks.ts';

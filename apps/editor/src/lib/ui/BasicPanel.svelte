@@ -40,10 +40,9 @@
     <select value={editor.recipe.profile} onchange={pickProfile} disabled={editor.readOnly}>
       {#each PROFILE_GROUPS as g (g.id)}
         <optgroup label={g.label}>
-          <!-- Standard is only offered for a camera that has a profile here (or when an edit already uses it). -->
-          {#each PROFILES.filter((p) => p.group === g.id && (!p.camera || editor.cameraProfileAvailable || p.id === editor.recipe.profile)) as p (p.id)}
+          {#each PROFILES.filter((p) => p.group === g.id) as p (p.id)}
             <!-- A JPEG, PNG, ... starts with Linear: the photo as the camera developed it. -->
-            <option value={p.id}>{p.id === 'linear' && !editor.isRaw ? 'None (as shot)' : p.label}{p.download && !looksHere ? ' (download)' : ''}{p.camera && !editor.cameraProfileAvailable ? ' (not available)' : ''}</option>
+            <option value={p.id}>{p.id === 'linear' && !editor.isRaw ? 'None (as shot)' : p.label}{p.download && !looksHere ? ' (download)' : ''}</option>
           {/each}
         </optgroup>
       {/each}
@@ -58,9 +57,6 @@
       onreset={() => editor.resetParam(PARAMS.profileAmount)}
       disabled={editor.readOnly}
     />
-  {/if}
-  {#if profile.camera && !editor.cameraProfileAvailable}
-    <p class="note">There is no camera profile for this camera in this editor, showing Color. How to add one: docs/lightroom.md, "Camera profiles from Lightroom".</p>
   {/if}
   {#if profile.download}
     <p class="note">

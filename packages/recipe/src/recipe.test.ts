@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PARAMS } from './params.ts';
-import { FUJI_PROFILE_IDS, PROFILES, isProfileId, profileIdOf, profileInfo, usesCameraProfile } from './profiles.ts';
+import { FUJI_PROFILE_IDS, PROFILES, isProfileId, profileIdOf, profileInfo } from './profiles.ts';
 import { canonicalJson, defaultRecipe, isDefaultRecipe, normalizeRecipe, recipeHash } from './recipe.ts';
 
 describe('defaultRecipe', () => {
@@ -107,20 +107,17 @@ describe('profiles', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(PROFILES.filter((p) => p.group === 'fuji').map((p) => p.id)).toEqual([...FUJI_PROFILE_IDS]);
     expect(PROFILES.filter((p) => p.group === 'basic').map((p) => p.id)).toEqual(['color', 'standard', 'vivid', 'portrait', 'landscape', 'neutral', 'monochrome', 'linear']);
-    expect(usesCameraProfile('color')).toBe(false);
-    expect(usesCameraProfile('standard')).toBe(true);
-    expect(usesCameraProfile('vivid')).toBe(false);
     expect(isProfileId('fuji-classic-chrome')).toBe(true);
     expect(isProfileId('fuji-acros')).toBe(false);
     expect(isProfileId(3)).toBe(false);
   });
 
   it('gives an Amount to the looks only', () => {
-    expect(PROFILES.filter((p) => p.amount).map((p) => p.id)).toEqual(['standard', 'vivid', 'portrait', 'landscape', ...FUJI_PROFILE_IDS]);
-    expect(profileInfo('fuji-provia')).toMatchObject({ label: 'Provia/Standard', download: true, camera: false });
-    // Color works without the camera's profile; Standard is only offered with one.
-    expect(profileInfo('color')).toMatchObject({ label: 'Color', download: false, camera: false });
-    expect(profileInfo('standard')).toMatchObject({ label: 'Standard', download: false, camera: true });
+    expect(PROFILES.filter((p) => p.amount).map((p) => p.id)).toEqual(['vivid', 'portrait', 'landscape', ...FUJI_PROFILE_IDS]);
+    expect(profileInfo('fuji-provia')).toMatchObject({ label: 'Provia/Standard', download: true });
+    // Color and Standard are built in and have no Amount.
+    expect(profileInfo('color')).toMatchObject({ label: 'Color', download: false, amount: false });
+    expect(profileInfo('standard')).toMatchObject({ label: 'Standard', download: false, amount: false });
   });
 
   it('reads the names an earlier version stored for Color and Standard', () => {

@@ -1,93 +1,65 @@
 // How the Adobe profiles shape tone, fitted to Lightroom.
 //
 // Adobe's base tone curve is in Lightroom's engine, not in a camera profile, so it can't be read from
-// a file. It was measured instead: a Fujifilm X-T30 photo (DR400, Adobe Color, every Basic slider at 0)
-// exported from Lightroom, and the editor's own render of the same photo with the Adobe Color
-// profile, compared pixel by pixel (the two agree on lightness to a correlation of 0.99). Binned by
-// brightness rank, the editor's display lightness maps onto Lightroom's as the knots below. The top
-// of the curve comes from a second export of the same photo with Exposure +1.27 and nothing else,
-// which brings the highlights into range (the unexposed photo has almost none); there the editor
-// ended 0.02 to 0.08 of lightness short of Lightroom in its brightest 5 %. Where the two exports
-// overlap they gave the same curve, so it doesn't depend on the exposure.
+// a file. It was measured instead: Fujifilm X-T30 photos exported from Lightroom with Adobe Color and with
+// Adobe Standard (every Basic slider at 0), and the editor's own render of the same photo, compared
+// pixel by pixel (the two agree on lightness to a correlation of 0.99). Binned by brightness, the
+// editor's display lightness maps onto Lightroom's as the knots in adobe-fit-data.ts. The numbers are
+// kept there so a refit only changes that file.
 //
-// So this is a fit to one photo, a rough stand-in for Adobe's curve rather than the curve itself. It
-// is only used by the Adobe profiles (new ones, so no earlier edit depends on them), where it
-// roughly doubles the contrast around mid-grey: the editor's own curve is flatter than Adobe's.
-// Held out from the fit, the full edit of that photo came 33 % closer (mean OKLab difference 0.073
-// to 0.049), and with only the exposure raised the render is within 0.02 of Lightroom's.
+// Two photos went into it: a dark DR400 scene (a monkey, with one more export at Exposure +1.27 that brings
+// the highlights into range) and a daylight portrait at DR100. They do not share one curve: the DR100 photo
+// has deeper shadows and a longer highlight roll-off. Lightroom exposes a DR400 raw 2 EV brighter before the
+// curve, and the editor's matching exposure leaves the two curves apart, so there are two curves per profile,
+// at a baseline exposure of 0 EV and of +2 EV, and the photo's own baseline exposure picks the mix. Canon's
+// highlight tone priority and Nikon's Active D-Lighting come out in between, which is a guess.
+//
+// So this is a fit to two photos, a rough stand-in for Adobe's curve rather than the curve itself.
+// Standard is Color with its shadows lifted and its top end a little lower. The chroma gain by lightness is
+// the other half: Lightroom's colours are a third more saturated than the editor's in the shadows to
+// midtones, and less saturated in the highlights.
+import { FIT_DATA } from './adobe-fit-data.ts';
 
-/** [editor display lightness, Lightroom display lightness], OKLab L, increasing. */
-export const ADOBE_BASE_KNOTS: readonly (readonly [number, number])[] = [
-  [0.1278, 0.0472],
-  [0.1462, 0.0847],
-  [0.17, 0.1143],
-  [0.1944, 0.1416],
-  [0.2077, 0.1573],
-  [0.2157, 0.1638],
-  [0.222, 0.1713],
-  [0.2283, 0.1776],
-  [0.2349, 0.1859],
-  [0.2426, 0.1977],
-  [0.252, 0.2134],
-  [0.2629, 0.2324],
-  [0.2745, 0.2527],
-  [0.2858, 0.2726],
-  [0.2981, 0.2938],
-  [0.3116, 0.3185],
-  [0.3257, 0.3423],
-  [0.3428, 0.3672],
-  [0.3654, 0.4001],
-  [0.388, 0.4301],
-  [0.4093, 0.4596],
-  [0.4198, 0.4879],
-  [0.4583, 0.5503],
-  [0.5, 0.615],
-  [0.5296, 0.6549],
-  [0.551, 0.6837],
-  [0.5702, 0.709],
-  [0.5914, 0.7458],
-  [0.6213, 0.7894],
-  [0.662, 0.8339],
-  [0.6995, 0.8722],
-  [0.7643, 0.9206],
-  [0.9507, 0.9886],
-];
+/** Which Adobe profile a tone curve belongs to. */
+export type AdobeTone = 'color' | 'standard';
 
-/** The knots as the shader's vec2 array (uBaseKnots). */
-export const ADOBE_BASE_KNOT_UNIFORM = Float32Array.from(ADOBE_BASE_KNOTS.flat());
+type Knots = readonly (readonly [number, number])[];
+
+const zip = (xs: readonly number[], ys: readonly number[]): Knots => xs.map((x, i) => [x, ys[i]!] as const);
+
+/** The Color base curve of a photo at +2 EV baseline exposure: [editor display lightness, Lightroom display lightness], OKLab L, increasing. */
+export const ADOBE_BASE_KNOTS: Knots = zip(FIT_DATA.baseX, FIT_DATA.baseY.color.protectedHighlights);
+
+/** The base curve's knots for a profile and a photo's baseline exposure (EV: 0 plain, 2 Fuji DR400, mixed in between). */
+export function adobeBaseKnots(kind: AdobeTone, baselineEv: number): Knots {
+  const t = Math.min(1, Math.max(0, baselineEv / 2));
+  const { plain, protectedHighlights } = FIT_DATA.baseY[kind];
+  return FIT_DATA.baseX.map((x, i) => [x, plain[i]! * (1 - t) + protectedHighlights[i]! * t] as const);
+}
+
+const baseCache = new Map<string, Float32Array>();
+
+/** The knots as the shader's vec2 array (uBaseKnots), cached per profile and baseline exposure (to 0.05 EV). */
+export function adobeBaseKnotUniform(kind: AdobeTone, baselineEv: number): Float32Array {
+  const ev = Math.round(Math.min(2, Math.max(0, baselineEv)) * 20) / 20;
+  const key = `${kind}@${ev}`;
+  let u = baseCache.get(key);
+  if (!u) {
+    u = Float32Array.from(adobeBaseKnots(kind, ev).flat());
+    baseCache.set(key, u);
+  }
+  return u;
+}
 
 /**
- * How much more colourful Lightroom's neutral render is than the editor's once the lightness matches,
- * by lightness (OKLab L after the correction above): [lightness, chroma gain], increasing. About a
- * third more in the dark to middle tones. Lightroom's was a little lower in the brightest tones
- * (down to 0.85), but that is the top tenth of a dark photo and made a brighter edit worse, so
- * the gain stays at 1 from 0.4 up.
+ * The base correction for one display lightness (OKLab L, 0..1). Below the first knot it runs down
+ * to black, above the last it runs up to white, so black and white stay put. The shader does the same.
  */
-export const ADOBE_CHROMA_KNOTS: readonly (readonly [number, number])[] = [
-  [0.1182, 1.1117],
-  [0.1611, 1.2136],
-  [0.1747, 1.2694],
-  [0.1921, 1.318],
-  [0.2234, 1.3356],
-  [0.2626, 1.2936],
-  [0.3063, 1.1991],
-  [0.3536, 1.065],
-  [0.4159, 1],
-  [0.4985, 1],
-];
-
-/** The chroma knots as the shader's vec2 array (uChromaKnots). */
-export const ADOBE_CHROMA_KNOT_UNIFORM = Float32Array.from(ADOBE_CHROMA_KNOTS.flat());
-
-/**
- * The chroma gain at one display lightness: held at the first knot below it, and easing back to 1
- * (white has no colour to scale) above the last.
- */
-export function adobeChromaGain(x: number): number {
-  const knots = ADOBE_CHROMA_KNOTS;
+export function adobeBaseLightness(x: number, kind: AdobeTone = 'color', baselineEv = 2): number {
+  const knots = adobeBaseKnots(kind, baselineEv);
   const first = knots[0]!;
   const last = knots[knots.length - 1]!;
-  if (x <= first[0]) return first[1];
+  if (x <= first[0]) return x <= 0 ? 0 : (first[1] * x) / first[0];
   if (x >= last[0]) return x >= 1 ? 1 : last[1] + ((1 - last[1]) * (x - last[0])) / (1 - last[0]);
   let i = 1;
   while (knots[i]![0] < x) i++;
@@ -96,15 +68,32 @@ export function adobeChromaGain(x: number): number {
   return a[1] + ((b[1] - a[1]) * (x - a[0])) / (b[0] - a[0]);
 }
 
+/** How much more (or less) colourful Lightroom's neutral render is than the editor's, by lightness (OKLab L after the correction above): [lightness, chroma gain], increasing. */
+export function adobeChromaKnots(kind: AdobeTone): Knots {
+  return zip(FIT_DATA.chromaX, FIT_DATA.chromaY[kind]);
+}
+
+const chromaCache = new Map<AdobeTone, Float32Array>();
+
+/** The chroma knots as the shader's vec2 array (uChromaKnots). */
+export function adobeChromaKnotUniform(kind: AdobeTone): Float32Array {
+  let u = chromaCache.get(kind);
+  if (!u) {
+    u = Float32Array.from(adobeChromaKnots(kind).flat());
+    chromaCache.set(kind, u);
+  }
+  return u;
+}
+
 /**
- * The base correction for one display lightness (OKLab L, 0..1). Below the first knot it runs down
- * to black, above the last it runs up to white, so black and white stay put. The shader does the same.
+ * The chroma gain at one display lightness: held at the first knot below it, and easing back to 1
+ * (white has no colour to scale) above the last.
  */
-export function adobeBaseLightness(x: number): number {
-  const knots = ADOBE_BASE_KNOTS;
+export function adobeChromaGain(x: number, kind: AdobeTone = 'color'): number {
+  const knots = adobeChromaKnots(kind);
   const first = knots[0]!;
   const last = knots[knots.length - 1]!;
-  if (x <= first[0]) return x <= 0 ? 0 : (first[1] * x) / first[0];
+  if (x <= first[0]) return first[1];
   if (x >= last[0]) return x >= 1 ? 1 : last[1] + ((1 - last[1]) * (x - last[0])) / (1 - last[0]);
   let i = 1;
   while (knots[i]![0] < x) i++;

@@ -3,10 +3,10 @@
 // DNG-style look table (built here); the Fujifilm film looks bring a downloaded look table and
 // tone curve (fuji-looks.ts), plus a display-space LUT for the three looks that only exist
 // as a conversion from Provia.
-import { isFujiProfile, profileInfo, usesCameraProfile, type BasicProfileId, type ProfileId } from '@immich-raw/recipe';
-import { ADOBE_BASE_KNOT_UNIFORM, ADOBE_CHROMA_KNOT_UNIFORM } from './adobe-tone.ts';
+import { isFujiProfile, profileInfo, type BasicProfileId, type ProfileId } from '@immich-raw/recipe';
+import { adobeBaseKnotUniform, adobeChromaKnotUniform, type AdobeTone } from './adobe-tone.ts';
 import { dngRgbToHsv, type CubeLut, type HueSatTable, type ToneLut } from './dcp.ts';
-import { fittedColorLook } from './fitted-color.ts';
+import { COLOR_FIT, STANDARD_FIT, fittedColorLook } from './fitted-color.ts';
 import { SRGB_TO_PROPHOTO, decodeSrgb } from './look.ts';
 import { mulVec3, type Vec3 } from './matrices.ts';
 
@@ -41,6 +41,8 @@ export interface ProfileRender {
   amount: boolean;
   /** The Adobe profiles: tone shaped like Lightroom's (adobe-tone.ts). */
   adobeBase?: boolean;
+  /** Which of the Adobe profiles' tone curves (adobe-tone.ts) the tone correction uses. */
+  tone?: AdobeTone;
   look: ProfileLook | null;
 }
 
@@ -85,15 +87,12 @@ export function resolveProfile(id: ProfileId, looks: ProfileLooks = {}): Profile
       look,
     };
   }
-  if (usesCameraProfile(id) && looks[id]?.lookTable) {
-    // Standard: the camera's own profile, made from the user's Lightroom.
-    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: true, adobeBase: true, look: looks[id] };
+  if (id === 'standard') {
+    // Standard and Color: the colour built from scratch (fitted-color.ts) with the fitted tone correction, for every camera.
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: false, adobeBase: true, tone: 'standard', look: { key: 'standard-fitted', lookTable: fittedColorLook(STANDARD_FIT) } };
   }
-  // Standard without the camera's profile has nothing to show: Color, flagged as missing.
-  if (id === 'standard') return { ...resolveProfile('color'), requested: id, missing: true };
   if (id === 'color') {
-    // Color: the colour built from scratch (fitted-color.ts) with the fitted tone correction, for every camera.
-    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: false, adobeBase: true, look: { key: 'color-fitted', lookTable: fittedColorLook() } };
+    return { id, requested: id, missing: false, base: 0, baselineEv: COLOR_EV, sCurve: COLOR_S, whitePoint: COLOR_WHITE, amount: false, adobeBase: true, tone: 'color', look: { key: 'color-fitted', lookTable: fittedColorLook(COLOR_FIT) } };
   }
   const row = BASIC[id];
   const inHouse = id === 'vivid' || id === 'portrait' || id === 'landscape';
@@ -136,7 +135,7 @@ export interface ProfileUniforms {
  * Tone-pass uniforms. For the four tone-only profiles every new step is off and the S-curve
  * keeps its literal strength, so they render exactly as before.
  */
-export function profileUniforms(p: ProfileRender, amountPct: number): ProfileUniforms {
+export function profileUniforms(p: ProfileRender, amountPct: number, baselineEv = 0): ProfileUniforms {
   const a = p.amount ? Math.max(0, amountPct / 100) : 1;
   const on = (has: unknown) => (has && a > 0 ? 1 : 0);
   return {
@@ -152,8 +151,8 @@ export function profileUniforms(p: ProfileRender, amountPct: number): ProfileUni
     uSCurve: p.amount ? Math.max(0, COLOR_S + (p.sCurve - COLOR_S) * a) : COLOR_S,
     // The Adobe profiles' tone correction fades in with the Amount, like their look.
     uBaseFix: p.adobeBase ? Math.min(a, 1) : 0,
-    uBaseKnots: ADOBE_BASE_KNOT_UNIFORM,
-    uChromaKnots: ADOBE_CHROMA_KNOT_UNIFORM,
+    uBaseKnots: adobeBaseKnotUniform(p.tone ?? 'color', baselineEv),
+    uChromaKnots: adobeChromaKnotUniform(p.tone ?? 'color'),
     uFilmLut: on(p.look?.filmLut),
     uFilmLutAmount: a,
   };

@@ -67,19 +67,26 @@ look a little different.
   photo; the Canon and Nikon values come from [RapidRAW](https://github.com/CyberTimon/RapidRAW) and
   only their reading is checked here, not the brightness. A DNG made from such a RAW carries it as
   its BaselineExposure.
-- **Profiles.** Lightroom's "Adobe Color" and "Adobe Standard" import as **Color** and
-  **Standard**. Color is built into the editor and carries no Adobe data: its colour is a smooth
-  function of hue, and its tone a curve, both fitted to Lightroom exports of one photo (X-T30, DR400):
-  about twice the contrast around mid-grey, a brighter top end, more colour in the middle tones,
-  oranges richer and turned slightly towards red. On that photo its colour is as close to Lightroom's
-  as the one made from Adobe's own camera profile (mean OKLab colour difference 0.003 to 0.004), and
-  a render with only the exposure raised comes within 0.02 of Lightroom's. It only knows the hues
-  that photo has (browns, oranges, olive greens, violet greys); the others get a small default
-  boost, so expect it to be least exact on blues, cyans and reds. Standard (Adobe's colour map
-  without the look on top) still needs your own camera profile
-  ([below](#camera-profiles-from-lightroom)) and isn't offered without it. Lightroom also draws
-  strong highlights less colourful when the exposure is raised; copying that made the full edit of
-  the test photo less colourful than Lightroom's, so it isn't done.
+- **Profiles.** Lightroom's "Adobe Color" and "Adobe Standard" import as **Color** and **Standard**.
+  Both are built into the editor and carry no Adobe data: the colour of each is a smooth function of
+  hue (chroma gain and hue turn per 15 degrees of OKLab hue), a chroma gain by lightness, and a tone
+  curve, all fitted to Lightroom exports (X-T30). Color is the more colourful of the two and has the
+  deeper shadows; Standard lifts the shadows and ends a little lower. Two photos went into the fit,
+  a dark DR400 scene and a daylight portrait at DR100, and they do not share one tone curve (the
+  DR100 one has deeper shadows and a longer highlight roll-off), so each profile has a curve at 0 EV
+  and at +2 EV baseline exposure, and the photo's own baseline exposure (Fujifilm DR, Canon HTP,
+  Nikon ADL) picks the mix; the middle values are a guess. Against Lightroom's own exports with every
+  slider at 0 the mean OKLab difference is 0.012 for Standard on the DR400 photo (colour alone
+  0.002) and 0.020 to 0.024 on the portrait (colour alone 0.005); most of what is left is fine detail
+  (see Sharpening above). The fit only knows the hues those two photos have, so expect it to be least
+  exact on saturated blues, magentas and reds. The numbers are in
+  `packages/pipeline/src/color/adobe-fit-data.ts`. Neither profile has an Amount slider here, so a
+  Lightroom Look amount is ignored. Lightroom also draws strong highlights less colourful when the
+  exposure is raised; copying that made the full edit of the DR400 photo less colourful than
+  Lightroom's, so it isn't done.
+- **Sharpening.** Lightroom's export is sharper than the editor's at the same Amount: at 1:1 the
+  finest scale (under one pixel) has 30 to 60 percent more energy at Amount 40. Raising the Amount
+  to about 2.5 times closes that gap but does not lower the pixel error, so it is not done.
 - **Shadows, Highlights, Whites and Blacks.** Each works on a band of the photo's own tones, as
   Lightroom's do: Whites and Highlights near its brightest tones, Blacks and Shadows near its
   darkest, wherever those sit. (Earlier they acted at fixed brightness, so on a dark photo Whites and
@@ -91,37 +98,11 @@ look a little different.
   Exposure +1.27 stays at about 0.05 and renders a little darker than Lightroom (0.02 to 0.04 of
   lightness): Lightroom's sliders and exposure interact in ways one photo can't pin down. Lightroom's
   Whites and Blacks also raise the picture's local contrast; the editor now does too, but not fully.
-
-## Camera profiles from Lightroom
-
-Standard is Adobe's colour map for the body: a hue and saturation map (one for tungsten, one for
-daylight light, blended by the photo's colour temperature). (Color doesn't use it; see above.)
-
-Adobe's profiles are Adobe's, so the editor ships none. You convert the ones from your own Lightroom;
-the result stays in a folder that git ignores and is never uploaded anywhere.
-
-1. Find your camera's profile. Lightroom keeps them in
-   `C:\ProgramData\Adobe\CameraRaw\CameraProfiles\Adobe Standard\` (named like
-   `Fujifilm X-T30 Adobe Standard.dcp`); Lightroom's own folder has them too, under
-   `Resources\CameraProfiles\`.
-2. Convert it (Node 22.18 or newer), from the repository root:
-
-   ```sh
-   node packages/pipeline/scripts/convert-camera-profiles.mjs apps/editor/public/camera-profiles "C:/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard/Fujifilm X-T30 Adobe Standard.dcp"
-   ```
-
-   It writes one small JSON file per profile and an `index.json` next to them, and adds to what is
-   already there. Name the cameras you use: a folder converts everything in it.
-3. Reload the editor. Photos from that camera now offer **Standard** in the Profile list, and a
-   Lightroom sidecar that says "Adobe Standard" uses it.
-
-A deployed editor needs the same folder next to its files (`camera-profiles/`, beside `index.html`).
-Don't put it in an image you share: the files are Adobe's. Cameras without a converted profile keep
-working: Standard then shows as Color (and isn't offered).
-
-What the profile does not carry: Adobe's tone curve and baseline exposure per camera (see
-"Profiles" above for the tone in Color and Standard), and the colour matrices (the editor keeps its own, which on
-their own did not bring the colour closer).
+  The windows were fitted on the dark DR400 photo. On a daylight portrait (Highlights -66, Shadows
+  +45, Whites -56, Blacks -42) they darken the middle tones by about 0.1 of lightness more than
+  Lightroom does (mean OKLab difference 0.084; Lightroom leaves the tones between 0.3 and 0.45
+  almost where they were), so on bright photos the Whites and Blacks windows are too wide. Refitting
+  them needs single-slider Lightroom exports of a brighter photo.
 
 ## Getting the sidecars into Immich
 

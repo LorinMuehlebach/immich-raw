@@ -2,10 +2,9 @@
 // (color/profiles.ts); this table is what the recipe, the UI and XMP import share.
 
 /**
- * In-house profiles, available for every camera. Color is built into the editor (its colour was
- * fitted to Lightroom renders, with no Adobe data in it). Standard takes its colour from the
- * camera's own profile when the editor has one for the photo's camera (made from the user's own
- * Lightroom profile file, see CAMERA_LOOK_IDS) and isn't offered without it.
+ * In-house profiles, available for every camera. Color and Standard are built into the editor: their
+ * tone and colour were fitted to Lightroom's "Adobe Color" and "Adobe Standard" renders, with no Adobe
+ * data in them.
  */
 export const BASIC_PROFILE_IDS = ['color', 'standard', 'vivid', 'portrait', 'landscape', 'neutral', 'monochrome', 'linear'] as const;
 
@@ -28,18 +27,11 @@ export const FUJI_PROFILE_IDS = [
   'fuji-bleach-bypass',
 ] as const;
 
-/**
- * The profiles that read the camera's own profile (its hue/saturation map), converted from the user's
- * Lightroom profile file for the camera.
- */
-export const CAMERA_LOOK_IDS = ['standard'] as const;
-
 /** Names an earlier version stored for the same profiles. */
 const LEGACY_PROFILE_IDS: Record<string, ProfileId> = { 'adobe-color': 'color', 'adobe-standard': 'standard' };
 
 export type BasicProfileId = (typeof BASIC_PROFILE_IDS)[number];
 export type FujiProfileId = (typeof FUJI_PROFILE_IDS)[number];
-export type CameraLookId = (typeof CAMERA_LOOK_IDS)[number];
 export type ProfileId = BasicProfileId | FujiProfileId;
 export type ProfileGroup = 'basic' | 'fuji';
 
@@ -51,8 +43,6 @@ export interface ProfileInfo {
   amount: boolean;
   /** Needs the Fujifilm film looks to be downloaded. */
   download: boolean;
-  /** Only offered with a camera profile converted from the user's Lightroom (see camera-profile.ts in the pipeline). */
-  camera: boolean;
 }
 
 export const PROFILE_GROUPS: { id: ProfileGroup; label: string }[] = [
@@ -60,12 +50,12 @@ export const PROFILE_GROUPS: { id: ProfileGroup; label: string }[] = [
   { id: 'fuji', label: 'Fujifilm film looks' },
 ];
 
-const basic = (id: BasicProfileId, label: string, amount = false, camera = false): ProfileInfo => ({ id, label, group: 'basic', amount, download: false, camera });
-const fuji = (id: FujiProfileId, label: string): ProfileInfo => ({ id, label, group: 'fuji', amount: true, download: true, camera: false });
+const basic = (id: BasicProfileId, label: string, amount = false): ProfileInfo => ({ id, label, group: 'basic', amount, download: false });
+const fuji = (id: FujiProfileId, label: string): ProfileInfo => ({ id, label, group: 'fuji', amount: true, download: true });
 
 export const PROFILES: ProfileInfo[] = [
   basic('color', 'Color'),
-  basic('standard', 'Standard', true, true),
+  basic('standard', 'Standard'),
   basic('vivid', 'Vivid', true),
   basic('portrait', 'Portrait', true),
   basic('landscape', 'Landscape', true),
@@ -103,9 +93,4 @@ export function profileInfo(id: ProfileId): ProfileInfo {
 
 export function isFujiProfile(id: ProfileId): id is FujiProfileId {
   return id.startsWith('fuji-');
-}
-
-/** Profiles that take their colour from the camera's own profile (and aren't offered without one). */
-export function usesCameraProfile(id: ProfileId): id is CameraLookId {
-  return (CAMERA_LOOK_IDS as readonly string[]).includes(id);
 }
