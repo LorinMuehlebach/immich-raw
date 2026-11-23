@@ -523,6 +523,7 @@ uniform vec2 uToneShadows;    // and each one's window
 uniform vec2 uToneHighlights;
 uniform vec2 uToneWhites;
 uniform vec2 uToneBlacks;
+uniform vec2 uToneContrast;   // Contrast: stretch per unit of the slider, and the pivot in stops from middle grey
 uniform float uContrast;      // -1..1
 uniform float uHdr;           // HDR range compression, 0..1 (hdr-tone.ts)
 uniform vec2 uPresence;       // vibrance, saturation (-1..1)
@@ -592,10 +593,10 @@ ${HDR_GLSL}
 // along with the tones, so the next one works on what the last one left.
 float toneBase(float B, vec4 tone, float contrast) {
   float x = hdrCompress(B - MID, uHdr);
-  float cs = max(1.0 + 0.55 * contrast, 0.05);
-  x *= cs;
+  float cs = max(1.0 + uToneContrast.x * contrast, 0.05);
+  x = (x - uToneContrast.y) * cs + uToneContrast.y;
   vec4 t = sign(tone) * 0.5 * pow(abs(tone) / 0.5, uToneExp) * uToneGain;
-  vec3 v = vec3(x, hdrCompress(uToneAnchor.x, uHdr) * cs, hdrCompress(uToneAnchor.y, uHdr) * cs); // tone, black point, white point
+  vec3 v = vec3(x, (hdrCompress(uToneAnchor.x, uHdr) - uToneContrast.y) * cs + uToneContrast.y, (hdrCompress(uToneAnchor.y, uHdr) - uToneContrast.y) * cs + uToneContrast.y); // tone, black point, white point
   v += t.x * (1.0 - smoothstep(vec3(v.y + uToneShadows.x), vec3(v.y + uToneShadows.y), v));
   v += t.y * smoothstep(vec3(v.z - uToneHighlights.x), vec3(v.z + uToneHighlights.y), v);
   v += t.z * smoothstep(vec3(v.z - uToneWhites.x), vec3(v.z + uToneWhites.y), v);

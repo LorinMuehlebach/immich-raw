@@ -7,10 +7,13 @@
 // (quantiles of its brightness) at the current Exposure, and every slider moves them along with
 // the tones it moves, so the next one works on what the last one left.
 //
-// The amounts and windows are fitted to Lightroom exports of two photos (X-T30): on a dark DR400 scene
-// single-slider exports at 20, 50 and 80 and a combined edit, on a daylight DR100 portrait one combined
-// edit (the windows searched by coordinate descent on the mean OKLab difference, the portrait counted
-// four times). With the monkey alone the windows came out too wide for a bright photo.
+// The amounts and windows are fitted to Lightroom exports of three X-T30 photos: a dark DR400 scene
+// (single sliders at 20, 50 and 80, and a combined edit), a daylight DR100 portrait (one combined edit)
+// and a second portrait (Highlights, Whites and Blacks at +-20 and +-40, Shadows at +-40; its neutral export is
+// the baseline). The constants were searched by
+// coordinate descent on how far the lightness shift each slider makes (by lightness) is from
+// Lightroom's; the mean colour difference is too dominated by fine detail to steer. With the dark scene
+// alone the windows came out too wide for a bright photo.
 // toneBase() in shaders.ts does the same maths per pixel
 // (its constants come from here), and Auto uses the functions below to find the slider values.
 import { hdrCurve } from './hdr-tone.ts';
@@ -30,10 +33,12 @@ export const TONE_WINDOWS = {
    * from `width` below the white point to `lead` above it, Whites the same, Blacks from `lead` below
    * the black point (negative: above) to `width` above it.
    */
-  shadows: { gain: 0.66, exponent: 0.46, start: 0.77, end: 6.15 },
-  highlights: { gain: 0.8, exponent: 0.94, width: 3.98, lead: 0.96 },
-  whites: { gain: 2.53, exponent: 3.59, width: 4, lead: 2.24 },
-  blacks: { gain: 2.46, exponent: 3.14, lead: -0.25, width: 7 },
+  shadows: { gain: 0.9, exponent: 0.46, start: 0.73, end: 5.2 },
+  highlights: { gain: 1.03, exponent: 0.84, width: 4.23, lead: 1.43 },
+  whites: { gain: 2.6, exponent: 3.37, width: 4.38, lead: 2.76 },
+  blacks: { gain: 2.02, exponent: 3.75, lead: 0, width: 6.57 },
+  /** Contrast stretches the tones (in stops) about a pivot a little below middle grey, by `gain` per unit of the slider (-1..1); Lightroom's pivots near the middle of the picture's display lightness. */
+  contrast: { gain: 0.48, pivot: -0.93 },
 } as const;
 
 /** A photo's black and white point, in stops from middle grey (at Exposure 0, before HDR and Contrast). */
@@ -135,5 +140,6 @@ export function toneWindowUniforms(w: typeof TONE_WINDOWS = TONE_WINDOWS) {
     uToneHighlights: [w.highlights.width, w.highlights.lead],
     uToneWhites: [w.whites.width, w.whites.lead],
     uToneBlacks: [w.blacks.lead, w.blacks.width],
+    uToneContrast: [w.contrast.gain, w.contrast.pivot],
   };
 }
