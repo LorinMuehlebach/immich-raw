@@ -1,5 +1,6 @@
 export * from './color/index.ts';
 export * from './auto.ts';
+export { TONE_WINDOWS } from './tone-windows.ts';
 export { HDR_TONE, hdrCurve } from './hdr-tone.ts';
 export * from './curves.ts';
 export * from './geometry.ts';

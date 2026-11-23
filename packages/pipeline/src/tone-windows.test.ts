@@ -1,7 +1,7 @@
 import { defaultRecipe } from '@immich-raw/recipe';
 import { describe, expect, it } from 'vitest';
 import { CAMERAS } from './color/fixtures.ts';
-import { DEFAULT_ANCHORS, MID, TONE_WINDOWS, applyTone, bentAnchors, toneAnchors, toneGlsl, toneStops, toneWeight, type ToneAmounts } from './tone-windows.ts';
+import { DEFAULT_ANCHORS, MID, TONE_WINDOWS, applyTone, bentAnchors, toneAnchors, toneStops, toneWeight, toneWindowUniforms, type ToneAmounts } from './tone-windows.ts';
 import { cameraInfo, developUniforms } from './uniforms.ts';
 
 const none: ToneAmounts = { shadows: 0, highlights: 0, whites: 0, blacks: 0 };
@@ -63,7 +63,7 @@ describe('what a slider does', () => {
     // and not the other end
     expect(toneWeight('highlights', anchors.black, anchors.black, anchors.white)).toBe(0);
     expect(toneWeight('whites', anchors.black, anchors.black, anchors.white)).toBe(0);
-    expect(toneWeight('shadows', anchors.white, anchors.black, anchors.white)).toBe(0);
+    expect(toneWeight('shadows', anchors.white, anchors.black, anchors.white)).toBeLessThan(0.01);
     expect(toneWeight('blacks', anchors.white, anchors.black, anchors.white)).toBeLessThan(0.1);
     // The same tone is "highlights" in a dark photo and "shadows" in a bright one.
     expect(toneWeight('highlights', -1.5, -9, -1)).toBeGreaterThan(0.5);
@@ -76,12 +76,12 @@ describe('what a slider does', () => {
 
   it('moves the tones in their band, and the points with them', () => {
     const down = applyTone([anchors.white, anchors.black], anchors, { ...none, highlights: -0.5 });
-    expect(down.tones[0]).toBeLessThan(anchors.white - 0.4);
+    expect(down.tones[0]).toBeLessThan(anchors.white - 0.3);
     expect(down.tones[1]).toBe(anchors.black); // nothing happens down there
     expect(down.anchors.white).toBeCloseTo(down.tones[0]!, 9);
     expect(down.anchors.black).toBe(anchors.black);
     const lift = applyTone([anchors.black], anchors, { ...none, shadows: 0.5 });
-    expect(lift.tones[0]).toBeGreaterThan(anchors.black + 0.35);
+    expect(lift.tones[0]).toBeGreaterThan(anchors.black + 0.25);
   });
 
   it('works each stage on what the one before left: Whites follows the white point Highlights moved', () => {
@@ -100,12 +100,12 @@ describe('what a slider does', () => {
   });
 });
 
-describe('the shader constants', () => {
+describe('the shader uniforms', () => {
   it('come from the same table', () => {
-    const glsl = toneGlsl();
-    expect(glsl).toContain(`vec4 TONE_GAIN = vec4(${TONE_WINDOWS.shadows.gain}, ${TONE_WINDOWS.highlights.gain.toFixed(1)}, ${TONE_WINDOWS.whites.gain.toFixed(1)}, ${TONE_WINDOWS.blacks.gain.toFixed(1)})`);
-    expect(glsl).toContain(`vec2 TONE_BLACKS = vec2(${TONE_WINDOWS.blacks.lead}, ${TONE_WINDOWS.blacks.width.toFixed(1)})`);
-    expect(glsl).not.toContain('NaN');
+    const u = toneWindowUniforms();
+    expect(u.uToneGain).toEqual([TONE_WINDOWS.shadows.gain, TONE_WINDOWS.highlights.gain, TONE_WINDOWS.whites.gain, TONE_WINDOWS.blacks.gain]);
+    expect(u.uToneBlacks).toEqual([TONE_WINDOWS.blacks.lead, TONE_WINDOWS.blacks.width]);
+    expect(Object.values(u).flat().every(Number.isFinite)).toBe(true);
   });
 });
 

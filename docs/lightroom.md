@@ -92,17 +92,19 @@ look a little different.
   darkest, wherever those sit. (Earlier they acted at fixed brightness, so on a dark photo Whites and
   Blacks did almost nothing.) The photo's black and white point are measured from the preview and
   move with Exposure and with each slider. The strength of each slider, and how it grows with the
-  amount (Whites much faster than linearly), are fitted to single-slider Lightroom exports at 20, 50
-  and 80 of the test photo: Whites +80 came from 0.175 to 0.058 mean OKLab difference, Blacks -80
-  from 0.160 to 0.024, and the test edit with Exposure at 0 from 0.048 to 0.037. The same edit with
-  Exposure +1.27 stays at about 0.05 and renders a little darker than Lightroom (0.02 to 0.04 of
-  lightness): Lightroom's sliders and exposure interact in ways one photo can't pin down. Lightroom's
-  Whites and Blacks also raise the picture's local contrast; the editor now does too, but not fully.
-  The windows were fitted on the dark DR400 photo. On a daylight portrait (Highlights -66, Shadows
-  +45, Whites -56, Blacks -42) they darken the middle tones by about 0.1 of lightness more than
-  Lightroom does (mean OKLab difference 0.084; Lightroom leaves the tones between 0.3 and 0.45
-  almost where they were), so on bright photos the Whites and Blacks windows are too wide. Refitting
-  them needs single-slider Lightroom exports of a brighter photo.
+  amount (Whites much faster than linearly), are fitted to Lightroom exports of two X-T30 photos by
+  searching the constants in `tone-windows.ts` for the lowest mean OKLab difference: on a dark DR400
+  scene (single-slider exports at 20, 50 and 80, and a combined edit) and on a daylight DR100 portrait
+  (one combined edit, counted four times). Fitting the dark scene alone had made the windows too wide
+  for a bright photo: Highlights -66, Shadows +45, Whites -56, Blacks -42 on the portrait was 0.080
+  from Lightroom and is now 0.029, with the dark scene's single sliders about where they were (0.011
+  to 0.014 for Highlights and Shadows, 0.023 for Blacks -80, 0.046 for Blacks -50, 0.058 for
+  Whites +80). Blacks on the dark scene got a little worse for it, and Whites +80 is still the worst.
+  The same edit with Exposure +1.27 on the dark scene was about 0.05 before this refit (not measured
+  again) and rendered a little darker than Lightroom (0.02 to 0.04 of lightness): Lightroom's sliders and exposure interact in ways these
+  photos can't pin down. Lightroom's Whites and Blacks also raise the picture's local contrast; the
+  editor now does too, but not fully. Only one combined edit of the bright photo went in, so the
+  single sliders on bright photos are still unchecked.
 
 ## Getting the sidecars into Immich
 

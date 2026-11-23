@@ -22,7 +22,7 @@ import {
   type TempTint,
   type Vec3,
 } from './color/index.ts';
-import { DEFAULT_ANCHORS, type ToneAnchors } from './tone-windows.ts';
+import { DEFAULT_ANCHORS, toneWindowUniforms, type ToneAnchors } from './tone-windows.ts';
 
 export interface CameraInfo {
   /** LibRaw flip. */
@@ -82,6 +82,12 @@ export interface DevelopUniforms {
   uExposure: number;
   uTone: number[];
   uToneAnchor: number[];
+  uToneGain: number[];
+  uToneExp: number[];
+  uToneShadows: number[];
+  uToneHighlights: number[];
+  uToneWhites: number[];
+  uToneBlacks: number[];
   uContrast: number;
   uHdr: number;
   uPresence: number[];
@@ -118,6 +124,7 @@ export function developUniforms(recipe: Recipe, cam: CameraInfo, profile: Profil
     uTone: [b.shadows / 100, b.highlights / 100, b.whites / 100, b.blacks / 100],
     // The photo's black and white point as the tone stage sees them: Exposure moves them like the tones.
     uToneAnchor: [anchors.black + b.exposure, anchors.white + b.exposure],
+    ...toneWindowUniforms(),
     uContrast: b.contrast / 100,
     uHdr: b.hdr / 100,
     uPresence: [b.vibrance / 100, b.saturation / 100],

@@ -54,6 +54,7 @@ import {
   withAspect,
   asImageData,
   SRGB8,
+  TONE_WINDOWS,
   type Affine,
   type AutoParams,
   type CameraInfo,
@@ -3868,4 +3869,8 @@ export class Editor {
 export const editor = new Editor();
 
 // `?debug` exposes the editor for inspection from the console and tests.
-if (new URLSearchParams(location.search).has('debug')) (globalThis as { __editor?: Editor }).__editor = editor;
+if (new URLSearchParams(location.search).has('debug')) {
+  (globalThis as { __editor?: Editor }).__editor = editor;
+  // The fitted tone windows, to try other values against Lightroom's exports.
+  (globalThis as { __toneWindows?: unknown }).__toneWindows = TONE_WINDOWS;
+}
