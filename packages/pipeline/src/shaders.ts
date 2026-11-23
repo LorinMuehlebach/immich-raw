@@ -14,7 +14,6 @@
 // The analysis (guided-filter coefficients, dehaze) runs at low resolution, cached.
 import { EFFECTS_GLSL } from './effects.ts';
 import { HDR_GLSL } from './hdr-tone.ts';
-import { toneGlsl } from './tone-windows.ts';
 
 export const VS_FULLSCREEN = /* glsl */ `#version 300 es
 void main() {
@@ -518,6 +517,12 @@ uniform sampler2D uLut;       // tone curve, 4096x1, per channel
 uniform int uCurve;
 uniform vec4 uTone;           // shadows, highlights, whites, blacks (-1..1)
 uniform vec2 uToneAnchor;     // the photo's black and white point at the current Exposure (stops from middle grey)
+uniform vec4 uToneGain;       // the tone windows of tone-windows.ts: gain and exponent of Shadows, Highlights, Whites, Blacks
+uniform vec4 uToneExp;
+uniform vec2 uToneShadows;    // and each one's window
+uniform vec2 uToneHighlights;
+uniform vec2 uToneWhites;
+uniform vec2 uToneBlacks;
 uniform float uContrast;      // -1..1
 uniform float uHdr;           // HDR range compression, 0..1 (hdr-tone.ts)
 uniform vec2 uPresence;       // vibrance, saturation (-1..1)
@@ -579,7 +584,6 @@ vec2 sampleAB(highp sampler2D tex, vec2 t) {
 }
 
 ${HDR_GLSL}
-${toneGlsl()}
 // Tone controls act on the local base layer, in stops relative to middle grey.
 // tone = shadows, highlights, whites, blacks: the global sliders plus any masks.
 // HDR compresses the range first, so the other sliders work on what it leaves.
@@ -590,12 +594,12 @@ float toneBase(float B, vec4 tone, float contrast) {
   float x = hdrCompress(B - MID, uHdr);
   float cs = max(1.0 + 0.55 * contrast, 0.05);
   x *= cs;
-  vec4 t = sign(tone) * 0.5 * pow(abs(tone) / 0.5, TONE_EXP) * TONE_GAIN;
+  vec4 t = sign(tone) * 0.5 * pow(abs(tone) / 0.5, uToneExp) * uToneGain;
   vec3 v = vec3(x, hdrCompress(uToneAnchor.x, uHdr) * cs, hdrCompress(uToneAnchor.y, uHdr) * cs); // tone, black point, white point
-  v += t.x * (1.0 - smoothstep(vec3(v.y + TONE_SHADOWS.x), vec3(v.y + TONE_SHADOWS.y), v));
-  v += t.y * smoothstep(vec3(v.z - TONE_HIGHLIGHTS.x), vec3(v.z + TONE_HIGHLIGHTS.y), v);
-  v += t.z * smoothstep(vec3(v.z - TONE_WHITES.x), vec3(v.z + TONE_WHITES.y), v);
-  v += t.w * (1.0 - smoothstep(vec3(v.y - TONE_BLACKS.x), vec3(v.y + TONE_BLACKS.y), v));
+  v += t.x * (1.0 - smoothstep(vec3(v.y + uToneShadows.x), vec3(v.y + uToneShadows.y), v));
+  v += t.y * smoothstep(vec3(v.z - uToneHighlights.x), vec3(v.z + uToneHighlights.y), v);
+  v += t.z * smoothstep(vec3(v.z - uToneWhites.x), vec3(v.z + uToneWhites.y), v);
+  v += t.w * (1.0 - smoothstep(vec3(v.y - uToneBlacks.x), vec3(v.y + uToneBlacks.y), v));
   return v.x + MID;
 }
 

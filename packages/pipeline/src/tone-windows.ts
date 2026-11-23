@@ -7,8 +7,11 @@
 // (quantiles of its brightness) at the current Exposure, and every slider moves them along with
 // the tones it moves, so the next one works on what the last one left.
 //
-// The amounts and windows are fitted to Lightroom exports of one photo (X-T30, DR400): single-slider
-// exports at 20, 50 and 80, and a combined edit. toneBase() in shaders.ts does the same maths per pixel
+// The amounts and windows are fitted to Lightroom exports of two photos (X-T30): on a dark DR400 scene
+// single-slider exports at 20, 50 and 80 and a combined edit, on a daylight DR100 portrait one combined
+// edit (the windows searched by coordinate descent on the mean OKLab difference, the portrait counted
+// four times). With the monkey alone the windows came out too wide for a bright photo.
+// toneBase() in shaders.ts does the same maths per pixel
 // (its constants come from here), and Auto uses the functions below to find the slider values.
 import { hdrCurve } from './hdr-tone.ts';
 
@@ -27,10 +30,10 @@ export const TONE_WINDOWS = {
    * from `width` below the white point to `lead` above it, Whites the same, Blacks from `lead` below
    * the black point (negative: above) to `width` above it.
    */
-  shadows: { gain: 0.8, exponent: 0.7, start: 1, end: 6 },
-  highlights: { gain: 1, exponent: 1, width: 3, lead: 1 },
-  whites: { gain: 3, exponent: 3, width: 4, lead: 1.5 },
-  blacks: { gain: 4, exponent: 2.1, lead: -0.5, width: 7 },
+  shadows: { gain: 0.66, exponent: 0.46, start: 0.77, end: 6.15 },
+  highlights: { gain: 0.8, exponent: 0.94, width: 3.98, lead: 0.96 },
+  whites: { gain: 2.53, exponent: 3.59, width: 4, lead: 2.24 },
+  blacks: { gain: 2.46, exponent: 3.14, lead: -0.25, width: 7 },
 } as const;
 
 /** A photo's black and white point, in stops from middle grey (at Exposure 0, before HDR and Contrast). */
@@ -123,17 +126,14 @@ export function bentAnchors(anchors: ToneAnchors, exposure: number, hdr: number)
   return { black: hdrCurve(anchors.black + exposure, hdr), white: hdrCurve(anchors.white + exposure, hdr) };
 }
 
-/** The `const` block toneBase() in shaders.ts reads: the windows above as GLSL. */
-export function toneGlsl(): string {
-  const f = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
-  const w = TONE_WINDOWS;
-  return `
-// Tone slider windows (from pipeline/src/tone-windows.ts): gain, exponent, then the window.
-const vec4 TONE_GAIN = vec4(${f(w.shadows.gain)}, ${f(w.highlights.gain)}, ${f(w.whites.gain)}, ${f(w.blacks.gain)});
-const vec4 TONE_EXP = vec4(${f(w.shadows.exponent)}, ${f(w.highlights.exponent)}, ${f(w.whites.exponent)}, ${f(w.blacks.exponent)});
-const vec2 TONE_SHADOWS = vec2(${f(w.shadows.start)}, ${f(w.shadows.end)});
-const vec2 TONE_HIGHLIGHTS = vec2(${f(w.highlights.width)}, ${f(w.highlights.lead)});
-const vec2 TONE_WHITES = vec2(${f(w.whites.width)}, ${f(w.whites.lead)});
-const vec2 TONE_BLACKS = vec2(${f(w.blacks.lead)}, ${f(w.blacks.width)});
-`;
+/** The windows above as the shader's uniforms (toneBase() in shaders.ts): gain and exponent of the four sliders, then each window. */
+export function toneWindowUniforms(w: typeof TONE_WINDOWS = TONE_WINDOWS) {
+  return {
+    uToneGain: [w.shadows.gain, w.highlights.gain, w.whites.gain, w.blacks.gain],
+    uToneExp: [w.shadows.exponent, w.highlights.exponent, w.whites.exponent, w.blacks.exponent],
+    uToneShadows: [w.shadows.start, w.shadows.end],
+    uToneHighlights: [w.highlights.width, w.highlights.lead],
+    uToneWhites: [w.whites.width, w.whites.lead],
+    uToneBlacks: [w.blacks.lead, w.blacks.width],
+  };
 }
