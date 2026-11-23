@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyLookCpu, dngHsvToRgb } from './dcp.ts';
-import { COLOR_FIT, COLOR_FIT_BINS, atHue, fittedColorLook, fittedNode } from './fitted-color.ts';
+import { COLOR_FIT, COLOR_FIT_BINS, STANDARD_FIT, atHue, fittedColorLook, fittedNode } from './fitted-color.ts';
 import { mulVec3, type Vec3 } from './matrices.ts';
 import { PROPHOTO_TO_LMS } from './spaces.ts';
 
@@ -11,15 +11,17 @@ function chromaAndHue(rgb: Vec3): [number, number] {
   return [Math.hypot(a, b), (Math.atan2(b, a) * 180) / Math.PI];
 }
 
-describe('the fitted colour of Color', () => {
-  it('has one gain and turn per hue bin, kept within what is safe for unmeasured photos', () => {
-    expect(COLOR_FIT.gain).toHaveLength(COLOR_FIT_BINS);
-    expect(COLOR_FIT.turn).toHaveLength(COLOR_FIT_BINS);
-    for (const g of COLOR_FIT.gain) {
-      expect(g).toBeGreaterThanOrEqual(1);
-      expect(g).toBeLessThanOrEqual(1.25);
+describe('the fitted colour of Color and Standard', () => {
+  it('has one gain and turn per hue bin, kept within what is safe for hues that were measured thinly', () => {
+    for (const fit of [COLOR_FIT, STANDARD_FIT]) {
+      expect(fit.gain).toHaveLength(COLOR_FIT_BINS);
+      expect(fit.turn).toHaveLength(COLOR_FIT_BINS);
+      for (const g of fit.gain) {
+        expect(g).toBeGreaterThanOrEqual(0.5);
+        expect(g).toBeLessThanOrEqual(2.2);
+      }
+      for (const t of fit.turn) expect(Math.abs(t)).toBeLessThanOrEqual(25);
     }
-    for (const t of COLOR_FIT.turn) expect(Math.abs(t)).toBeLessThanOrEqual(8);
   });
 
   it('interpolates per-bin values around the hue circle', () => {
@@ -40,7 +42,7 @@ describe('the fitted colour of Color', () => {
     expect(dv).toBeCloseTo(1, 1);
   });
 
-  it('makes oranges more colourful and turns them towards red, as Lightroom\'s Color does, and barely touches greens and blues', () => {
+  it('makes oranges and greens more colourful, turns oranges towards red, and barely touches blues, as Lightroom\'s Color does', () => {
     const t = fittedColorLook();
     const orange = dngHsvToRgb([0.8, 0.5, 0.2]);
     const [c0, h0] = chromaAndHue(orange);
@@ -50,8 +52,20 @@ describe('the fitted colour of Color', () => {
     const green = dngHsvToRgb([2.5, 0.5, 0.2]);
     const [cg0] = chromaAndHue(green);
     const [cg1] = chromaAndHue(applyLookCpu(t, green));
-    expect(cg1 / cg0).toBeGreaterThan(1);
-    expect(cg1 / cg0).toBeLessThan(1.1);
+    expect(cg1 / cg0).toBeGreaterThan(1.2);
+    const blue = dngHsvToRgb([4.0, 0.5, 0.3]);
+    const [cb0] = chromaAndHue(blue);
+    const [cb1] = chromaAndHue(applyLookCpu(t, blue));
+    expect(Math.abs(cb1 / cb0 - 1)).toBeLessThan(0.1);
+  });
+
+  it('is less colourful for Standard than for Color', () => {
+    const green = dngHsvToRgb([2.5, 0.5, 0.2]);
+    const [c0] = chromaAndHue(green);
+    const [cc] = chromaAndHue(applyLookCpu(fittedColorLook(COLOR_FIT), green));
+    const [cs] = chromaAndHue(applyLookCpu(fittedColorLook(STANDARD_FIT), green));
+    expect(cs / c0).toBeGreaterThan(1.1);
+    expect(cs).toBeLessThan(cc);
   });
 
   it('is a table the shader can use, built once', () => {
@@ -60,5 +74,7 @@ describe('the fitted colour of Color', () => {
     expect(t.data).toHaveLength(72 * 12 * 16 * 3);
     expect(t.data.every(Number.isFinite)).toBe(true);
     expect(fittedColorLook()).toBe(t);
+    expect(fittedColorLook(STANDARD_FIT)).not.toBe(t);
+    expect(fittedColorLook(STANDARD_FIT)).toBe(fittedColorLook(STANDARD_FIT));
   });
 });

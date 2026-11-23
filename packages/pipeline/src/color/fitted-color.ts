@@ -6,20 +6,25 @@
 // photo, pixel by pixel, so it only knows the hues that photo has (browns and oranges, greys with a
 // violet cast, olive greens, a white flower); the other hues keep the average of what was
 // measured. It is written as a look table, the same kind the in-house looks use.
+import { FIT_DATA } from './adobe-fit-data.ts';
 import { dngHsvToRgb, dngRgbToHsv, type HueSatTable } from './dcp.ts';
 import { decodeSrgb } from './look.ts';
 import { mulVec3, type Vec3 } from './matrices.ts';
 import { LMS_TO_PROPHOTO, PROPHOTO_TO_LMS } from './spaces.ts';
 
+export interface HueFit {
+  gain: readonly number[];
+  turn: readonly number[];
+}
+
 /** Hue bins of 15 degrees, bin i centred on i * 15 (OKLab hue, degrees from the a axis towards b). */
 export const COLOR_FIT_BINS = 24;
 
-export const COLOR_FIT = {
-  /** Chroma gain per hue bin (1 = as the base render). */
-  gain: [1.25, 1.25, 1.25, 1.25, 1.25, 1.169, 1.111, 1.11, 1.095, 1.064, 1.05, 1.05, 1.05, 1.05, 1.05, 1.05, 1.05, 1.057, 1.063, 1.045, 1.024, 1.052, 1.154, 1.25],
-  /** Hue turn per bin, degrees (positive = towards +b). */
-  turn: [3.025, 0.406, -3.176, -7.277, -8, -8, -8, -6.215, -2.14, -0.259, 0, 0, 0, 0, 0, 0, 0, -0.541, -1.564, -1.117, 1.251, 3.36, 4.079, 4.035],
-};
+/** The fit of Color: chroma gain and hue turn (degrees, positive = towards +b) per hue bin (1 = as the base render). */
+export const COLOR_FIT: HueFit = FIT_DATA.hue.color;
+
+/** The same for Standard, fitted to Lightroom's Adobe Standard. */
+export const STANDARD_FIT: HueFit = FIT_DATA.hue.standard;
 
 /** Periodic linear interpolation of per-bin values at a hue in degrees. */
 export function atHue(values: readonly number[], hue: number): number {
@@ -56,7 +61,7 @@ function fromLab([L, a, b]: Vec3): Vec3 {
 }
 
 /** The colour at a table node (DNG hue in degrees, saturation, sRGB-encoded value) after the fit, as a node's [hue shift, saturation scale, value scale]. */
-export function fittedNode(hueDeg: number, s: number, vEnc: number, fit: { gain: readonly number[]; turn: readonly number[] } = COLOR_FIT): Vec3 {
+export function fittedNode(hueDeg: number, s: number, vEnc: number, fit: HueFit = COLOR_FIT): Vec3 {
   if (!(s > 0) || !(vEnc > 0)) return [0, 1, 1];
   const v = decodeSrgb(vEnc);
   const rgb = dngHsvToRgb([hueDeg / 60, s, v]);
@@ -76,12 +81,13 @@ export function fittedNode(hueDeg: number, s: number, vEnc: number, fit: { gain:
   return [dh, Math.min(s2, 1) / s, encodeSrgb(Math.min(v2, 1)) / vEnc];
 }
 
-let cache: { key: string; table: HueSatTable } | null = null;
+const cache = new Map<string, HueSatTable>();
 
 /** The look table of the fitted Color. */
-export function fittedColorLook(fit: { gain: readonly number[]; turn: readonly number[] } = COLOR_FIT): HueSatTable {
+export function fittedColorLook(fit: HueFit = COLOR_FIT): HueSatTable {
   const key = JSON.stringify(fit);
-  if (cache?.key === key) return cache.table;
+  const cached = cache.get(key);
+  if (cached) return cached;
   const data = new Float32Array(HUES * SATS * VALS * 3);
   for (let vi = 0; vi < VALS; vi++) {
     for (let hi = 0; hi < HUES; hi++) {
@@ -95,6 +101,6 @@ export function fittedColorLook(fit: { gain: readonly number[]; turn: readonly n
     }
   }
   const table: HueSatTable = { hueDivisions: HUES, satDivisions: SATS, valDivisions: VALS, srgbValues: true, data };
-  cache = { key, table };
+  cache.set(key, table);
   return table;
 }

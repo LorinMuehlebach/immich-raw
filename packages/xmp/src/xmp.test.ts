@@ -451,10 +451,10 @@ describe('profiles', () => {
     expect(vivid.recipe.profile).toBe('vivid');
     expect(vivid.recipe.profileAmount).toBe(60);
     expect(vivid.result.groups).toContain('profile');
+    // Color and Standard have no Amount here.
     const standard = imported(xmp('crs:CameraProfile="Adobe Standard"', { name: 'Adobe Standard', amount: '0.6' }));
     expect(standard.recipe.profile).toBe('standard');
-    expect(standard.recipe.profileAmount).toBe(60);
-    // Color has no Amount here.
+    expect(standard.recipe.profileAmount).toBe(100);
     const color = imported(xmp('crs:CameraProfile="Adobe Standard"', { name: 'Adobe Color', amount: '0.6' }));
     expect(color.recipe.profile).toBe('color');
     expect(color.recipe.profileAmount).toBe(100);

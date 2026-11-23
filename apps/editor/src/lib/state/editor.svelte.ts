@@ -184,7 +184,6 @@ import { CANCELLED, tileSide, upscaler, type Progress, type UpscaleScale, type U
 import { saveUpscaled, type UpscaleSaveStep } from '../immich/save-upscaled.ts';
 import { PATCH, UpscaleState } from './upscale.svelte.ts';
 import { UPSCALE_QUALITY, checkUpscale, formatDuration, upscaledDownloadName, type UpscaleCheck } from './upscale.ts';
-import { loadCameraProfile } from '../camera-profiles.ts';
 import { FUJI_DECLINED, fujiLooks } from '../fuji-looks.svelte.ts';
 import { photoDefaults, type PhotoDefaults } from '../photo-defaults.ts';
 import { OPEN_LABELS, beginStep, endStep, newOpenSteps, type OpenStep, type OpenStepId } from './open-progress.ts';
@@ -544,8 +543,6 @@ export class Editor {
    * in the camera, 'edit' because the saved edit uses one. label: the look's name.
    */
   fujiOffer = $state<{ reason: 'camera' | 'edit'; label: string } | null>(null);
-  /** The open photo's camera has an Adobe profile converted from Lightroom (docs/lightroom.md). */
-  cameraProfileAvailable = $state(false);
   /** Size of the last fitted frame, for laying out the canvas. */
   frame = $state<{ width: number; height: number }>({ width: 3, height: 2 });
   zoom = $state<ZoomState>({ on: false, cx: 0.5, cy: 0.5, scale: 1 });
@@ -1080,8 +1077,6 @@ export class Editor {
         this.camera = cameraInfo(session.meta);
         const looks = await looksP;
         live();
-        const cameraProfile = await loadCameraProfile(session.meta.make, session.meta.model);
-        live();
         this.defaults = photoDefaults({ make: session.meta.make, sim: this.fujiSim, looksReady: !!looks, developed: !isRaw });
         let saved = stored ?? cloneRecipe(this.defaults.recipe);
         if (!stored) {
@@ -1092,8 +1087,6 @@ export class Editor {
         this.renderer = renderer;
         this.renderer.setSource(session.half, this.camera);
         this.renderer.setProfileLooks(looks ?? {});
-        this.renderer.setCameraProfile(cameraProfile);
-        this.cameraProfileAvailable = !!cameraProfile;
         if (this.mergedHdr) {
           // A merged HDR starts from Auto with HDR, measured on the photo (so after setSource).
           this.defaults = { ...this.defaults, recipe: withAutoHdr(renderer, this.defaults.recipe, $state.snapshot(this.autoParams) as AutoParams) };
