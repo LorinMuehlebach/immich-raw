@@ -223,7 +223,7 @@ async function masks() {
   await shot('masks', 'edges', maskSettings());
 
   await page.keyboard.press('k');
-  await ed(() => globalThis.__editor.setBrush({ size: 40, feather: 60, flow: 100, density: 100 }));
+  await ed(() => globalThis.__editor.masking.setBrush({ size: 40, feather: 60, flow: 100, density: 100 }));
   const path = [];
   for (let i = 0; i <= 30; i++) path.push(await at(0.36 + 0.3 * (i / 30), 0.8 - 0.06 * Math.sin((i / 30) * Math.PI)));
   await page.mouse.move(...path[0]);
@@ -672,7 +672,7 @@ async function aiDone(timeout = 600000) {
     if (await ask.isVisible().catch(() => false)) await ask.getByRole('button', { name: 'Download', exact: true }).click();
     const status = await ed(() => {
       const e = globalThis.__editor;
-      const s = e.ai.status[e.maskSel.comp];
+      const s = e.ai.status[e.masking.ui.sel.comp];
       return s ? { state: s.state, message: s.message } : null;
     });
     if (status?.state === 'failed') throw new Error(`AI mask failed: ${status.message}`);

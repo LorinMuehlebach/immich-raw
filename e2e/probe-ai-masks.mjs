@@ -60,7 +60,7 @@ async function waitDone(label, timeout = 600000) {
     }
     const st = await ed(() => {
       const e = globalThis.__editor;
-      const s = e.ai.status[e.maskSel.comp];
+      const s = e.ai.status[e.masking.ui.sel.comp];
       return s ? JSON.parse(JSON.stringify(s)) : null;
     });
     if (st && st.state !== 'working') {

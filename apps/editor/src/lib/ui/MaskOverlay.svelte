@@ -9,6 +9,7 @@
   import type { MaskComponent } from '@immich-raw/recipe';
   import { MediaQuery } from 'svelte/reactivity';
   import { editor } from '../state/editor.svelte.ts';
+  import type { ObjectGesture, ShapeGesture, StrokeGesture } from '../state/mask-editor.ts';
 
   let { width, height }: { width: number; height: number } = $props();
   let svg: SVGSVGElement;
@@ -94,8 +95,8 @@
     const out: Shape[] = [];
     for (const m of editor.recipe.masks) {
       for (const c of m.components) {
-        const maskSelected = m.id === editor.maskSel.mask;
-        const selected = maskSelected && c.id === editor.maskSel.comp;
+        const maskSelected = m.id === editor.masking.ui.sel.mask;
+        const selected = maskSelected && c.id === editor.masking.ui.sel.comp;
         if (c.kind === 'radial') {
           const a = (c.angle * Math.PI) / 180;
           const u: P = [Math.cos(a), Math.sin(a)];
@@ -170,30 +171,40 @@
 
   let drag: {
     kind: Kind;
-    maskId: string;
-    compId: string;
+    gesture: ShapeGesture;
     orig: MaskComponent;
     startPx: P;
     startMask: P;
     moved: number;
-    /** Colour sample being placed. */
-    index?: number;
   } | null = null;
 
-  function begin(kind: Kind, s: Shape | { maskId: string; compId: string }, e: PointerEvent, index?: number) {
+  /** Window listeners for a drag: move, and up or cancel. */
+  function listen(move: (e: PointerEvent) => void, up: (e: PointerEvent) => void) {
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
+  }
+
+  function unlisten(move: (e: PointerEvent) => void, up: (e: PointerEvent) => void) {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    removeEventListener('pointercancel', up);
+  }
+
+  /** Follows a part's drag with the pointer; kind: the handle, or 'draw' / 'sample'. */
+  function follow(kind: Kind, gesture: ShapeGesture | null, e: PointerEvent) {
     e.stopPropagation();
     e.preventDefault();
-    const maskId = s.maskId;
-    const compId = 'comp' in s ? s.comp.id : s.compId;
-    if (kind !== 'draw') editor.selectMask(maskId, compId);
-    const comp = editor.mask(maskId)?.components.find((c) => c.id === compId);
     const startPx = eventPx(e);
     const startMask = pxToMask(startPx);
-    if (!comp || !startMask) return;
-    drag = { kind, maskId, compId, orig: $state.snapshot(comp) as MaskComponent, startPx, startMask, moved: 0, index };
-    addEventListener('pointermove', onMove);
-    addEventListener('pointerup', onUp);
-    addEventListener('pointercancel', onUp);
+    if (!gesture || !startMask) return;
+    drag = { kind, gesture, orig: $state.snapshot(gesture.comp) as MaskComponent, startPx, startMask, moved: 0 };
+    listen(onMove, onUp);
+  }
+
+  /** A press on a handle or pin of shape s. */
+  function begin(kind: Kind, s: Shape, e: PointerEvent) {
+    follow(kind, editor.masking.grab(s.maskId, s.comp.id), e);
   }
 
   function onMove(e: PointerEvent) {
@@ -234,7 +245,7 @@
       }
     } else if (o.kind === 'color') {
       // Dragging out a sample averages the colours inside the circle.
-      const i = d.kind === 'draw' ? 0 : (d.index ?? -1);
+      const i = d.kind === 'draw' ? 0 : (d.gesture.sampleIndex ?? -1);
       if (d.kind === 'move') patch = { samples: o.samples.map((sm) => ({ ...sm, x: sm.x + delta[0], y: sm.y + delta[1] })) };
       else if (i >= 0) patch = { samples: o.samples.map((sm, k) => (k === i ? { ...sm, r: Math.min(0.25, len(sub(p, [sm.x, sm.y]))) } : sm)) };
     } else if (o.kind === 'linear') {
@@ -257,52 +268,45 @@
       const n = { x0: o.x0, y0: o.y0, x1: o.x1, y1: o.y1, ...patch } as { x0: number; y0: number; x1: number; y1: number };
       if (Math.hypot(n.x1 - n.x0, n.y1 - n.y0) < 1e-3) return;
     }
-    editor.updateComponent(d.maskId, d.compId, patch);
+    d.gesture.move(patch);
   }
 
   function onUp() {
     const d = drag;
     drag = null;
-    removeEventListener('pointermove', onMove);
-    removeEventListener('pointerup', onUp);
-    removeEventListener('pointercancel', onUp);
-    if (!d) return;
-    if (d.kind === 'draw') editor.finishMaskDraw(d.maskId, d.compId, d.moved);
-    else editor.commit();
+    unlisten(onMove, onUp);
+    d?.gesture.end(d.moved);
   }
 
   // ---------------------------------------------------------------- brush and colour picking
 
-  const sampling = $derived(editor.tool === 'mask' && !editor.readOnly && (editor.maskDraft?.kind === 'color' || (!editor.maskDraft && editor.selectedComponent?.kind === 'color')));
-  /** A clicked object is selected: Shift+click adds points to it. */
-  const objectPoints = $derived.by(() => {
-    const c = editor.selectedComponent;
-    return editor.tool === 'mask' && !editor.readOnly && !editor.maskDraft && c?.kind === 'ai' && c.target === 'object' && !c.box;
-  });
   /** Objects: the box being dragged, in CSS pixels. */
   let objectDrag = $state<{ start: P; end: P } | null>(null);
+  let objectGesture: ObjectGesture | null = null;
+  let stroke: StrokeGesture | null = null;
 
   function onObjectMove(e: PointerEvent) {
     if (objectDrag) objectDrag = { ...objectDrag, end: eventPx(e) };
   }
 
   function onObjectUp(e: PointerEvent) {
-    removeEventListener('pointermove', onObjectMove);
-    removeEventListener('pointerup', onObjectUp);
-    removeEventListener('pointercancel', onObjectUp);
+    unlisten(onObjectMove, onObjectUp);
     const d = objectDrag;
+    const g = objectGesture;
     objectDrag = null;
-    if (!d || e.type === 'pointercancel') return;
+    objectGesture = null;
+    // A cancelled box leaves Objects armed.
+    if (!d || !g || e.type === 'pointercancel') return;
     const end = eventPx(e);
     if (len(sub(end, d.start)) < 6) {
       // A click: the object under it.
       const p = pxToMask(d.start);
-      if (p) editor.drawObject(null, p);
+      if (p) g.end(null, p);
       return;
     }
     const a = pxToMask(d.start);
     const b = pxToMask(end);
-    if (a && b) editor.drawObject([a[0], a[1], b[0], b[1]], null);
+    if (a && b) g.end([a[0], a[1], b[0], b[1]], null);
   }
   let cursor = $state<P | null>(null);
   let altHeld = $state(false);
@@ -310,61 +314,43 @@
   /** Brush outline at the pointer: outer radius and where the feather starts, in CSS pixels. */
   const brushRing = $derived.by(() => {
     void editor.viewVersion;
-    if (!editor.painting || !cursor) return null;
+    if (!editor.masking.painting || !cursor) return null;
     const m = pxToMask(cursor);
     if (!m) return null;
-    const r = brushRadius(editor.brush.size);
+    const r = brushRadius(editor.masking.ui.brush.size);
     const e = toPx([m[0] + r, m[1]]);
     const R = len(sub(e, cursor));
-    return { c: cursor, r: R, inner: R * Math.max(0, 1 - editor.brush.feather / 100) };
+    return { c: cursor, r: R, inner: R * Math.max(0, 1 - editor.masking.ui.brush.feather / 100) };
   });
 
   function onPaintMove(e: PointerEvent) {
     const p = pxToMask(eventPx(e));
-    if (p) editor.extendStroke(p);
+    if (p) stroke?.to(p);
   }
 
   function onPaintUp() {
-    removeEventListener('pointermove', onPaintMove);
-    removeEventListener('pointerup', onPaintUp);
-    removeEventListener('pointercancel', onPaintUp);
-    editor.endStroke();
+    unlisten(onPaintMove, onPaintUp);
+    stroke?.end();
+    stroke = null;
   }
 
   function onBackgroundDown(e: PointerEvent) {
     if (e.button > 0) return;
     const p = pxToMask(eventPx(e));
     if (!p) return;
-    if (editor.painting) {
-      e.preventDefault();
-      if (!editor.beginStroke(p, e.altKey || editor.brush.erase)) return;
-      addEventListener('pointermove', onPaintMove);
-      addEventListener('pointerup', onPaintUp);
-      addEventListener('pointercancel', onPaintUp);
-      return;
-    }
-    if (editor.maskDraft?.kind === 'object') {
+    if (editor.masking.painting) e.preventDefault();
+    const g = editor.masking.press(p, { shift: e.shiftKey, erase: e.altKey || editor.masking.ui.brush.erase });
+    if (!g) return;
+    if (g.kind === 'stroke') {
+      stroke = g;
+      listen(onPaintMove, onPaintUp);
+    } else if (g.kind === 'object') {
       e.preventDefault();
       const start = eventPx(e);
+      objectGesture = g;
       objectDrag = { start, end: start };
-      addEventListener('pointermove', onObjectMove);
-      addEventListener('pointerup', onObjectUp);
-      addEventListener('pointercancel', onObjectUp);
-      return;
-    }
-    if (objectPoints) {
-      if (e.shiftKey) editor.addObjectPoint(p);
-      return;
-    }
-    if (!editor.maskDraft && editor.selectedComponent?.kind === 'color' && editor.maskSel.mask && editor.maskSel.comp) {
-      const index = editor.sampleColor(p, e.shiftKey);
-      if (index !== null) begin('sample', { maskId: editor.maskSel.mask, compId: editor.maskSel.comp }, e, index);
-      return;
-    }
-    if (!editor.maskDraft) return;
-    const compId = editor.beginMaskDraw(p);
-    const maskId = editor.maskSel.mask;
-    if (compId && maskId) begin('draw', { maskId, compId }, e);
+      listen(onObjectMove, onObjectUp);
+    } else follow(g.sampleIndex !== undefined ? 'sample' : 'draw', g, e);
   }
 
   function onHover(e: PointerEvent) {
@@ -378,8 +364,8 @@
   {width}
   {height}
   class="masks"
-  class:drawing={!!editor.maskDraft || sampling || objectPoints}
-  class:painting={editor.painting}
+  class:drawing={editor.masking.photoActive}
+  class:painting={editor.masking.painting}
   role="presentation"
   onpointerdown={onBackgroundDown}
   onpointermove={onHover}
@@ -454,10 +440,10 @@
       onpointerdown={(e) => {
         if (!s.fixed) return begin('move', s, e);
         e.stopPropagation();
-        editor.selectMask(s.maskId, s.comp.id);
+        editor.masking.select(s.maskId, s.comp.id);
       }}
     >
-      <title>{editor.mask(s.maskId)?.name}</title>
+      <title>{editor.masking.mask(s.maskId)?.name}</title>
     </circle>
   {/each}
   {#if objectDrag && len(sub(objectDrag.end, objectDrag.start)) >= 6}
@@ -471,11 +457,11 @@
     </g>
   {/if}
   {#if brushRing}
-    <g class="brush" class:erase={editor.brush.erase || altHeld}>
+    <g class="brush" class:erase={editor.masking.ui.brush.erase || altHeld}>
       <circle cx={brushRing.c[0]} cy={brushRing.c[1]} r={brushRing.r} class="under" />
       <circle cx={brushRing.c[0]} cy={brushRing.c[1]} r={brushRing.r} />
       {#if brushRing.inner > 2 && brushRing.inner < brushRing.r - 2}<circle cx={brushRing.c[0]} cy={brushRing.c[1]} r={brushRing.inner} class="feather" />{/if}
-      {#if editor.brush.erase || altHeld}<line x1={brushRing.c[0] - 5} y1={brushRing.c[1]} x2={brushRing.c[0] + 5} y2={brushRing.c[1]} />{/if}
+      {#if editor.masking.ui.brush.erase || altHeld}<line x1={brushRing.c[0] - 5} y1={brushRing.c[1]} x2={brushRing.c[0] + 5} y2={brushRing.c[1]} />{/if}
     </g>
   {/if}
 </svg>

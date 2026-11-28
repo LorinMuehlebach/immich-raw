@@ -247,21 +247,21 @@
     } else if (key === 'w' && e.shiftKey) {
       editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask');
     } else if (key === 'm') {
-      editor.startMask(e.shiftKey ? 'radial' : 'linear');
+      editor.masking.start(e.shiftKey ? 'radial' : 'linear');
     } else if (key === 'k') {
-      editor.startMask('brush');
-    } else if ((e.key === '[' || e.key === ']') && editor.painting) {
+      editor.masking.start('brush');
+    } else if ((e.key === '[' || e.key === ']') && editor.masking.painting) {
       // Brush size, in steps that feel even at every size.
-      const s = editor.brush.size;
-      editor.setBrush({ size: e.key === ']' ? Math.min(100, s + Math.max(1, Math.round(s * 0.12))) : Math.max(1, s - Math.max(1, Math.round(s * 0.12))) });
+      const s = editor.masking.ui.brush.size;
+      editor.masking.setBrush({ size: e.key === ']' ? Math.min(100, s + Math.max(1, Math.round(s * 0.12))) : Math.max(1, s - Math.max(1, Math.round(s * 0.12))) });
     } else if (key === 'o' && editor.tool === 'mask') {
-      editor.toggleMaskOverlay();
+      editor.masking.toggleOverlay();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.tool === 'mask' && !onRange) {
-      const m = editor.selectedMask;
-      const c = editor.selectedComponent;
+      const m = editor.masking.selectedMask;
+      const c = editor.masking.selectedComponent;
       if (m && c) {
         e.preventDefault();
-        editor.deleteComponent(m.id, c.id);
+        editor.masking.deleteComponent(m.id, c.id);
       }
     } else if (e.code === 'Backslash' || e.key === '\\') {
       e.preventDefault();
@@ -282,7 +282,7 @@
       const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
       if (id) openAsset(id);
     } else if (e.key === 'Escape') {
-      if (editor.maskDraft) editor.cancelMaskDraft();
+      if (editor.masking.ui.draft) editor.masking.cancelDraft();
       else if (editor.tool !== 'edit') editor.setTool('edit');
       else if (editor.zoom.on) editor.setZoom(false);
       else goBack();
