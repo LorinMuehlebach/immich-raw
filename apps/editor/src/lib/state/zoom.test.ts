@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { anchoredCentre, fitScale, nextScale, VIEW_PAD, wheelFactor, ZOOM_MAX } from './zoom.ts';
+import { anchoredCentre, clampZoom, fitScale, nextScale, panBy, viewScale, VIEW_PAD, wheelFactor, zoomAnchored, zoomTo, ZOOM_MAX, type ZoomState } from './zoom.ts';
 
 const frame = { width: 9566, height: 6374 }; // Sony A7R V
 const vp = { width: 1400, height: 900, dpr: 1.5 };
@@ -40,5 +40,70 @@ describe('zoom', () => {
       expect((p[0] * fw - ox) / vp.dpr).toBeCloseTo(at[0], 6);
       expect((p[1] * fh - oy) / vp.dpr).toBeCloseTo(at[1], 6);
     }
+  });
+
+  /** Device-pixel rectangle of the frame the view shows: [left, top, right, bottom]. */
+  const shown = (z: ZoomState) => {
+    const fw = frame.width * z.scale;
+    const fh = frame.height * z.scale;
+    const vw = vp.width * vp.dpr;
+    const vh = vp.height * vp.dpr;
+    return [z.cx * fw - vw / 2, z.cy * fh - vh / 2, z.cx * fw + vw / 2, z.cy * fh + vh / 2] as const;
+  };
+
+  it('never shows past the edges of the frame', () => {
+    const z = clampZoom({ on: true, cx: 0, cy: 1, scale: 1 }, frame, vp);
+    const [l, t, r, b] = shown(z);
+    expect(l).toBeCloseTo(0, 6);
+    expect(b).toBeCloseTo(frame.height, 6);
+    expect(r).toBeLessThan(frame.width);
+    expect(t).toBeGreaterThan(0);
+  });
+
+  it('centres an axis the frame does not fill', () => {
+    const narrow = { width: 400, height: 6000 };
+    const z = clampZoom({ on: true, cx: 0.1, cy: 0.1, scale: 1 }, narrow, vp);
+    expect(z.cx).toBe(0.5);
+    expect(z.cy).toBeGreaterThan(0.1);
+  });
+
+  it('zooms to a point, clamped', () => {
+    expect(zoomTo([0.5, 0.5], 1, frame, vp)).toEqual({ on: true, cx: 0.5, cy: 0.5, scale: 1 });
+    const corner = zoomTo([0, 0], 1, frame, vp);
+    expect(shown(corner)[0]).toBeCloseTo(0, 6);
+    expect(shown(corner)[1]).toBeCloseTo(0, 6);
+  });
+
+  it('pans by a drag in CSS pixels, the photo following the pointer', () => {
+    const z: ZoomState = { on: true, cx: 0.5, cy: 0.5, scale: 1 };
+    const moved = panBy(z, 100, -40, frame, vp);
+    expect((z.cx - moved.cx) * frame.width).toBeCloseTo(100 * vp.dpr, 6);
+    expect((z.cy - moved.cy) * frame.height).toBeCloseTo(-40 * vp.dpr, 6);
+    expect(shown(panBy(z, 1e6, 0, frame, vp))[0]).toBeCloseTo(0, 6);
+  });
+
+  it('does not pan the fitted view', () => {
+    const fitted: ZoomState = { on: false, cx: 0.5, cy: 0.5, scale: 1 };
+    expect(panBy(fitted, 100, 100, frame, vp)).toBe(fitted);
+  });
+
+  it('reports the fitted scale when not zoomed', () => {
+    expect(viewScale({ on: false, cx: 0.5, cy: 0.5, scale: 3 }, frame, vp)).toBe(fitScale(frame, vp));
+    expect(viewScale({ on: true, cx: 0.5, cy: 0.5, scale: 3 }, frame, vp)).toBe(3);
+  });
+
+  it('zooms around an anchor, or back to fit', () => {
+    const fit = fitScale(frame, vp);
+    expect(zoomAnchored({ scale: fit, p: [0.5, 0.5] }, 0.5, [700, 450], frame, vp)).toBeNull();
+    const p: [number, number] = [0.4, 0.6];
+    const at: [number, number] = [600, 500];
+    const z = zoomAnchored({ scale: fit, p }, 4, [600, 500], frame, vp)!;
+    expect(z.on).toBe(true);
+    expect(z.scale).toBeCloseTo(fit * 4, 9);
+    // Away from the edges the anchor stays under the cursor.
+    expect([z.cx, z.cy]).toEqual(anchoredCentre(p, at, z.scale, frame, vp));
+    // Near an edge the view is clamped instead.
+    const edge = zoomAnchored({ scale: fit, p: [0, 0] }, 4, [700, 450], frame, vp)!;
+    expect(shown(edge)[0]).toBeCloseTo(0, 6);
   });
 });

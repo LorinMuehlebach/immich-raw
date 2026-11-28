@@ -47,3 +47,64 @@ export function anchoredCentre(
   const fh = frame.height * scale;
   return [p[0] + ((vp.width / 2 - at[0]) * vp.dpr) / fw, p[1] + ((vp.height / 2 - at[1]) * vp.dpr) / fh];
 }
+
+export interface ZoomState {
+  on: boolean;
+  /** Centre in frame coordinates. */
+  cx: number;
+  cy: number;
+  /** Device pixels per full-resolution pixel. */
+  scale: number;
+}
+
+/** Size of the edit frame in full-resolution pixels. */
+export interface Frame {
+  width: number;
+  height: number;
+}
+
+/** The scale the view shows now: the zoom's, or the fitted one when not zoomed. */
+export function viewScale(z: ZoomState, frame: Frame, vp: Viewport): number {
+  return z.on ? z.scale : fitScale(frame, vp);
+}
+
+/**
+ * Moves the centre so the view shows no space past the frame's edges. Along an axis the zoomed
+ * frame does not fill, it is centred.
+ */
+export function clampZoom(z: ZoomState, frame: Frame, vp: Viewport): ZoomState {
+  const clamp = (c: number, view: number, full: number) => (full <= view ? 0.5 : Math.min(1 - view / 2 / full, Math.max(view / 2 / full, c)));
+  return {
+    ...z,
+    cx: clamp(z.cx, vp.width * vp.dpr, frame.width * z.scale),
+    cy: clamp(z.cy, vp.height * vp.dpr, frame.height * z.scale),
+  };
+}
+
+/** Zoomed in to `scale` with frame point `p` (0..1) in the middle, as far as the edges allow. */
+export function zoomTo(p: [number, number], scale: number, frame: Frame, vp: Viewport): ZoomState {
+  return clampZoom({ on: true, cx: p[0], cy: p[1], scale }, frame, vp);
+}
+
+/**
+ * Zoomed to `anchor.scale * factor` with the anchor's frame point under the stage point `at` (CSS
+ * pixels from the stage's top left), as far as the edges allow; null when that is back at fit.
+ */
+export function zoomAnchored(
+  anchor: { scale: number; p: [number, number] },
+  factor: number,
+  at: [number, number],
+  frame: Frame,
+  vp: Viewport,
+): ZoomState | null {
+  const scale = nextScale(anchor.scale, factor, fitScale(frame, vp));
+  if (scale === null) return null;
+  const [cx, cy] = anchoredCentre(anchor.p, at, scale, frame, vp);
+  return clampZoom({ on: true, cx, cy, scale }, frame, vp);
+}
+
+/** Pans a zoomed view by a drag of (dx, dy) CSS pixels; the fitted view is returned as it is. */
+export function panBy(z: ZoomState, dx: number, dy: number, frame: Frame, vp: Viewport): ZoomState {
+  if (!z.on) return z;
+  return clampZoom({ ...z, cx: z.cx - (dx * vp.dpr) / (frame.width * z.scale), cy: z.cy - (dy * vp.dpr) / (frame.height * z.scale) }, frame, vp);
+}

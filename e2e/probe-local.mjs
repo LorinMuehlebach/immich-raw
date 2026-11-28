@@ -44,8 +44,8 @@ await E(() => globalThis.__editor.resetAll());
 await E(() => {
   const e = globalThis.__editor;
   e.setTool('mask');
-  e.setBrush({ size: 30, feather: 60, flow: 100, density: 100 });
-  e.startMask('brush');
+  e.masking.setBrush({ size: 30, feather: 60, flow: 100, density: 100 });
+  e.masking.start('brush');
 });
 await page.waitForTimeout(300);
 const box = await canvas.boundingBox();
@@ -56,7 +56,7 @@ for (let i = 0; i <= 30; i++) await page.mouse.move(...at(0.2 + 0.5 * (i / 30), 
 await page.mouse.up();
 await E(() => {
   const e = globalThis.__editor;
-  e.setMaskParam({ path: 'adjust.exposure', label: 'Exposure', min: -4, max: 4, default: 0, step: 0.01, decimals: 2 }, 1.5, true);
+  e.masking.setParam({ path: 'adjust.exposure', label: 'Exposure', min: -4, max: 4, default: 0, step: 0.01, decimals: 2 }, 1.5, true);
 });
 await shot('3-brush');
 // Erase part of it with Alt.
@@ -72,18 +72,18 @@ report.brush = await E(() => {
   return { comps: m.components.map((c) => ({ kind: c.kind, strokes: c.strokes?.map((s) => ({ erase: s.erase, n: s.points.length / 2, size: s.size })) })) };
 });
 report.history = await E(() => globalThis.__editor.historySteps.slice(-4).map((s) => s.label));
-await E(() => globalThis.__editor.toggleMaskOverlay());
+await E(() => globalThis.__editor.masking.toggleOverlay());
 await shot('5-brush-overlay');
-await E(() => globalThis.__editor.toggleMaskOverlay());
+await E(() => globalThis.__editor.masking.toggleOverlay());
 
 // Colour range on the sky (top middle), with Saturation -100.
 await E(() => globalThis.__editor.resetAll());
-await E(() => globalThis.__editor.startMask('color'));
+await E(() => globalThis.__editor.masking.start('color'));
 await page.waitForTimeout(200);
 await page.mouse.click(...at(0.5, 0.12));
 await E(() => {
   const e = globalThis.__editor;
-  e.setMaskParam({ path: 'adjust.saturation', label: 'Saturation', min: -100, max: 100, default: 0, step: 1, decimals: 0 }, -100, true);
+  e.masking.setParam({ path: 'adjust.saturation', label: 'Saturation', min: -100, max: 100, default: 0, step: 1, decimals: 0 }, -100, true);
 });
 await shot('6-color-range');
 await page.keyboard.down('Shift');
@@ -91,7 +91,7 @@ await page.mouse.click(...at(0.15, 0.85));
 await page.keyboard.up('Shift');
 await shot('7-color-range-2');
 report.color = await E(() => JSON.parse(JSON.stringify(globalThis.__editor.recipe.masks[0]?.components)));
-await E(() => globalThis.__editor.toggleMaskOverlay());
+await E(() => globalThis.__editor.masking.toggleOverlay());
 await shot('8-color-overlay');
 
 report.errors = errors;

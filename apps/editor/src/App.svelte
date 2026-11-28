@@ -361,29 +361,29 @@
     } else if (key === 'w' && e.shiftKey) {
       editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask');
     } else if (key === 'm') {
-      editor.startMask(e.shiftKey ? 'radial' : 'linear');
+      editor.masking.start(e.shiftKey ? 'radial' : 'linear');
     } else if (key === 'k' && e.shiftKey) {
-      editor.startMask('polygon');
+      editor.masking.start('polygon');
     } else if (key === 'k') {
-      editor.startMask('brush');
-    } else if ((e.key === '[' || e.key === ']') && editor.painting) {
+      editor.masking.start('brush');
+    } else if ((e.key === '[' || e.key === ']') && editor.masking.painting) {
       // Brush size, in steps that feel even at every size.
-      const s = editor.brush.size;
-      editor.setBrush({ size: e.key === ']' ? Math.min(100, s + Math.max(1, Math.round(s * 0.12))) : Math.max(1, s - Math.max(1, Math.round(s * 0.12))) });
+      const s = editor.masking.ui.brush.size;
+      editor.masking.setBrush({ size: e.key === ']' ? Math.min(100, s + Math.max(1, Math.round(s * 0.12))) : Math.max(1, s - Math.max(1, Math.round(s * 0.12))) });
     } else if (key === 'o' && editor.tool === 'mask') {
-      editor.toggleMaskOverlay();
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.maskDraft?.kind === 'polygon' && !onRange) {
+      editor.masking.toggleOverlay();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.masking.ui.draft?.kind === 'polygon' && !onRange) {
       // Takes back the last corner of the polygon being drawn.
       e.preventDefault();
-      editor.removePolygonPoint();
-    } else if (e.key === 'Enter' && editor.maskDraft?.kind === 'polygon') {
-      editor.closePolygon();
+      editor.masking.removePolygonPoint();
+    } else if (e.key === 'Enter' && editor.masking.ui.draft?.kind === 'polygon') {
+      editor.masking.closePolygon();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.tool === 'mask' && !onRange) {
-      const m = editor.selectedMask;
-      const c = editor.selectedComponent;
+      const m = editor.masking.selectedMask;
+      const c = editor.masking.selectedComponent;
       if (m && c) {
         e.preventDefault();
-        editor.deleteComponent(m.id, c.id);
+        editor.masking.deleteComponent(m.id, c.id);
       }
     } else if (e.code === 'Backslash' || e.key === '\\') {
       e.preventDefault();
@@ -408,7 +408,7 @@
       const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
       if (id) openAsset(id);
     } else if (e.key === 'Escape') {
-      if (editor.maskDraft) editor.cancelMaskDraft();
+      if (editor.masking.ui.draft) editor.masking.cancelDraft();
       else if (editor.tool !== 'edit') editor.setTool('edit');
       else if (editor.zoom.on) editor.setZoom(false);
       else goBack();

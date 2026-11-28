@@ -58,7 +58,7 @@ try {
     page.evaluate(() => {
       const e = globalThis.__editor;
       return {
-        draft: e.maskDraft ? { kind: e.maskDraft.kind, corners: (e.maskDraft.points?.length ?? 0) / 2 } : null,
+        draft: e.masking.ui.draft ? { kind: e.masking.ui.draft.kind, corners: (e.masking.ui.draft.points?.length ?? 0) / 2 } : null,
         masks: e.recipe.masks.map((m) => ({ name: m.name, parts: m.components.map((c) => ({ kind: c.kind, corners: (c.points?.length ?? 0) / 2, freehand: !!c.freehand, id: c.id })) })),
       };
     });
@@ -82,7 +82,7 @@ try {
   check('clicking the first corner closes it into a new mask', !s.draft && s.masks.length === 1 && s.masks[0].parts[0]?.kind === 'polygon' && s.masks[0].parts[0].corners === 4, s);
 
   // The mask changes the inside only.
-  await page.evaluate(() => globalThis.__editor.setMaskOverlay(false));
+  await page.evaluate(() => globalThis.__editor.masking.setOverlay(false));
   await settle();
   const before = { in: await bright(0.42, 0.45), out: await bright(0.7, 0.45) };
   const exposure = page.locator('input[aria-label="Exposure"]').first();
@@ -95,7 +95,7 @@ try {
   await page.screenshot({ path: join(outDir, '2-polygon-mask.png') });
 
   // ---- editing corners
-  await page.evaluate(() => globalThis.__editor.setMaskOverlay(true));
+  await page.evaluate(() => globalThis.__editor.masking.setOverlay(true));
   const partId = (await state()).masks[0].parts[0].id;
   const corners = () => page.evaluate((id) => globalThis.__editor.recipe.masks.flatMap((m) => m.components).find((c) => c.id === id)?.points ?? [], partId);
   const p0 = await corners();

@@ -94,8 +94,8 @@
     object: 'Drag a box around the object on the photo, or click it.',
   };
 
-  const sel = $derived(editor.selectedMask);
-  const comp = $derived(editor.selectedComponent);
+  const sel = $derived(editor.masking.selectedMask);
+  const comp = $derived(editor.masking.selectedComponent);
 
   // A People part's "who" list needs the people found in the photo.
   $effect(() => {
@@ -114,7 +114,7 @@
       return;
     }
     edgeOpen = id;
-    editor.selectMask(maskId, compId);
+    editor.masking.select(maskId, compId);
   }
 
   function startRename(id: string, name: string) {
@@ -124,7 +124,7 @@
   }
 
   function finishRename(apply: boolean) {
-    if (apply && renaming) editor.renameMask(renaming, nameText);
+    if (apply && renaming) editor.masking.rename(renaming, nameText);
     renaming = null;
   }
 
@@ -137,8 +137,8 @@
     const value = e.currentTarget.value;
     e.currentTarget.value = '';
     if (!value || !sel) return;
-    if (value.startsWith('ai:')) editor.startAiMask(value.slice(3) as AiTarget, mode, sel.id);
-    else editor.startMask(value as ComponentKind | 'lasso', mode, sel.id);
+    if (value.startsWith('ai:')) editor.masking.startAi(value.slice(3) as AiTarget, mode, sel.id);
+    else editor.masking.start(value as ComponentKind | 'lasso', mode, sel.id);
   }
 
   const toggle = <T,>(list: T[], item: T, on: boolean): T[] => (on ? [...list, item] : list.filter((x) => x !== item));
@@ -189,7 +189,7 @@
 
   const compValue = (c: MaskComponent, spec: ParamSpec) => getPath(c, spec.path) as number;
   const setComp = (c: MaskComponent, spec: ParamSpec) => (v: number) =>
-    sel && editor.updateComponent(sel.id, c.id, { [spec.path]: Math.round(v) } as Partial<MaskComponent>, false, `${sel.name}: ${spec.label} ${Math.round(v)}`);
+    sel && editor.masking.updateComponent(sel.id, c.id, { [spec.path]: Math.round(v) } as Partial<MaskComponent>, false, `${sel.name}: ${spec.label} ${Math.round(v)}`);
 </script>
 
 {#snippet gear(id: string, set: boolean, title: string, onclick: () => void)}
@@ -210,9 +210,9 @@
         <Slider
           spec={row.spec}
           value={e?.[row.key] ?? 0}
-          onchange={(v) => editor.setEdge(maskId, compId, row.spec, v)}
+          onchange={(v) => editor.masking.setEdge(maskId, compId, row.spec, v)}
           oncommit={() => editor.commit()}
-          onreset={() => editor.setEdge(maskId, compId, row.spec, 0, true)}
+          onreset={() => editor.masking.setEdge(maskId, compId, row.spec, 0, true)}
           disabled={editor.readOnly}
         />
       </div>
@@ -222,7 +222,7 @@
 
 <Section title="Masking">
   {#snippet actions()}
-    {@const held = editor.maskOverlay && editor.maskEditing === 'adjust'}
+    {@const held = editor.masking.ui.overlay && editor.masking.ui.editing === 'adjust'}
     <label
       class="overlay"
       class:held
@@ -230,52 +230,52 @@
         ? 'The red overlay is hidden while the mask parameters are active; click the mask settings (or press O) to show it'
         : 'Show the selected mask in red while the mask settings are active; it hides while you work on the mask parameters (O)'}
     >
-      <input type="checkbox" checked={editor.maskOverlay} onchange={(e) => editor.setMaskOverlay(e.currentTarget.checked)} />
+      <input type="checkbox" checked={editor.masking.ui.overlay} onchange={(e) => editor.masking.setOverlay(e.currentTarget.checked)} />
       Overlay
     </label>
   {/snippet}
 
   <!-- Mask settings: clicking anywhere here shows the red overlay. -->
-  <div class="area" class:active={editor.maskEditing === 'shape'} role="group" aria-label="Mask settings" onpointerdown={() => editor.setMaskEditing('shape')}>
-  <div class="area-head">Mask settings{#if editor.maskEditing === 'shape' && editor.maskOverlay}<span class="badge">red overlay</span>{/if}</div>
+  <div class="area" class:active={editor.masking.ui.editing === 'shape'} role="group" aria-label="Mask settings" onpointerdown={() => editor.masking.setEditing('shape')}>
+  <div class="area-head">Mask settings{#if editor.masking.ui.editing === 'shape' && editor.masking.ui.overlay}<span class="badge">red overlay</span>{/if}</div>
   <div class="create">
     <span class="lbl">New mask</span>
-    <button class:active={editor.maskDraft?.kind === 'linear' && !editor.maskDraft.maskId} onclick={() => editor.startMask('linear')} disabled={editor.readOnly} title="Linear gradient (M): drag on the photo from full effect to none">Linear</button>
-    <button class:active={editor.maskDraft?.kind === 'radial' && !editor.maskDraft.maskId} onclick={() => editor.startMask('radial')} disabled={editor.readOnly} title="Radial gradient (Shift+M): drag on the photo from the centre out">Radial</button>
-    <button class:active={editor.maskDraft?.kind === 'brush' && !editor.maskDraft.maskId} onclick={() => editor.startMask('brush')} disabled={editor.readOnly} title="Brush (K): paint the mask on the photo">Brush</button>
-    <button class:active={editor.maskDraft?.kind === 'polygon' && !editor.maskDraft.maskId} onclick={() => editor.startMask('polygon')} disabled={editor.readOnly} title="Polygon (Shift+K): click the corners of the area on the photo">Polygon</button>
-    <button class:active={editor.maskDraft?.kind === 'lasso' && !editor.maskDraft.maskId} onclick={() => editor.startMask('lasso')} disabled={editor.readOnly} title="Lasso: drag around the area on the photo">Lasso</button>
-    <button class:active={editor.maskDraft?.kind === 'color' && !editor.maskDraft.maskId} onclick={() => editor.startMask('color')} disabled={editor.readOnly} title="Color range: select by colour">Color</button>
-    <button onclick={() => editor.startMask('luminance')} disabled={editor.readOnly} title="Luminance range: select by brightness">Luminance</button>
+    <button class:active={editor.masking.ui.draft?.kind === 'linear' && !editor.masking.ui.draft.maskId} onclick={() => editor.masking.start('linear')} disabled={editor.readOnly} title="Linear gradient (M): drag on the photo from full effect to none">Linear</button>
+    <button class:active={editor.masking.ui.draft?.kind === 'radial' && !editor.masking.ui.draft.maskId} onclick={() => editor.masking.start('radial')} disabled={editor.readOnly} title="Radial gradient (Shift+M): drag on the photo from the centre out">Radial</button>
+    <button class:active={editor.masking.ui.draft?.kind === 'brush' && !editor.masking.ui.draft.maskId} onclick={() => editor.masking.start('brush')} disabled={editor.readOnly} title="Brush (K): paint the mask on the photo">Brush</button>
+    <button class:active={editor.masking.ui.draft?.kind === 'polygon' && !editor.masking.ui.draft.maskId} onclick={() => editor.masking.start('polygon')} disabled={editor.readOnly} title="Polygon (Shift+K): click the corners of the area on the photo">Polygon</button>
+    <button class:active={editor.masking.ui.draft?.kind === 'lasso' && !editor.masking.ui.draft.maskId} onclick={() => editor.masking.start('lasso')} disabled={editor.readOnly} title="Lasso: drag around the area on the photo">Lasso</button>
+    <button class:active={editor.masking.ui.draft?.kind === 'color' && !editor.masking.ui.draft.maskId} onclick={() => editor.masking.start('color')} disabled={editor.readOnly} title="Color range: select by colour">Color</button>
+    <button onclick={() => editor.masking.start('luminance')} disabled={editor.readOnly} title="Luminance range: select by brightness">Luminance</button>
   </div>
   <div class="create ai">
     <span class="lbl">AI</span>
     {#each AI_TARGETS as t (t)}
       <button
-        class:active={(t === 'object' && editor.maskDraft?.kind === 'object' && !editor.maskDraft.maskId) || (editor.aiPicker?.target === t && !editor.aiPicker.maskId)}
-        onclick={() => editor.startAiMask(t)}
+        class:active={(t === 'object' && editor.masking.ui.draft?.kind === 'object' && !editor.masking.ui.draft.maskId) || (editor.masking.ui.picker?.target === t && !editor.masking.ui.picker.maskId)}
+        onclick={() => editor.masking.startAi(t)}
         disabled={editor.readOnly}
         title={AI_TITLE[t]}>{t === 'object' ? 'Objects' : AI_TARGET_LABELS[t]}{t === 'people' || t === 'landscape' ? '…' : ''}</button
       >
     {/each}
   </div>
-  {#if editor.maskDraft}
+  {#if editor.masking.ui.draft}
     <div class="hint">
-      {DRAFT_HINT[editor.maskDraft.kind]}
-      <button class="small" onclick={() => editor.cancelMaskDraft()}>Cancel</button>
+      {DRAFT_HINT[editor.masking.ui.draft.kind]}
+      <button class="small" onclick={() => editor.masking.cancelDraft()}>Cancel</button>
     </div>
   {/if}
-  {#if editor.aiPicker}
-    {@const p = editor.aiPicker}
+  {#if editor.masking.ui.picker}
+    {@const p = editor.masking.ui.picker}
     <div class="picker">
       <div class="sub">{p.target === 'people' ? 'People' : 'Landscape'}{p.maskId ? ` · ${MODE_LABEL[p.mode]}` : ''}</div>
       {#if p.target === 'people'}
         <div class="who">
-          <label><input type="radio" name="ai-who" checked={p.who === -1} onchange={() => editor.setAiPicker({ who: -1 })} /> Everyone</label>
+          <label><input type="radio" name="ai-who" checked={p.who === -1} onchange={() => editor.masking.setPicker({ who: -1 })} /> Everyone</label>
           {#if editor.ai.people}
             {#each editor.ai.people as person, i (i)}
               <label class="person" title="Person {i + 1}">
-                <input type="radio" name="ai-who" checked={p.who === i} onchange={() => editor.setAiPicker({ who: i })} />
+                <input type="radio" name="ai-who" checked={p.who === i} onchange={() => editor.masking.setPicker({ who: i })} />
                 <canvas width="40" height="40" use:personThumb={person}></canvas>
               </label>
             {/each}
@@ -288,19 +288,19 @@
         </div>
         <div class="checks">
           {#each PERSON_PARTS as part (part)}
-            <label><input type="checkbox" checked={p.parts.includes(part)} onchange={(e) => editor.setAiPicker({ parts: ordered(PERSON_PARTS, toggle(p.parts, part, e.currentTarget.checked)) })} /> {PERSON_PART_LABELS[part]}</label>
+            <label><input type="checkbox" checked={p.parts.includes(part)} onchange={(e) => editor.masking.setPicker({ parts: ordered(PERSON_PARTS, toggle(p.parts, part, e.currentTarget.checked)) })} /> {PERSON_PART_LABELS[part]}</label>
           {/each}
         </div>
       {:else}
         <div class="checks">
           {#each LANDSCAPE_CLASSES as k (k)}
-            <label><input type="checkbox" checked={p.classes.includes(k)} onchange={(e) => editor.setAiPicker({ classes: ordered(LANDSCAPE_CLASSES, toggle(p.classes, k, e.currentTarget.checked)) })} /> {LANDSCAPE_LABELS[k]}</label>
+            <label><input type="checkbox" checked={p.classes.includes(k)} onchange={(e) => editor.masking.setPicker({ classes: ordered(LANDSCAPE_CLASSES, toggle(p.classes, k, e.currentTarget.checked)) })} /> {LANDSCAPE_LABELS[k]}</label>
           {/each}
         </div>
       {/if}
       <div class="row">
-        <button onclick={() => editor.confirmAiPicker()} disabled={p.target === 'people' ? !p.parts.length : !p.classes.length}>Create mask</button>
-        <button class="small" onclick={() => editor.cancelMaskDraft()}>Cancel</button>
+        <button onclick={() => editor.masking.confirmPicker()} disabled={p.target === 'people' ? !p.parts.length : !p.classes.length}>Create mask</button>
+        <button class="small" onclick={() => editor.masking.cancelDraft()}>Cancel</button>
       </div>
     </div>
   {/if}
@@ -311,26 +311,26 @@
       {#if pr.kind === 'download'}<progress max={pr.total} value={pr.loaded}></progress>{/if}
     </div>
   {/if}
-  {#if editor.painting || editor.maskDraft?.kind === 'brush'}
+  {#if editor.masking.painting || editor.masking.ui.draft?.kind === 'brush'}
     <div class="group">
       <div class="sub">
         Brush
-        <label class="invert"><input type="checkbox" checked={editor.brush.erase} onchange={(e) => editor.setBrush({ erase: e.currentTarget.checked })} /> Erase</label>
+        <label class="invert"><input type="checkbox" checked={editor.masking.ui.brush.erase} onchange={(e) => editor.masking.setBrush({ erase: e.currentTarget.checked })} /> Erase</label>
       </div>
       {#each BRUSH_ROWS as row (row.key)}
         <Slider
           spec={row.spec}
-          value={editor.brush[row.key]}
-          onchange={(v) => editor.setBrush({ [row.key]: v })}
+          value={editor.masking.ui.brush[row.key]}
+          onchange={(v) => editor.masking.setBrush({ [row.key]: v })}
           oncommit={() => {}}
-          onreset={() => editor.setBrush({ [row.key]: row.spec.default })}
+          onreset={() => editor.masking.setBrush({ [row.key]: row.spec.default })}
           disabled={editor.readOnly}
         />
       {/each}
     </div>
   {/if}
 
-  {#if editor.recipe.masks.length === 0 && !editor.maskDraft}
+  {#if editor.recipe.masks.length === 0 && !editor.masking.ui.draft}
     <p class="empty">Masks apply adjustments to part of the photo: a gradient across the sky, a soft circle around a face, or only the bright tones.</p>
   {/if}
 
@@ -338,7 +338,7 @@
     {#each editor.recipe.masks as m (m.id)}
       <li class:selected={m.id === sel?.id}>
         <div class="mask-row">
-          <button class="icon eye" class:off={!m.visible} onclick={() => editor.toggleMaskVisible(m.id)} title={m.visible ? 'Hide this mask\'s effect' : 'Show this mask\'s effect'} aria-label="Toggle mask">
+          <button class="icon eye" class:off={!m.visible} onclick={() => editor.masking.toggleVisible(m.id)} title={m.visible ? 'Hide this mask\'s effect' : 'Show this mask\'s effect'} aria-label="Toggle mask">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5C6.5 5 2.7 9.6 1.5 12c1.2 2.4 5 7 10.5 7s9.3-4.6 10.5-7C21.3 9.6 17.5 5 12 5zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-2.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" /></svg>
           </button>
           {#if renaming === m.id}
@@ -350,10 +350,10 @@
               onblur={() => finishRename(true)}
             />
           {:else}
-            <button class="name" onclick={() => editor.selectMask(m.id)} ondblclick={() => startRename(m.id, m.name)} title="Click to select, double-click to rename">{m.name}</button>
+            <button class="name" onclick={() => editor.masking.select(m.id)} ondblclick={() => startRename(m.id, m.name)} title="Click to select, double-click to rename">{m.name}</button>
           {/if}
           {@render gear(m.id, isMaskRefined(m), 'Edge of the whole mask: offset, feather, smooth', () => toggleEdge(m.id))}
-          <button class="icon small del" onclick={() => editor.deleteMask(m.id)} disabled={editor.readOnly} title="Delete mask" aria-label="Delete mask">✕</button>
+          <button class="icon small del" onclick={() => editor.masking.deleteMask(m.id)} disabled={editor.readOnly} title="Delete mask" aria-label="Delete mask">✕</button>
         </div>
         {#if edgeOpen === m.id}
           {@render edgePanel(m.id, null, m.edge, 'Edge of the whole mask')}
@@ -363,7 +363,7 @@
             {#each m.components as c, i (c.id)}
               <li class:current={c.id === comp?.id}>
                 <div class="part-row">
-                  <button class="part" onclick={() => editor.selectMask(m.id, c.id)}>
+                  <button class="part" onclick={() => editor.masking.select(m.id, c.id)}>
                     <span class="mode">{i === 0 ? '' : MODE_LABEL[c.mode]}</span>
                     {partLabel(c)}{c.invert ? ' (inverted)' : ''}
                     {#if c.kind === 'ai' && editor.ai.status[c.id] && editor.ai.status[c.id]!.state !== 'ready'}
@@ -371,7 +371,7 @@
                     {/if}
                   </button>
                   {@render gear(c.id, isPartRefined(c), `Edge of this part: offset, feather, smooth`, () => toggleEdge(m.id, c.id))}
-                  <button class="icon small del" onclick={() => editor.deleteComponent(m.id, c.id)} disabled={editor.readOnly} title="Remove this part" aria-label="Remove part">✕</button>
+                  <button class="icon small del" onclick={() => editor.masking.deleteComponent(m.id, c.id)} disabled={editor.readOnly} title="Remove this part" aria-label="Remove part">✕</button>
                 </div>
                 {#if edgeOpen === c.id}
                   {@render edgePanel(m.id, c.id, c.edge, `Edge of ${partLabel(c)}`)}
@@ -399,7 +399,7 @@
     <div class="group">
       <div class="sub">
         {partLabel(comp)}
-        <label class="invert"><input type="checkbox" checked={comp.invert} onchange={() => editor.invertComponent(sel.id, comp.id)} disabled={editor.readOnly} /> Invert</label>
+        <label class="invert"><input type="checkbox" checked={comp.invert} onchange={() => editor.masking.invert(sel.id, comp.id)} disabled={editor.readOnly} /> Invert</label>
       </div>
       {#if comp.kind === 'radial'}
         <Slider spec={RADIAL_FEATHER} value={comp.feather} onchange={setComp(comp, RADIAL_FEATHER)} oncommit={() => editor.commit()} onreset={() => setComp(comp, RADIAL_FEATHER)(50)} disabled={editor.readOnly} />
@@ -413,7 +413,7 @@
         {#if comp.samples.length}
           <div class="samples">
             {#each comp.samples as _, i (i)}
-              <button class="small" onclick={() => editor.removeColorSample(i)} disabled={editor.readOnly} title="Remove this colour">Colour {i + 1} ✕</button>
+              <button class="small" onclick={() => editor.masking.removeColorSample(i)} disabled={editor.readOnly} title="Remove this colour">Colour {i + 1} ✕</button>
             {/each}
           </div>
         {/if}
@@ -421,9 +421,9 @@
         <Slider
           spec={MASK_FEATHER}
           value={comp.edge?.feather ?? 0}
-          onchange={(v) => editor.setEdge(sel.id, comp.id, MASK_FEATHER, v)}
+          onchange={(v) => editor.masking.setEdge(sel.id, comp.id, MASK_FEATHER, v)}
           oncommit={() => editor.commit()}
-          onreset={() => editor.setEdge(sel.id, comp.id, MASK_FEATHER, 0, true)}
+          onreset={() => editor.masking.setEdge(sel.id, comp.id, MASK_FEATHER, 0, true)}
           disabled={editor.readOnly}
         />
         <p class="note">
@@ -449,7 +449,7 @@
           <div class="who">
             <select
               value={whoIndex(comp, editor.ai.people)}
-              onchange={(e) => editor.setAiComponent(sel.id, comp.id, { who: Number(e.currentTarget.value) })}
+              onchange={(e) => editor.masking.setAiComponent(sel.id, comp.id, { who: Number(e.currentTarget.value) })}
               disabled={editor.readOnly}
               aria-label="Who"
             >
@@ -465,7 +465,7 @@
                   type="checkbox"
                   checked={parts.includes(part)}
                   disabled={editor.readOnly || (parts.length === 1 && parts[0] === part)}
-                  onchange={(e) => editor.setAiComponent(sel.id, comp.id, { parts: ordered(PERSON_PARTS, toggle(parts, part, e.currentTarget.checked)) })}
+                  onchange={(e) => editor.masking.setAiComponent(sel.id, comp.id, { parts: ordered(PERSON_PARTS, toggle(parts, part, e.currentTarget.checked)) })}
                 /> {PERSON_PART_LABELS[part]}</label
               >
             {/each}
@@ -479,7 +479,7 @@
                   type="checkbox"
                   checked={classes.includes(k)}
                   disabled={editor.readOnly || (classes.length === 1 && classes[0] === k)}
-                  onchange={(e) => editor.setAiComponent(sel.id, comp.id, { classes: ordered(LANDSCAPE_CLASSES, toggle(classes, k, e.currentTarget.checked)) })}
+                  onchange={(e) => editor.masking.setAiComponent(sel.id, comp.id, { classes: ordered(LANDSCAPE_CLASSES, toggle(classes, k, e.currentTarget.checked)) })}
                 /> {LANDSCAPE_LABELS[k]}</label
               >
             {/each}
@@ -498,13 +498,13 @@
 
   {#if sel}
     <!-- Mask parameters: clicking anywhere here hides the red overlay, to show the result. -->
-    <div class="area" class:active={editor.maskEditing === 'adjust'} role="group" aria-label="Mask parameters" onpointerdown={() => editor.setMaskEditing('adjust')}>
+    <div class="area" class:active={editor.masking.ui.editing === 'adjust'} role="group" aria-label="Mask parameters" onpointerdown={() => editor.masking.setEditing('adjust')}>
     <div class="area-head">
       Mask parameters · {sel.name}
-      <button class="small reset" onclick={() => editor.resetMaskAdjust()} disabled={editor.readOnly}>Reset sliders</button>
+      <button class="small reset" onclick={() => editor.masking.resetAdjust()} disabled={editor.readOnly}>Reset sliders</button>
     </div>
     <div class="group first">
-      <Slider spec={MASK_AMOUNT} value={sel.amount} onchange={(v) => editor.setMaskParam(MASK_AMOUNT, v)} oncommit={() => editor.commit()} onreset={() => editor.setMaskParam(MASK_AMOUNT, 100, true)} disabled={editor.readOnly} />
+      <Slider spec={MASK_AMOUNT} value={sel.amount} onchange={(v) => editor.masking.setParam(MASK_AMOUNT, v)} oncommit={() => editor.commit()} onreset={() => editor.masking.setParam(MASK_AMOUNT, 100, true)} disabled={editor.readOnly} />
     </div>
     {#each GROUPS as g (g.title)}
       <div class="group">
@@ -515,9 +515,9 @@
             {spec}
             value={sel.adjust[k]}
             track={TRACK[k] ?? ''}
-            onchange={(v) => editor.setMaskParam(spec, v)}
+            onchange={(v) => editor.masking.setParam(spec, v)}
             oncommit={() => editor.commit()}
-            onreset={() => editor.setMaskParam(spec, 0, true)}
+            onreset={() => editor.masking.setParam(spec, 0, true)}
             disabled={editor.readOnly}
           />
         {/each}
@@ -525,11 +525,11 @@
           {#each [LOCAL_PARAMS.colorHue, LOCAL_PARAMS.colorSat] as spec (spec.path)}
             <Slider
               {spec}
-              value={editor.maskValue(spec)}
+              value={editor.masking.value(spec)}
               track={TRACK.colorHue && spec === LOCAL_PARAMS.colorHue ? TRACK.colorHue : ''}
-              onchange={(v) => editor.setMaskParam(spec, v)}
+              onchange={(v) => editor.masking.setParam(spec, v)}
               oncommit={() => editor.commit()}
-              onreset={() => editor.setMaskParam(spec, 0, true)}
+              onreset={() => editor.masking.setParam(spec, 0, true)}
               disabled={editor.readOnly}
             />
           {/each}

@@ -20,6 +20,8 @@ behind it:
   for the advanced setup, where your own proxy routes `/immich-raw/` and adds the button.
 - **[demo/](demo/README.md):** the try-it demo, a throwaway Immich with immich-raw and sample
   photos from one `docker compose` command.
+- **[https/](https/README.md):** optional HTTPS on a home network, with a Let's Encrypt certificate
+  for a DuckDNS name that points at the server's LAN address. Built locally, not published yet.
 
 ## Quick setup: the container in front of Immich
 

@@ -44,11 +44,11 @@ await dragOnPhoto([0.5, 0.02], [0.5, 0.45]);
 await page.locator('input[aria-label="Exposure"]').fill('-1.5');
 await page.waitForTimeout(300);
 // Adjusting (the mask parameters) hides the red overlay; O brings it back.
-results.overlayWhileAdjusting = await ed(() => globalThis.__editor.overlayMask);
+results.overlayWhileAdjusting = await ed(() => globalThis.__editor.masking.overlayMask);
 await shot('1-linear');
 await page.keyboard.press('o');
 await page.waitForTimeout(300);
-results.overlayAfterO = await ed(() => globalThis.__editor.overlayMask !== null);
+results.overlayAfterO = await ed(() => globalThis.__editor.masking.overlayMask !== null);
 await shot('2-linear-overlay');
 results.linear = await ed(() => JSON.parse(JSON.stringify(globalThis.__editor.recipe.masks)));
 
@@ -63,7 +63,7 @@ await shot('3-radial');
 // 3. Move the radial pin and resize it with a handle.
 const pin = await ed(() => {
   const e = globalThis.__editor;
-  const m = e.selectedMask;
+  const m = e.masking.selectedMask;
   const c = m.components[0];
   return e.maskToView([c.cx, c.cy]);
 });
@@ -74,7 +74,7 @@ await page.mouse.move(px - 60, py - 40, { steps: 6 });
 await page.mouse.up();
 await page.waitForTimeout(250);
 results.afterMove = await ed(() => {
-  const c = globalThis.__editor.selectedMask.components[0];
+  const c = globalThis.__editor.masking.selectedMask.components[0];
   return { cx: c.cx, cy: c.cy, rx: c.rx, ry: c.ry };
 });
 
@@ -116,12 +116,12 @@ await shot('6b-edge-overlay');
 await page.locator('input[aria-label="Exposure"]').fill('1.5');
 await page.waitForTimeout(300);
 await shot('6c-edge');
-results.edge = await ed(() => ({ edge: globalThis.__editor.selectedMask.edge, overlay: globalThis.__editor.overlayMask }));
+results.edge = await ed(() => ({ edge: globalThis.__editor.masking.selectedMask.edge, overlay: globalThis.__editor.masking.overlayMask }));
 // A click on the mask settings' background shows the overlay again; on the parameters', hides it.
 await page.locator('.area-head', { hasText: 'Mask settings' }).click();
-results.areaClick = { settings: await ed(() => globalThis.__editor.overlayMask !== null) };
+results.areaClick = { settings: await ed(() => globalThis.__editor.masking.overlayMask !== null) };
 await page.locator('.area-head', { hasText: 'Mask parameters' }).click();
-results.areaClick.parameters = await ed(() => globalThis.__editor.overlayMask !== null);
+results.areaClick.parameters = await ed(() => globalThis.__editor.masking.overlayMask !== null);
 await page.keyboard.press('Shift+W');
 
 // 7. Auto settings: apply Auto, then change Brightness while Auto is the last step.

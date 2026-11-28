@@ -78,6 +78,23 @@ services:
       - immich-server
     restart: unless-stopped
 
+  # HTTPS in front of the proxy (deploy/https/README.md): a Let's Encrypt certificate for a DuckDNS
+  # name that points at this PC's LAN address. Needs e2e/https.env with HTTPS_HOST and DUCKDNS_TOKEN.
+  #   docker compose -f e2e/docker-compose.immich.yml --profile https up -d --build https
+  # It listens on all interfaces, because the DuckDNS name resolves to the LAN address, not
+  # 127.0.0.1. No depends_on: starting it never recreates the proxy from another checkout.
+  https:
+    profiles: [https]
+    build: ../deploy/https
+    env_file: https.env
+    environment:
+      UPSTREAM: ${HTTPS_UPSTREAM:-proxy:80}     # gateway:80 for the published image's setup
+    ports:
+      - '${E2E_HTTPS_BIND:-0.0.0.0}:${E2E_HTTPS_PORT:-8443}:443'
+    volumes:
+      - https-data:/data
+    restart: unless-stopped
+
   proxy:
     image: docker.io/library/nginx:1.29-alpine
     ports:
@@ -94,3 +111,4 @@ volumes:
   library:
   postgres:
   culler:
+  https-data:

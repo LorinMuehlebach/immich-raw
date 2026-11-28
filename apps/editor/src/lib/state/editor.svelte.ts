@@ -28,7 +28,6 @@ import {
   DEFAULT_AUTO_PARAMS,
   autoTone,
   bandWeights,
-  brushRadius,
   normalizeAutoParams,
   cameraInfo,
   displayHue,
@@ -41,7 +40,6 @@ import {
   SCOPE_SAMPLE_WIDTH,
   sampleSource,
   scopeOf,
-  simplifyPolygon,
   tempTintForNeutral,
   totalTurns,
   transformInverse,
@@ -67,31 +65,7 @@ import {
 import {
   APP_ID,
   BANDS,
-  COMPONENT_LABELS,
-  LOCAL_PARAMS,
-  BRUSH_DENSITY,
-  BRUSH_FEATHER,
-  BRUSH_FLOW,
-  BRUSH_SIZE,
-  MAX_AI,
-  MAX_BRUSHES,
-  MAX_BRUSH_POINTS,
-  MAX_OBJECT_POINTS,
-  MAX_POLYGON_POINTS,
   MAX_UPRIGHT_GUIDES,
-  aiCount,
-  aiLabel,
-  newAiComponent,
-  MAX_COLOR_SAMPLES,
-  MAX_COMPONENTS,
-  MAX_MASKS,
-  brushCount,
-  componentCount,
-  componentLabel,
-  newComponent,
-  newMask,
-  defaultEdge,
-  isEdgeSet,
   BAND_LABELS,
   BW_PARAMS,
   DEFAULT_GROUPS,
@@ -111,21 +85,10 @@ import {
   pickGroups,
   recipeHash,
   setPath,
-  type AiComponent,
-  type AiTarget,
   type AspectId,
   type CurveChannel,
-  type LandscapeClass,
-  type PersonPart,
   type CurvePoint,
-  type ComponentKind,
   type GroupId,
-  type LocalKey,
-  type Mask,
-  type MaskComponent,
-  type MaskMode,
-  type PolygonComponent,
-  type MaskEdge,
   type MixerChannel,
   type ParamSpec,
   type ProfileId,
@@ -169,8 +132,9 @@ import { captureDate } from '../export/metadata.ts';
 import { finishExport, outputColor, type ExportFile } from '../export/output.ts';
 import { parseContext } from '../immich/context.ts';
 import { newId } from '../id.ts';
-import { anchoredCentre, fitScale, nextScale } from './zoom.ts';
+import { clampZoom, panBy, viewScale, zoomAnchored, zoomTo, type Frame, type ZoomState } from './zoom.ts';
 import { AiMasks } from './ai-masks.svelte.ts';
+import { MaskEditor, READ_ONLY_NOTICE, initialMaskUi, type MaskUi } from './mask-editor.ts';
 import { aiClient, aiConsent, imageToMask } from '../ai.svelte.ts';
 import { CANCELLED, tileSide, upscaler, type Progress, type UpscaleScale, type UpscaleStyle, type UpscaleTask } from '@immich-raw/ai';
 import { saveUpscaled, type UpscaleSaveStep } from '../immich/save-upscaled.ts';
@@ -204,56 +168,9 @@ export type Status = 'loading' | 'auth' | 'error' | 'ready';
  */
 export type Tool = 'edit' | 'crop' | 'wb' | 'tat' | 'mask' | 'upscale' | 'upright';
 
-/** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
-export interface MaskDraft {
-  /**
-   * object: Lightroom's Objects (drag a box around it, or click it). polygon: click the
-   * corners; lasso: drag around the area.
-   */
-  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object' | 'polygon' | 'lasso';
-  mode: MaskMode;
-  /** Mask to add it to; null = create a new mask. */
-  maskId: string | null;
-  /** Polygon: the corners clicked so far, flat [x, y, ...] in the mask frame. */
-  points?: number[];
-}
-
-/** The People or Landscape choices before the AI mask is made. */
-export interface AiPicker {
-  target: 'people' | 'landscape';
-  mode: MaskMode;
-  maskId: string | null;
-  parts: PersonPart[];
-  classes: LandscapeClass[];
-  /** Index into ai.people of the person picked; -1 = everyone. */
-  who: number;
-}
-
-const MODE_VERB: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
-
-/** History name of a mask part. */
-const partLabel = componentLabel;
-
-/** Brush settings (Lightroom's brush panel); each stroke keeps the values it was painted with. */
-export interface BrushSettings {
-  size: number;
-  feather: number;
-  flow: number;
-  density: number;
-  /** Paint with the eraser (Alt does the same while held). */
-  erase: boolean;
-}
-
 const BRUSH_KEY = 'raw-editor.brush';
-const BRUSH_SPECS = { size: BRUSH_SIZE, feather: BRUSH_FEATHER, flow: BRUSH_FLOW, density: BRUSH_DENSITY } as const;
 
-function normalizeBrush(v: unknown): BrushSettings {
-  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
-  const num = (k: keyof typeof BRUSH_SPECS) => clampParam(BRUSH_SPECS[k], typeof o[k] === 'number' ? (o[k] as number) : BRUSH_SPECS[k].default);
-  return { size: num('size'), feather: num('feather'), flow: num('flow'), density: num('density'), erase: false };
-}
-
-/** Stroke points are stored with 5 decimals. */
+/** Guide ends are stored with 5 decimals. */
 const q5 = (v: number) => Math.round(v * 1e5) / 1e5;
 
 /** What the targeted adjustment tool changes. */
@@ -274,15 +191,6 @@ const FULL_FAILED_NOTICE = 'The full-resolution decode failed, so zooming in sho
 const TYPICAL_RAW_BYTES = 50e6;
 /** Thrown inside an open when another photo was opened meanwhile; not an error. */
 const SUPERSEDED = Symbol('superseded');
-
-export interface ZoomState {
-  on: boolean;
-  /** Centre in frame coordinates. */
-  cx: number;
-  cy: number;
-  /** Device pixels per full-resolution pixel. */
-  scale: number;
-}
 
 /** What the Lens Corrections panel shows. */
 export interface LensInfo {
@@ -489,18 +397,8 @@ export class Editor {
   autoParams = $state<AutoParams>(normalizeAutoParams(storageGet(AUTO_PARAMS_KEY)));
   /** Export presets and the one Save uses for the Immich copy (kept in this browser). */
   exportSettings = $state<ExportSettings>(normalizeExportSettings(storageGet(EXPORT_KEY)));
-  /** Masking: the selected mask and component, the gradient about to be drawn, the red overlay. */
-  maskSel = $state<{ mask: string | null; comp: string | null }>({ mask: null, comp: null });
-  maskDraft = $state<MaskDraft | null>(null);
-  aiPicker = $state<AiPicker | null>(null);
-  /** The red overlay is wanted (checkbox, O). It shows only while the mask's shape is edited. */
-  maskOverlay = $state(true);
-  /**
-   * What is being edited on the selected mask: its shape (parts, refinement: the overlay shows)
-   * or its adjustments (Amount, Exposure…: the overlay hides, so the result can be judged).
-   */
-  maskEditing = $state<'shape' | 'adjust'>('shape');
-  brush = $state<BrushSettings>(normalizeBrush(storageGet(BRUSH_KEY)));
+  /** Masking panel state (selection, armed draft, AI picker, overlay, brush); see MaskEditor. */
+  private maskUi = $state<MaskUi>(initialMaskUi(storageGet(BRUSH_KEY)));
   /** Bumped after every render, so on-image handles follow zoom, pan and crop. */
   viewVersion = $state(0);
   lensInfo = $state<LensInfo>({ searching: false, profile: null, lensName: '', autoName: '', candidates: [], caText: '' });
@@ -516,6 +414,23 @@ export class Editor {
     photoKey: () => (this.asset ? `${this.asset.id}:${this.asset.checksum}` : null),
     requestRender: () => this.requestRender(),
   });
+  /** Masking: the panel's state and everything it and the on-image handles do to the masks. */
+  masking = new MaskEditor(this.maskUi, {
+    recipe: () => this.recipe,
+    readOnly: () => this.readOnly,
+    toolActive: () => this.tool === 'mask',
+    openTool: () => this.setTool('mask'),
+    changed: (commit, label) => this.changed(commit, label),
+    render: () => this.requestRender(),
+    notify: (message) => (this.notice = message),
+    saveBrush: (brush) => storageSet(BRUSH_KEY, brush),
+    findPeople: () => void this.ai.findPeople(),
+    personPoint: (index) => {
+      const who = index >= 0 ? this.ai.people?.[index] : null;
+      const photo = who ? this.ai.current() : null;
+      return who && photo ? imageToMask(photo, who.at) : null;
+    },
+  });
   /** AI Upscale: settings, where it runs, the preview patch. */
   upscale = new UpscaleState();
   private history = new History();
@@ -528,10 +443,6 @@ export class Editor {
   /** The recipe right after the last full Auto, so new Auto settings can re-apply it in place. */
   private autoApplied = $state<string | null>(null);
   private autoSamples: { key: string; samples: Float32Array } | null = null;
-  /** History label for the gradient being drawn ("New Mask: Radial Gradient"). */
-  private drawLabel: string | null = null;
-  /** The brush stroke being painted. */
-  private stroke: { maskId: string; compId: string; label: string } | null = null;
   // Lens corrections: the Lensfun database, the DNG's own correction, the measured CA.
   private lensDb: LensfunDb | null = null;
   private lensQuery: LensQuery | null = null;
@@ -764,10 +675,7 @@ export class Editor {
     this.histogramTimer = null;
     this.zoom = { on: false, cx: 0.5, cy: 0.5, scale: 1 };
     this.cropAuto = true;
-    this.maskSel = { mask: null, comp: null };
-    this.maskDraft = null;
-    this.aiPicker = null;
-    this.maskEditing = 'shape';
+    this.masking.reset();
     this.lensInfo = { searching: false, profile: null, lensName: '', autoName: '', candidates: [], caText: '' };
     this.lensQuery = null;
     this.dngLens = null;
@@ -779,8 +687,6 @@ export class Editor {
     this.tatDrag = null;
     this.autoApplied = null;
     this.autoSamples = null;
-    this.drawLabel = null;
-    this.stroke = null;
     this.defaults = { recipe: defaultRecipe(), wanted: null, simLabel: null };
     this.fujiSim = null;
     this.storedEdit = false;
@@ -1245,7 +1151,7 @@ export class Editor {
   /** The canvas shows the whole photo as edited: no before view, overlay, zoom, or work still to come in. */
   private plainView(): boolean {
     if (this.previewRecipe || this.before || this.clipping || this.maskView !== 'none') return false;
-    if (this.overlayMask || this.wholeView || this.zoom.on) return false;
+    if (this.masking.overlayMask || this.wholeView || this.zoom.on) return false;
     return !this.lensInfo.searching && !Object.values(this.ai.status).some((s) => s.state === 'working');
   }
 
@@ -1477,7 +1383,7 @@ export class Editor {
       this.syncLens();
       const recipe = this.currentRecipe();
       this.ai.sync(recipe);
-      const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: this.overlayMask };
+      const opts = { before: this.before, clipping: this.clipping, maskView: this.maskView, maskOverlay: this.masking.overlayMask };
       if (this.zoom.on && !this.wholeView && this.session) {
         const vp = this.viewport;
         // Up to 50 % the half-size decode has a pixel for every screen pixel, and it is a
@@ -1512,7 +1418,7 @@ export class Editor {
       if (!r || this.status !== 'ready') return;
       // While zoomed the canvas shows a region; the histogram is of the whole image.
       if (this.zoom.on && !this.wholeView) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
-      else if (this.overlayMask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
+      else if (this.masking.overlayMask) r.render(this.currentRecipe(), { mode: 'edit', before: this.before, present: false });
       if (this.scope === 'histogram') {
         this.histogram = r.histogram();
       } else {
@@ -1968,504 +1874,7 @@ export class Editor {
     this.changed(true, 'Reset Lens Corrections');
   }
 
-  // ---------------------------------------------------------------- masking
-
-  mask(id: string | null): Mask | null {
-    return id ? (this.recipe.masks.find((m) => m.id === id) ?? null) : null;
-  }
-
-  get selectedMask(): Mask | null {
-    return this.mask(this.maskSel.mask);
-  }
-
-  get selectedComponent(): MaskComponent | null {
-    return this.selectedMask?.components.find((c) => c.id === this.maskSel.comp) ?? null;
-  }
-
-  /** Mask shown in red: the selected one while its shape is edited (and the overlay is on). */
-  get overlayMask(): string | null {
-    return this.tool === 'mask' && this.maskOverlay && this.maskEditing === 'shape' ? this.maskSel.mask : null;
-  }
-
-  /** The mask's shape is being edited: show the overlay (if wanted). */
-  private editShape(): void {
-    if (this.maskEditing === 'shape') return;
-    this.maskEditing = 'shape';
-    this.requestRender();
-  }
-
-  /** The mask's adjustments are being edited: hide the overlay to show the result. */
-  private editAdjust(): void {
-    if (this.maskEditing === 'adjust') return;
-    this.maskEditing = 'adjust';
-    this.requestRender();
-  }
-
-  /** A click in the panel's mask settings ('shape') or adjustments ('adjust') area. */
-  setMaskEditing(mode: 'shape' | 'adjust'): void {
-    if (mode === 'shape') this.editShape();
-    else this.editAdjust();
-  }
-
-  selectMask(maskId: string | null, compId?: string): void {
-    const m = this.mask(maskId);
-    this.maskSel = { mask: m?.id ?? null, comp: compId ?? m?.components[0]?.id ?? null };
-    this.maskEditing = 'shape';
-    this.requestRender();
-  }
-
-  /** Room for another component (and, for a new mask, another mask)? Tells the user if not. */
-  private maskRoom(newMask: boolean, ai = false): boolean {
-    if (newMask && this.recipe.masks.length >= MAX_MASKS) {
-      this.notice = `Up to ${MAX_MASKS} masks are supported.`;
-      return false;
-    }
-    if (componentCount(this.recipe.masks) >= MAX_COMPONENTS) {
-      this.notice = `Up to ${MAX_COMPONENTS} mask parts are supported in total.`;
-      return false;
-    }
-    if (ai && aiCount(this.recipe.masks) >= MAX_AI) {
-      this.notice = `Up to ${MAX_AI} AI mask parts are supported in total.`;
-      return false;
-    }
-    return true;
-  }
-
-  private uniqueMaskName(base: string): string {
-    const used = new Set(this.recipe.masks.map((m) => m.name));
-    if (!used.has(base)) return base;
-    let n = 2;
-    while (used.has(`${base} ${n}`)) n++;
-    return `${base} ${n}`;
-  }
-
-  private nextMaskName(): string {
-    const used = new Set(this.recipe.masks.map((m) => m.name));
-    let n = this.recipe.masks.length + 1;
-    while (used.has(`Mask ${n}`)) n++;
-    return `Mask ${n}`;
-  }
-
-  /**
-   * Arms a gradient to be drawn on the photo (Lightroom's M / Shift+M); luminance ranges
-   * are added right away. mode/maskId: add to, subtract from or intersect with an existing mask.
-   */
-  startMask(kind: ComponentKind | 'lasso', mode: MaskMode = 'add', maskId: string | null = null): void {
-    if (kind === 'ai') return this.startAiMask('subject', mode, maskId);
-    if (this.readOnlyGuard() || !this.maskRoom(!maskId)) return;
-    if (this.tool !== 'mask') this.setTool('mask');
-    this.aiPicker = null;
-    this.editShape();
-    if (kind === 'luminance') {
-      this.addComponent(newComponent('luminance', maskId ? mode : 'add'), maskId);
-      this.changed(true, `${maskId ? 'Add' : 'New Mask:'} ${COMPONENT_LABELS.luminance}`);
-      return;
-    }
-    if ((kind === 'brush' || kind === 'polygon' || kind === 'lasso') && brushCount(this.recipe.masks) >= MAX_BRUSHES) {
-      this.notice = `Up to ${MAX_BRUSHES} brush, polygon and lasso parts are supported in total.`;
-      return;
-    }
-    this.maskDraft = { kind, mode: maskId ? mode : 'add', maskId, ...(kind === 'polygon' ? { points: [] } : {}) };
-  }
-
-  cancelMaskDraft(): void {
-    this.maskDraft = null;
-    this.aiPicker = null;
-  }
-
-  // ---- polygon and lasso
-
-  /** Polygon being drawn: a corner at mask-frame point p. */
-  addPolygonPoint(p: [number, number]): void {
-    const d = this.maskDraft;
-    if (d?.kind !== 'polygon' || this.readOnlyGuard()) return;
-    const points = d.points ?? [];
-    if (points.length >= MAX_POLYGON_POINTS * 2) {
-      this.notice = `Up to ${MAX_POLYGON_POINTS} corners per polygon.`;
-      return;
-    }
-    this.maskDraft = { ...d, points: [...points, q5(p[0]), q5(p[1])] };
-  }
-
-  /** Polygon being drawn: takes back the last corner (Backspace). */
-  removePolygonPoint(): void {
-    const d = this.maskDraft;
-    if (d?.kind !== 'polygon' || !d.points?.length) return;
-    this.maskDraft = { ...d, points: d.points.slice(0, -2) };
-  }
-
-  /** Polygon being drawn: closes it and adds it (needs three corners). */
-  closePolygon(): boolean {
-    const d = this.maskDraft;
-    if (d?.kind !== 'polygon' || (d.points?.length ?? 0) < 6) return false;
-    return this.addPolygon(d.points!, false);
-  }
-
-  /** Lasso: the outline dragged on the photo (mask frame), closed and simplified. */
-  drawLasso(points: number[]): boolean {
-    if (this.maskDraft?.kind !== 'lasso') return false;
-    // Corners closer than half a brush-map texel to the outline add nothing.
-    return this.addPolygon(simplifyPolygon(points, 0.5 / 2048, MAX_POLYGON_POINTS), true);
-  }
-
-  private addPolygon(points: number[], freehand: boolean): boolean {
-    const d = this.maskDraft;
-    if (!d || this.readOnlyGuard() || points.length < 6 || !this.maskRoom(!d.maskId)) return false;
-    this.maskDraft = null;
-    const c = newComponent('polygon', d.mode) as PolygonComponent;
-    c.points = points.map(q5);
-    if (freehand) c.freehand = true;
-    this.addComponent(c, d.maskId);
-    this.changed(true, `${d.maskId ? MODE_VERB[d.mode] : 'New Mask:'} ${partLabel(c)}`);
-    return true;
-  }
-
-  // ---- AI masks
-
-  /**
-   * Lightroom's AI masks. Subject, Sky and Background are added right away; People and
-   * Landscape first show their choices; an object is pointed out on the photo.
-   */
-  startAiMask(target: AiTarget, mode: MaskMode = 'add', maskId: string | null = null): void {
-    if (this.readOnlyGuard() || !this.maskRoom(!maskId, true)) return;
-    if (this.tool !== 'mask') this.setTool('mask');
-    const m = maskId ? mode : 'add';
-    this.maskDraft = null;
-    this.aiPicker = null;
-    this.editShape();
-    if (target === 'people' || target === 'landscape') {
-      this.aiPicker = { target, mode: m, maskId, parts: ['person'], classes: ['sky'], who: -1 };
-      if (target === 'people') void this.ai.findPeople();
-      return;
-    }
-    if (target === 'object') {
-      this.maskDraft = { kind: 'object', mode: m, maskId };
-      return;
-    }
-    this.addAiComponent(newAiComponent(target, m), maskId);
-  }
-
-  setAiPicker(patch: Partial<Pick<AiPicker, 'parts' | 'classes' | 'who'>>): void {
-    if (this.aiPicker) this.aiPicker = { ...this.aiPicker, ...patch };
-  }
-
-  /** Makes the People or Landscape mask chosen in the picker. */
-  confirmAiPicker(): void {
-    const p = this.aiPicker;
-    if (!p || this.readOnlyGuard()) return;
-    if (p.target === 'landscape' && !p.classes.length) return;
-    if (p.target === 'people' && !p.parts.length) return;
-    this.aiPicker = null;
-    const person = this.personPoint(p.who);
-    this.addAiComponent(newAiComponent(p.target, p.mode, p.target === 'people' ? { parts: p.parts, person } : { classes: p.classes }), p.maskId);
-  }
-
-  /** Mask-frame point of person `index` of ai.people; null = everyone. */
-  private personPoint(index: number): { x: number; y: number } | null {
-    const who = index >= 0 ? this.ai.people?.[index] : null;
-    const photo = who ? this.ai.current() : null;
-    return who && photo ? imageToMask(photo, who.at) : null;
-  }
-
-  private addAiComponent(c: AiComponent, maskId: string | null): void {
-    if (!this.maskRoom(!maskId, true)) return;
-    this.addComponent(c, maskId, this.uniqueMaskName(aiLabel(c)));
-    this.changed(true, `${maskId ? MODE_VERB[c.mode] : 'New Mask:'} ${aiLabel(c)}`);
-  }
-
-  /** Changes what an AI part selects (People parts and who, Landscape categories). */
-  setAiComponent(maskId: string, compId: string, patch: { parts?: PersonPart[]; classes?: LandscapeClass[]; who?: number }): void {
-    const m = this.mask(maskId);
-    const c = m?.components.find((x) => x.id === compId);
-    if (!m || !c || c.kind !== 'ai' || this.readOnlyGuard()) return;
-    const next: Partial<AiComponent> = {};
-    if (patch.parts) {
-      if (!patch.parts.length) return;
-      next.parts = patch.parts;
-    }
-    if (patch.classes) {
-      if (!patch.classes.length) return;
-      next.classes = patch.classes;
-    }
-    if (patch.who !== undefined) next.person = this.personPoint(patch.who);
-    this.updateComponent(maskId, compId, next, true, `${m.name}: ${aiLabel({ ...c, ...next })}`);
-  }
-
-  /** Objects: the box dragged around it, or the point clicked (mask frame). */
-  drawObject(box: [number, number, number, number] | null, point: [number, number] | null): void {
-    const d = this.maskDraft;
-    if (!d || d.kind !== 'object' || this.readOnlyGuard()) return;
-    this.maskDraft = null;
-    const c = box
-      ? newAiComponent('object', d.mode, { box: [q5(Math.min(box[0], box[2])), q5(Math.min(box[1], box[3])), q5(Math.max(box[0], box[2])), q5(Math.max(box[1], box[3]))] })
-      : point
-        ? newAiComponent('object', d.mode, { points: [q5(point[0]), q5(point[1])] })
-        : null;
-    if (c) this.addAiComponent(c, d.maskId);
-  }
-
-  /** Shift+click with a clicked object selected: one more point on the object. */
-  addObjectPoint(p: [number, number]): boolean {
-    const m = this.selectedMask;
-    const c = this.selectedComponent;
-    if (!m || !c || c.kind !== 'ai' || c.target !== 'object' || c.box || this.readOnlyGuard()) return false;
-    const points = c.points ?? [];
-    if (points.length >= MAX_OBJECT_POINTS * 2) {
-      this.notice = `Up to ${MAX_OBJECT_POINTS} points per object.`;
-      return true;
-    }
-    this.updateComponent(m.id, c.id, { points: [...points, q5(p[0]), q5(p[1])] }, true, `${m.name}: Add Object Point`);
-    return true;
-  }
-
-  private addComponent(c: MaskComponent, maskId: string | null, name?: string): void {
-    this.editShape();
-    const target = this.mask(maskId);
-    if (target) {
-      target.components.push(c);
-      this.maskSel = { mask: target.id, comp: c.id };
-    } else {
-      const m = newMask(name ?? this.nextMaskName(), c);
-      this.recipe.masks.push(m);
-      this.maskSel = { mask: m.id, comp: c.id };
-    }
-  }
-
-  /** Starts drawing the armed gradient at mask-frame point p; returns the new component's id. */
-  beginMaskDraw(p: [number, number]): string | null {
-    const d = this.maskDraft;
-    // Objects are pointed out with drawObject; polygons and lassos are drawn with their own calls.
-    if (!d || d.kind === 'object' || d.kind === 'polygon' || d.kind === 'lasso' || this.readOnlyGuard()) return null;
-    const c = newComponent(d.kind, d.mode);
-    if (c.kind === 'linear') Object.assign(c, { x0: p[0], y0: p[1], x1: p[0], y1: p[1] + 1e-3 });
-    else if (c.kind === 'radial') Object.assign(c, { cx: p[0], cy: p[1], rx: 1e-3, ry: 1e-3 });
-    else if (c.kind === 'color') c.samples = [{ x: q5(p[0]), y: q5(p[1]), r: 0 }];
-    this.addComponent(c, d.maskId);
-    this.maskDraft = null;
-    this.drawLabel = `${d.maskId ? (d.mode === 'subtract' ? 'Subtract' : d.mode === 'intersect' ? 'Intersect' : 'Add') : 'New Mask:'} ${COMPONENT_LABELS[d.kind]}`;
-    this.changed(false, this.drawLabel);
-    return c.id;
-  }
-
-  /** Changes a component's geometry or settings (live while dragging; commit when done). */
-  updateComponent(maskId: string, compId: string, patch: Partial<MaskComponent>, commit = false, label?: string): void {
-    if (this.readOnlyGuard()) return;
-    const m = this.mask(maskId);
-    const c = m?.components.find((x) => x.id === compId);
-    if (!m || !c) return;
-    this.editShape();
-    Object.assign(c, patch);
-    if (c.kind === 'radial') {
-      c.rx = Math.min(4, Math.max(1e-3, c.rx));
-      c.ry = Math.min(4, Math.max(1e-3, c.ry));
-      c.angle = ((c.angle % 360) + 360) % 360;
-    } else if (c.kind === 'luminance' && c.lo > c.hi) {
-      [c.lo, c.hi] = [c.hi, c.lo];
-    }
-    this.changed(commit, label ?? `${m.name}: Edit ${partLabel(c)}`);
-  }
-
-  /** Ends a gradient drawn by a click without a drag: gives it a useful default size. */
-  finishMaskDraw(maskId: string, compId: string, draggedPx: number): void {
-    const c = this.mask(maskId)?.components.find((x) => x.id === compId);
-    if (c && draggedPx < 6) {
-      if (c.kind === 'radial') Object.assign(c, { rx: 0.15, ry: 0.15 });
-      else if (c.kind === 'linear') Object.assign(c, { y1: c.y0 + 0.15, x1: c.x0 });
-    }
-    this.changed(true, this.drawLabel ?? undefined);
-    this.drawLabel = null;
-  }
-
-  // ---- brush
-
-  setBrush(patch: Partial<BrushSettings>): void {
-    const b = { ...$state.snapshot(this.brush), ...patch };
-    this.brush = { ...normalizeBrush(b), erase: !!b.erase };
-    storageSet(BRUSH_KEY, { size: this.brush.size, feather: this.brush.feather, flow: this.brush.flow, density: this.brush.density });
-  }
-
-  /** Is painting on the photo active (a brush armed, or a brush part selected)? */
-  get painting(): boolean {
-    return this.tool === 'mask' && !this.readOnly && (this.maskDraft?.kind === 'brush' || (!this.maskDraft && this.selectedComponent?.kind === 'brush'));
-  }
-
-  /** Starts a stroke at mask-frame point p: on the selected brush part, or a new brush if armed. */
-  beginStroke(p: [number, number], erase: boolean): boolean {
-    if (this.readOnlyGuard() || this.stroke) return false;
-    let label: string;
-    if (this.maskDraft?.kind === 'brush') {
-      if (erase) return false; // nothing to erase yet
-      if (!this.beginMaskDraw(p)) return false;
-      label = this.drawLabel ?? 'Brush';
-      this.drawLabel = null;
-    } else {
-      if (this.selectedComponent?.kind !== 'brush') return false;
-      label = `${this.selectedMask!.name}: ${erase ? 'Erase' : 'Brush Stroke'}`;
-    }
-    const m = this.selectedMask;
-    const c = this.selectedComponent;
-    if (!m || !c || c.kind !== 'brush') return false;
-    this.editShape();
-    const b = this.brush;
-    c.strokes.push({ erase, size: q5(brushRadius(b.size)), feather: b.feather, flow: b.flow, density: b.density, points: [q5(p[0]), q5(p[1])] });
-    this.stroke = { maskId: m.id, compId: c.id, label };
-    this.changed(false, label);
-    return true;
-  }
-
-  extendStroke(p: [number, number]): void {
-    const s = this.stroke;
-    const c = s ? this.mask(s.maskId)?.components.find((x) => x.id === s.compId) : null;
-    if (!s || !c || c.kind !== 'brush') return;
-    const st = c.strokes[c.strokes.length - 1];
-    if (!st) return;
-    const n = st.points.length;
-    // A point every ~fifth of the radius is plenty; dabs are interpolated between them.
-    if (Math.hypot(p[0] - st.points[n - 2]!, p[1] - st.points[n - 1]!) < st.size * 0.2) return;
-    if (c.strokes.reduce((k, x) => k + x.points.length, 0) >= MAX_BRUSH_POINTS * 2) {
-      this.notice = 'This brush mask is full. Start a new brush part to keep painting.';
-      return;
-    }
-    st.points.push(q5(p[0]), q5(p[1]));
-    this.changed(false, s.label);
-  }
-
-  endStroke(): void {
-    const s = this.stroke;
-    this.stroke = null;
-    if (s) this.changed(true, s.label);
-  }
-
-  // ---- colour range
-
-  /** Adds a colour sample at p to the selected colour range (or replaces its samples); returns its index. */
-  sampleColor(p: [number, number], add: boolean): number | null {
-    const m = this.selectedMask;
-    const c = this.selectedComponent;
-    if (this.readOnlyGuard() || !m || !c || c.kind !== 'color') return null;
-    const sample = { x: q5(p[0]), y: q5(p[1]), r: 0 };
-    if (add && c.samples.length >= MAX_COLOR_SAMPLES) {
-      this.notice = `Up to ${MAX_COLOR_SAMPLES} colour samples per range.`;
-      return null;
-    }
-    this.editShape();
-    c.samples = add ? [...c.samples, sample] : [sample];
-    this.changed(false, `${m.name}: ${add ? 'Add Color Sample' : 'Color Sample'}`);
-    return c.samples.length - 1;
-  }
-
-  removeColorSample(index: number): void {
-    const m = this.selectedMask;
-    const c = this.selectedComponent;
-    if (this.readOnlyGuard() || !m || !c || c.kind !== 'color') return;
-    this.editShape();
-    c.samples = c.samples.filter((_, i) => i !== index);
-    this.changed(true, `${m.name}: Remove Color Sample`);
-  }
-
-  /** Sets one of the selected mask's adjustment sliders (or Amount). */
-  setMaskParam(spec: ParamSpec, value: number, commit = false): void {
-    const m = this.selectedMask;
-    if (!m || this.readOnlyGuard()) return;
-    this.editAdjust();
-    const v = clampParam(spec, value);
-    setPath(m, spec.path, v);
-    this.changed(commit, `${m.name}: ${spec.label} ${formatParam(spec, v)}`);
-  }
-
-  /**
-   * Edge refinement (Offset, Feather, Smooth; spec paths "edge.*") of part `compId` of a
-   * mask, or of the whole mask when compId is null. A part keeps a refinement only while it
-   * does something.
-   */
-  setEdge(maskId: string, compId: string | null, spec: ParamSpec, value: number, commit = false): void {
-    const m = this.mask(maskId);
-    const c = compId ? m?.components.find((x) => x.id === compId) : null;
-    if (!m || (compId && !c) || this.readOnlyGuard()) return;
-    this.editShape();
-    const v = Math.round(clampParam(spec, value));
-    const key = spec.path.slice('edge.'.length) as keyof MaskEdge;
-    if (c) {
-      const e = { ...defaultEdge(), ...c.edge, [key]: v };
-      if (isEdgeSet(e)) c.edge = e;
-      else delete c.edge;
-    } else {
-      m.edge[key] = v;
-    }
-    this.changed(commit, `${m.name}: ${c ? `${partLabel(c)} ` : ''}${spec.label} ${formatParam(spec, v)}`);
-  }
-
-  maskValue(spec: ParamSpec): number {
-    const m = this.selectedMask;
-    return m ? (getPath(m, spec.path) as number) : spec.default;
-  }
-
-  resetMaskAdjust(): void {
-    const m = this.selectedMask;
-    if (!m || this.readOnlyGuard()) return;
-    this.editAdjust();
-    for (const k of Object.keys(LOCAL_PARAMS) as LocalKey[]) m.adjust[k] = 0;
-    m.amount = 100;
-    this.changed(true, `${m.name}: Reset`);
-  }
-
-  deleteComponent(maskId: string, compId: string): void {
-    const m = this.mask(maskId);
-    if (!m || this.readOnlyGuard()) return;
-    if (m.components.length <= 1) return this.deleteMask(maskId);
-    const c = m.components.find((x) => x.id === compId);
-    m.components = m.components.filter((x) => x.id !== compId);
-    m.components[0]!.mode = 'add';
-    this.maskSel = { mask: m.id, comp: m.components[0]!.id };
-    this.editShape();
-    this.changed(true, `${m.name}: Remove ${c ? partLabel(c) : 'part'}`);
-  }
-
-  deleteMask(maskId: string): void {
-    const m = this.mask(maskId);
-    if (!m || this.readOnlyGuard()) return;
-    this.recipe.masks = this.recipe.masks.filter((x) => x.id !== maskId);
-    if (this.maskSel.mask === maskId) {
-      const last = this.recipe.masks[this.recipe.masks.length - 1];
-      this.maskSel = { mask: last?.id ?? null, comp: last?.components[0]?.id ?? null };
-    }
-    this.changed(true, `Delete ${m.name}`);
-  }
-
-  renameMask(maskId: string, name: string): void {
-    const m = this.mask(maskId);
-    const n = name.trim().slice(0, 60);
-    if (!m || !n || n === m.name || this.readOnlyGuard()) return;
-    m.name = n;
-    this.changed(true, `Rename Mask: ${n}`);
-  }
-
-  toggleMaskVisible(maskId: string): void {
-    const m = this.mask(maskId);
-    if (!m || this.readOnlyGuard()) return;
-    m.visible = !m.visible;
-    this.changed(true, `${m.name}: ${m.visible ? 'Show' : 'Hide'}`);
-  }
-
-  invertComponent(maskId: string, compId: string): void {
-    const c = this.mask(maskId)?.components.find((x) => x.id === compId);
-    if (c) this.updateComponent(maskId, compId, { invert: !c.invert }, true, `${this.mask(maskId)!.name}: Invert ${partLabel(c)}`);
-  }
-
-  /** The Overlay checkbox: wanted or not (switched on, it shows right away). */
-  setMaskOverlay(on: boolean): void {
-    this.maskOverlay = on;
-    if (on) this.maskEditing = 'shape';
-    this.requestRender();
-  }
-
-  /** O: an overlay that is wanted but hidden while adjusting comes back; otherwise on/off. */
-  toggleMaskOverlay(): void {
-    if (this.maskOverlay && this.maskEditing === 'adjust') {
-      this.maskEditing = 'shape';
-      this.requestRender();
-    } else this.setMaskOverlay(!this.maskOverlay);
-  }
+  // ---------------------------------------------------------------- view coordinates (masking: see MaskEditor)
 
   /** Point of the photo view (0..1) -> mask frame, and back. */
   viewToMask(x: number, y: number): [number, number] | null {
@@ -2492,14 +1901,7 @@ export class Editor {
     // The upscale preview changes nothing, so it works on photos that are only shared with you.
     if (tool !== 'edit' && tool !== 'upscale' && this.readOnly) return;
     this.endTargeted();
-    if (tool !== 'mask') {
-      this.maskDraft = null;
-      this.aiPicker = null;
-    }
-    if (tool === 'mask' && !this.maskSel.mask && this.recipe.masks.length) {
-      const last = this.recipe.masks[this.recipe.masks.length - 1]!;
-      this.maskSel = { mask: last.id, comp: last.components[0]?.id ?? null };
-    }
+    this.masking.toolChanged(tool === 'mask');
     this.tool = tool;
     if (tool !== 'upright') this.uprightSel = null;
     if (this.wholeView) {
@@ -2533,9 +1935,9 @@ export class Editor {
   /** Zoom to 1:1 around a point of the current view (0..1), or back to fit. */
   toggleZoom(x = 0.5, y = 0.5): void {
     if (this.zoom.on) return this.setZoom(false);
-    const t = this.renderer?.previewToFrame(x, y) ?? [0.5, 0.5];
-    this.zoom = { on: true, cx: t[0], cy: t[1], scale: 1 };
-    this.clampZoom();
+    const frame = this.editFrame();
+    if (!frame) return;
+    this.zoom = zoomTo(this.renderer?.previewToFrame(x, y) ?? [0.5, 0.5], 1, frame, this.viewport);
     this.noteHalfSize();
     this.requestRender();
   }
@@ -2556,10 +1958,9 @@ export class Editor {
    * gesture the last render lags behind the fingers.
    */
   zoomAnchor(x: number, y: number): { scale: number; p: [number, number] } | null {
-    const r = this.renderer;
-    if (!r || !this.camera || this.wholeView || this.status !== 'ready') return null;
-    const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
-    return { scale: this.zoom.on ? this.zoom.scale : fitScale(frame, this.viewport), p: r.previewToFrame(x, y) ?? [0.5, 0.5] };
+    const frame = this.zoomableFrame();
+    if (!frame) return null;
+    return { scale: viewScale(this.zoom, frame, this.viewport), p: this.renderer!.previewToFrame(x, y) ?? [0.5, 0.5] };
   }
 
   /**
@@ -2567,17 +1968,13 @@ export class Editor {
    * (CSS pixels from the stage's top left). At or below the fitted size it returns to fit.
    */
   zoomFrom(anchor: { scale: number; p: [number, number] }, factor: number, at: [number, number]): void {
-    const r = this.renderer;
-    if (!r || !this.camera || this.wholeView || this.status !== 'ready') return;
-    const frame = r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
-    const fit = fitScale(frame, this.viewport);
-    const current = this.zoom.on ? this.zoom.scale : fit;
-    const scale = nextScale(anchor.scale, factor, fit);
-    if (scale === null) return this.setZoom(false);
-    const [cx, cy] = anchoredCentre(anchor.p, at, scale, frame, this.viewport);
-    this.zoom = { on: true, cx, cy, scale };
-    this.clampZoom();
-    if (scale > 0.5 && current <= 0.5) this.noteHalfSize();
+    const frame = this.zoomableFrame();
+    if (!frame) return;
+    const current = viewScale(this.zoom, frame, this.viewport);
+    const next = zoomAnchored(anchor, factor, at, frame, this.viewport);
+    if (!next) return this.setZoom(false);
+    this.zoom = next;
+    if (next.scale > 0.5 && current <= 0.5) this.noteHalfSize();
     this.requestRender();
   }
 
@@ -2598,40 +1995,36 @@ export class Editor {
 
   /** Pans the zoomed view by a drag of (dx, dy) CSS pixels. */
   pan(dx: number, dy: number): void {
-    if (!this.zoom.on || !this.renderer || !this.camera) return;
-    const f = this.renderer.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
-    const dpr = this.viewport.dpr;
-    this.zoom = {
-      ...this.zoom,
-      cx: this.zoom.cx - (dx * dpr) / (f.width * this.zoom.scale),
-      cy: this.zoom.cy - (dy * dpr) / (f.height * this.zoom.scale),
-    };
-    this.clampZoom();
+    const frame = this.editFrame();
+    if (!this.zoom.on || !frame) return;
+    this.zoom = panBy(this.zoom, dx, dy, frame, this.viewport);
     this.requestRender();
-  }
-
-  private clampZoom(): void {
-    if (!this.renderer || !this.camera) return;
-    const f = this.renderer.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
-    const vw = this.viewport.width * this.viewport.dpr;
-    const vh = this.viewport.height * this.viewport.dpr;
-    const fw = f.width * this.zoom.scale;
-    const fh = f.height * this.zoom.scale;
-    const clamp = (c: number, view: number, full: number) => (full <= view ? 0.5 : Math.min(1 - view / 2 / full, Math.max(view / 2 / full, c)));
-    this.zoom.cx = clamp(this.zoom.cx, vw, fw);
-    this.zoom.cy = clamp(this.zoom.cy, vh, fh);
   }
 
   setViewport(width: number, height: number, dpr: number): void {
     this.viewport = { width, height, dpr };
-    if (this.zoom.on) {
-      this.clampZoom();
+    const frame = this.editFrame();
+    if (this.zoom.on && frame) {
+      this.zoom = clampZoom(this.zoom, frame, this.viewport);
       this.requestRender();
     }
   }
 
+  /** The edit frame in full-resolution pixels, once a photo is open. */
+  private editFrame(): Frame | null {
+    const r = this.renderer;
+    if (!r || !this.camera) return null;
+    return r.frameFor(this.recipe, 'edit', this.camera.fullWidth, this.camera.fullHeight);
+  }
+
+  /** The edit frame, when the view can be zoomed now (a photo is ready and neither Crop nor Guided Upright is open). */
+  private zoomableFrame(): Frame | null {
+    if (this.wholeView || this.status !== 'ready') return null;
+    return this.editFrame();
+  }
+
   private readOnlyGuard(): boolean {
-    if (this.readOnly) this.notice = 'This photo belongs to someone else, so it can only be viewed.';
+    if (this.readOnly) this.notice = READ_ONLY_NOTICE;
     return this.readOnly;
   }
 
@@ -2834,9 +2227,7 @@ export class Editor {
   private enterEdit(copyId: string | null, stored: Recipe | null, snapshots: Snapshot[], draft: Draft | null = null): void {
     this.keepHistory();
     this.endTargeted();
-    this.maskDraft = null;
-    this.aiPicker = null;
-    this.maskSel = { mask: null, comp: null };
+    this.masking.reset();
     this.previewRecipe = null;
     this.autoApplied = null;
     this.copyId = copyId;
