@@ -6,3 +6,5 @@ export * from './look.ts';
 export * from './dcp.ts';
 export * from './profiles.ts';
 export * from './fuji-looks.ts';
+export * from './output-spaces.ts';
+export * from './icc.ts';

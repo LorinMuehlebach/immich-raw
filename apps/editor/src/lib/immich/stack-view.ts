@@ -88,6 +88,11 @@ export function buildStackView(
   return { stackId: stack.id, groupId, frames, unsorted };
 }
 
+/** An exposure bracket: kept whole, so "delete others" isn't offered. */
+export function isBracketView(view: StackView): boolean {
+  return view.frames.length > 0 && view.frames.every((f) => f.info.role === 'bracket');
+}
+
 /** The best shot (the one "delete others" keeps). */
 export function preferredFrame(view: StackView): StackFrame | null {
   return view.frames.find((f) => f.info.role === 'best') ?? view.frames[0] ?? null;

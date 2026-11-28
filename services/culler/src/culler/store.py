@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from culler.models import Features
+from culler.models import Features, PickInfo
 from culler.planner import AppliedGroup, AssetState
 
 MIGRATIONS = [
@@ -49,6 +49,11 @@ MIGRATIONS = [
     """,
     # The groups as they were before a run changed them, so undo puts back a stack's shots too.
     "ALTER TABLE snapshots ADD COLUMN groups TEXT",
+    # Groups where the user chose another best than the culler would have (see models.PickInfo).
+    """
+    CREATE TABLE picks (
+        group_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, at TEXT NOT NULL, json TEXT NOT NULL)
+    """,
 ]
 
 GROUP_COLUMNS = ("frame_ids", "best_frame", "primary_id", "stacked", "state", "run_id")
@@ -318,6 +323,31 @@ class Store:
                 "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 (gid, *(g[k] for k in GROUP_COLUMNS), utcnow()),
             )
+
+    # --- the user's picks ------------------------------------------------------------------------------
+    def save_pick(self, group_id: str, run_id: str, pick: PickInfo) -> None:
+        self._x(
+            "INSERT OR REPLACE INTO picks(group_id, run_id, at, json) VALUES(?, ?, ?, ?)",
+            (group_id, run_id, utcnow(), json.dumps(pick.to_json())),
+        )
+
+    def delete_picks(self, group_ids: Iterable[str]) -> None:
+        for chunk in _chunks(list(group_ids)):
+            self._x(f"DELETE FROM picks WHERE group_id IN ({','.join('?' * len(chunk))})", chunk)
+
+    def delete_picks_of_run(self, run_id: str) -> None:
+        self._x("DELETE FROM picks WHERE run_id = ?", (run_id,))
+
+    def picks(self) -> list[dict]:
+        """The user's picks in groups still stacked, newest first."""
+        rows = self._q(
+            "SELECT p.group_id, p.run_id, p.at, p.json FROM picks p JOIN groups g ON g.id = p.group_id "
+            "WHERE g.state = 'active' ORDER BY p.at DESC"
+        )
+        return [{"groupId": r["group_id"], "runId": r["run_id"], "at": r["at"], **json.loads(r["json"])} for r in rows]
+
+    def active_group_count(self) -> int:
+        return self._q("SELECT COUNT(*) AS n FROM groups WHERE state = 'active'")[0]["n"]
 
     # --- snapshots (undo) -------------------------------------------------------------------------------
     def save_snapshot(

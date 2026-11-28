@@ -7,11 +7,12 @@
 // - output t: normalised render frame [0,1]². In edit mode it is the crop rectangle;
 //   in crop mode it is the whole upright image, rotated by the straighten angle.
 //
-// The Transform panel (perspective) sits between the upright image and the crop: the crop
-// is drawn on the transformed image.
+// The Transform panel (perspective, Guided Upright) sits between the upright image and the
+// crop: the crop is drawn on the transformed image.
 //
 // Positive angles rotate the image clockwise on screen.
 import type { CropParams, TransformParams } from '@immich-raw/recipe';
+import { HALF_DIAGONAL_35MM, rotationHomography, solveUpright, type Segment } from './upright.ts';
 
 /** Row-major 3x3 acting on (x, y, 1); projective when the last row isn't (0, 0, 1). */
 export type Affine = [number, number, number, number, number, number, number, number, number];
@@ -66,21 +67,68 @@ const KEYSTONE_FOCAL = 1;
 const IDENTITY: Affine = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 /** True when the Transform sliders change the picture. */
+function slidersActive(t: TransformParams): boolean {
+  return t.vertical !== 0 || t.horizontal !== 0 || t.rotate !== 0 || t.aspect !== 0 || t.scale !== 100 || t.offsetX !== 0 || t.offsetY !== 0;
+}
+
+/** True when the Transform panel (sliders or Guided Upright) changes the picture. */
 export function isTransformActive(t: TransformParams | undefined): boolean {
-  return !!t && (t.vertical !== 0 || t.horizontal !== 0 || t.rotate !== 0 || t.aspect !== 0 || t.scale !== 100 || t.offsetX !== 0 || t.offsetY !== 0);
+  return !!t && (slidersActive(t) || !!t.upright?.guides.length);
+}
+
+/** Normalised upright coordinates -> centred, isotropic (half diagonal = 1). */
+function centredFrame(Wu: number, Hu: number): Affine {
+  const hd = Math.hypot(Wu, Hu) / 2;
+  return [Wu / hd, 0, -0.5 * (Wu / hd), 0, Hu / hd, -0.5 * (Hu / hd), 0, 0, 1];
+}
+
+/** A re-projection (centred frame) moved back so the centre stays put, with unit scale there. */
+function keepCentre(P: Affine): Affine {
+  const c = applyAffine(P, 0, 0);
+  P = mulAffine([1, 0, -c[0], 0, 1, -c[1], 0, 0, 1], P);
+  const d = 1e-4;
+  const px = applyAffine(P, d, 0);
+  const py = applyAffine(P, 0, d);
+  // Geometric mean of both axes.
+  const det = Math.abs(px[0] * py[1] - px[1] * py[0]) / (d * d);
+  const k = 1 / Math.sqrt(det || 1);
+  return mulAffine([k, 0, 0, 0, k, 0, 0, 0, 1], P);
+}
+
+/**
+ * Guided Upright as a map on the upright image (normalised, untransformed point -> where it
+ * appears), or null without guides (or with guides that ask for too much). The guides are in
+ * the mask frame of the source image (srcW x srcH, sensor orientation); q turns it upright.
+ */
+export function uprightMatrix(t: TransformParams | undefined, q: QuarterTurns, srcW: number, srcH: number): Affine | null {
+  const g = t?.upright;
+  if (!g?.guides.length) return null;
+  const { w: Wu, h: Hu } = uprightSize(srcW, srcH, q);
+  const N = centredFrame(Wu, Hu);
+  const m = Math.max(srcW, srcH, 1);
+  // Mask frame -> source -> upright -> centred.
+  const toN = mulAffine(N, mulAffine(invertAffine(orientAffine(q)), scale(m / srcW, m / srcH)));
+  const segments = g.guides.map(([x0, y0, x1, y1]): Segment => [applyAffine(toN, x0, y0), applyAffine(toN, x1, y1)]);
+  const solved = solveUpright(segments, g.focal35 / HALF_DIAGONAL_35MM);
+  if (!solved) return null;
+  return mulAffine(invertAffine(N), mulAffine(keepCentre(rotationHomography(solved.rot, solved.f)), N));
 }
 
 /**
  * The Transform panel as a map on the upright image (normalised, size Wu x Hu):
- * untransformed point -> where it appears. Vertical/Horizontal re-project the image as if
- * the camera had been tilted (keeping the centre and the size there), then rotate, aspect,
- * scale and offset, all about the image centre.
+ * untransformed point -> where it appears. `upright` (uprightMatrix) applies first; then
+ * Vertical/Horizontal re-project the image as if the camera had been tilted (keeping the centre
+ * and the size there), then rotate, aspect, scale and offset, all about the image centre.
  */
-export function transformMatrix(t: TransformParams | undefined, Wu: number, Hu: number): Affine {
-  if (!t || !isTransformActive(t)) return IDENTITY;
+export function transformMatrix(t: TransformParams | undefined, Wu: number, Hu: number, upright?: Affine | null): Affine {
+  const sliders = slidersMatrix(t, Wu, Hu);
+  return upright ? mulAffine(sliders, upright) : sliders;
+}
+
+function slidersMatrix(t: TransformParams | undefined, Wu: number, Hu: number): Affine {
+  if (!t || !slidersActive(t)) return IDENTITY;
   const hd = Math.hypot(Wu, Hu) / 2;
-  // Normalised -> centred, isotropic (half diagonal = 1).
-  const N: Affine = [Wu / hd, 0, -0.5 * (Wu / hd), 0, Hu / hd, -0.5 * (Hu / hd), 0, 0, 1];
+  const N = centredFrame(Wu, Hu);
   const f = KEYSTONE_FOCAL;
   // Negative Vertical widens the top (tilt about x); negative Horizontal widens the left.
   const phi = ((-t.vertical / 100) * KEYSTONE_MAX_DEG * Math.PI) / 180;
@@ -89,16 +137,8 @@ export function transformMatrix(t: TransformParams | undefined, Wu: number, Hu: 
   const ry: Affine = [Math.cos(psi), 0, Math.sin(psi), 0, 1, 0, -Math.sin(psi), 0, Math.cos(psi)];
   const K: Affine = [f, 0, 0, 0, f, 0, 0, 0, 1];
   const Kinv: Affine = [1 / f, 0, 0, 0, 1 / f, 0, 0, 0, 1];
-  let P = mulAffine(K, mulAffine(mulAffine(ry, rx), Kinv));
-  // Keep the centre where it is and the scale there (geometric mean of both axes).
-  const c = applyAffine(P, 0, 0);
-  P = mulAffine([1, 0, -c[0], 0, 1, -c[1], 0, 0, 1], P);
-  const d = 1e-4;
-  const px = applyAffine(P, d, 0);
-  const py = applyAffine(P, 0, d);
-  const det = Math.abs(px[0] * py[1] - px[1] * py[0]) / (d * d);
-  const k = 1 / Math.sqrt(det || 1);
-  P = mulAffine([k, 0, 0, 0, k, 0, 0, 0, 1], P);
+  // Keep the centre where it is and the scale there.
+  const P = keepCentre(mulAffine(K, mulAffine(mulAffine(ry, rx), Kinv)));
   const stretch = Math.pow(2, t.aspect / 200);
   const sc = t.scale / 100;
   const r = (t.rotate * Math.PI) / 180;
@@ -109,8 +149,8 @@ export function transformMatrix(t: TransformParams | undefined, Wu: number, Hu: 
 }
 
 /** Where an upright point that appears at u (after the transform) comes from. */
-export function transformInverse(t: TransformParams | undefined, Wu: number, Hu: number): Affine {
-  return isTransformActive(t) ? invertAffine(transformMatrix(t, Wu, Hu)) : IDENTITY;
+export function transformInverse(t: TransformParams | undefined, Wu: number, Hu: number, upright?: Affine | null): Affine {
+  return isTransformActive(t) ? invertAffine(transformMatrix(t, Wu, Hu, upright)) : IDENTITY;
 }
 
 const translate = (x: number, y: number): Affine => [1, 0, x, 0, 1, y, 0, 0, 1];
@@ -160,7 +200,7 @@ export function editFrame(crop: CropParams, flip: number, srcW: number, srcH: nu
   m = mulAffine(rotateCw(-crop.angle), m);
   m = mulAffine(translate(crop.cx * Wu, crop.cy * Hu), m);
   m = mulAffine(scale(1 / Wu, 1 / Hu), m);
-  m = mulAffine(transformInverse(transform, Wu, Hu), m);
+  m = mulAffine(transformInverse(transform, Wu, Hu, uprightMatrix(transform, q, srcW, srcH)), m);
   m = mulAffine(orientAffine(q), m);
   return { tToS: m, width: Math.max(1, Math.round(cw)), height: Math.max(1, Math.round(ch)) };
 }
@@ -174,7 +214,7 @@ export function cropViewFrame(crop: CropParams, flip: number, srcW: number, srcH
   m = mulAffine(rotateCw(-crop.angle), m);
   m = mulAffine(translate(Wu / 2, Hu / 2), m);
   m = mulAffine(scale(1 / Wu, 1 / Hu), m);
-  m = mulAffine(transformInverse(transform, Wu, Hu), m);
+  m = mulAffine(transformInverse(transform, Wu, Hu, uprightMatrix(transform, q, srcW, srcH)), m);
   m = mulAffine(orientAffine(q), m);
   return { tToS: m, width: Math.round(Wu), height: Math.round(Hu) };
 }

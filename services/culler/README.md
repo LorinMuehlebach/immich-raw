@@ -1,7 +1,8 @@
 # Culler
 
-Stacks bursts and re-takes in Immich, puts the best shot in front and tags why the others lost
-(lighting, sharpness, closed eyes). How it decides, its settings and the command line:
+Stacks bursts and re-takes in Immich, one stack per moment, puts the best shot in front and tags why
+the others lost (lighting, sharpness, closed eyes). Exposure brackets are kept whole, and near-ties are
+marked as close calls. How it decides, its settings and the command line:
 [docs/culler.md](../../docs/culler.md). Setup next to Immich:
 [Installation → the culler](../../docs/installation.md#optional-the-culler-auto-stack-and-best-pick).
 
@@ -21,11 +22,15 @@ To run it against the test Immich, see [e2e/README.md](../../e2e/README.md#the-c
 Layout of `src/culler/`:
 
 - **Measuring:** `features/` — exposure (on the RAW file for RAWs; photo, faces and people apart),
-  sharpness, faces with eyes and smiles, people (`people.py`), CLIP embedding.
+  sharpness (eyes, animal or photo), faces with eyes and smiles, people and animals (`people.py`), CLIP
+  embedding.
 - **Deciding (pure, tested on their own):**
   - `frames.py`: captures;
-  - `grouping.py`: scenes;
-  - `checks.py`, `ranking.py`: the best shot;
+  - `brackets.py`: exposure brackets;
+  - `grouping.py`: scenes and their moments;
+  - `checks.py`, `ranking.py`: the best shot, close calls, and what the culler would pick instead of
+    yours;
+  - `suggest.py`: settings that would agree with your picks;
   - `planner.py`: what to change in Immich, and undo.
 - **Doing:** `immich.py` holds every Immich route. Around it:
   - `executor.py` applies the changes;

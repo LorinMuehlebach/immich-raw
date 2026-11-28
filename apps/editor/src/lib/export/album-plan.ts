@@ -1,11 +1,13 @@
 // Which files an album export writes: RAWs once each, other images unless they are the camera
 // JPEG of a RAW in the album; no videos. The editor's saved JPEG of a RAW counts as that RAW, so
-// it is rendered again from the RAW at full quality instead of being re-encoded.
+// it is rendered again from the RAW at full quality instead of being re-encoded; a virtual copy's
+// JPEG counts as that copy, exported besides the original.
 import { captureBaseName, isRawFilename } from '@immich-raw/inject/raw';
 
 const SAME_CAPTURE_MS = 2000;
 
-export type AlbumItem = { kind: 'raw' | 'image'; id: string; name: string };
+/** copyId: a RAW's virtual copy (its own settings), for the copy's JPEG in the album. */
+export type AlbumItem = { kind: 'raw' | 'image'; id: string; name: string; copyId?: string };
 
 export interface PlanAsset {
   id: string;
@@ -15,6 +17,8 @@ export interface PlanAsset {
   fileCreatedAt?: string;
   /** For the editor's renders: the RAW it was made from (null when that RAW is gone). */
   sourceId?: string | null;
+  /** For a virtual copy's render: the copy. */
+  copyId?: string | null;
 }
 
 export interface PlannedItems {
@@ -30,10 +34,11 @@ export function planItems(assets: PlanAsset[], skipJpegTwins: boolean): PlannedI
   const captures: { base: string; t: number }[] = [];
   const skipped = { videos: 0, jpegTwins: 0 };
   let renders = 0;
-  const addRaw = (id: string, name: string) => {
-    if (raws.has(id)) return;
-    raws.add(id);
-    items.push({ kind: 'raw', id, name });
+  const addRaw = (id: string, name: string, copyId?: string | null) => {
+    const key = copyId ? `${id}|${copyId}` : id;
+    if (raws.has(key)) return;
+    raws.add(key);
+    items.push(copyId ? { kind: 'raw', id, name, copyId } : { kind: 'raw', id, name });
   };
   for (const a of assets) {
     if (!isRawFilename(a.originalFileName)) continue;
@@ -49,7 +54,7 @@ export function planItems(assets: PlanAsset[], skipJpegTwins: boolean): PlannedI
     if (a.type !== 'IMAGE') continue;
     if (a.sourceId) {
       renders++;
-      addRaw(a.sourceId, a.originalFileName);
+      addRaw(a.sourceId, a.originalFileName, a.copyId);
       continue;
     }
     if (skipJpegTwins) {

@@ -73,28 +73,40 @@ export function arrangeFilmstrip(items: AssetResponseDto[], current: AssetRespon
   return list.slice(start, start + limit);
 }
 
-export async function loadFilmstrip(ctx: string | null, current: AssetResponseDto): Promise<AssetResponseDto[]> {
-  const filter = filmstripFilter(parseContext(ctx), current);
+/** Every asset the filter finds, up to MAX_PAGES pages; with their EXIF (the stars are there). */
+async function searchAll(filter: SearchFilter): Promise<AssetResponseDto[]> {
   const items: AssetResponseDto[] = [];
+  // With `filter`/`orderBy`, Immich 3.3.6 rejects the old `page` field: page with `cursor`.
+  let cursor: string | undefined;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const res = await searchAssets({
+      metadataSearchDto: {
+        filter,
+        size: PAGE_SIZE,
+        withExif: true,
+        orderBy: { field: SearchOrderField.LocalDateTime, direction: AssetOrder.Asc },
+        ...(cursor ? { cursor } : {}),
+      },
+    });
+    items.push(...res.assets.items);
+    cursor = res.assets.nextCursor ?? undefined;
+    if (!cursor || items.length >= FILMSTRIP_LIMIT * 3) break;
+  }
+  return items;
+}
+
+export async function loadFilmstrip(ctx: string | null, current: AssetResponseDto): Promise<AssetResponseDto[]> {
   try {
-    // With `filter`/`orderBy`, Immich 3.3.6 rejects the old `page` field: page with `cursor`.
-    let cursor: string | undefined;
-    for (let i = 0; i < MAX_PAGES; i++) {
-      const res = await searchAssets({
-        metadataSearchDto: {
-          filter,
-          size: PAGE_SIZE,
-          orderBy: { field: SearchOrderField.LocalDateTime, direction: AssetOrder.Asc },
-          ...(cursor ? { cursor } : {}),
-        },
-      });
-      items.push(...res.assets.items);
-      cursor = res.assets.nextCursor ?? undefined;
-      if (!cursor || items.length >= FILMSTRIP_LIMIT * 3) break;
-    }
+    return arrangeFilmstrip(await searchAll(filmstripFilter(parseContext(ctx), current)), current);
   } catch (e) {
     console.warn('Filmstrip: search failed', e);
     return [current];
   }
-  return arrangeFilmstrip(items, current);
+}
+
+/** The filmstrip's photos that carry one of these tags (the reject tags), as ids. */
+export async function loadTagged(ctx: string | null, current: AssetResponseDto, tagIds: string[]): Promise<Set<string>> {
+  if (!tagIds.length) return new Set();
+  const found = await searchAll({ ...filmstripFilter(parseContext(ctx), current), tagIds: { any: tagIds } });
+  return new Set(found.map((a) => a.id));
 }

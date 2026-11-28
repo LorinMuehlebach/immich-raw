@@ -6,7 +6,8 @@ import { authHeaders } from './api.ts';
 const BASE = `${import.meta.env.BASE_URL}culler/api/v1`;
 const ABSENT = new Set([404, 502, 503, 504]);
 
-export type CullRole = 'best' | 'runner-up' | 'rejected';
+/** 'bracket': a shot of an exposure bracket, kept whole (none of it rejected). */
+export type CullRole = 'best' | 'runner-up' | 'rejected' | 'bracket';
 export type CullReason = 'lighting' | 'blur' | 'eyes';
 
 export interface CullMetrics {
@@ -31,6 +32,12 @@ export interface CullMetrics {
   /** Smiling faces, of the faces whose smile could be read. */
   smiling?: number;
   smileFaces?: number;
+  /** What sharpness was measured on: the eyes, the largest animal, or the sharpest areas. */
+  sharpOn?: 'faces' | 'subject' | 'photo';
+  /** The animal sharpness was measured on, as the detector names it ("bird", "dog"). */
+  subjectLabel?: string;
+  /** An exposure bracket: the camera settings' step from the shot in front, in stops. */
+  bracketEv?: number;
 }
 
 /** What the service last decided for one photo. */
@@ -42,6 +49,10 @@ export interface CullInfo {
   rank: number | null;
   groupSize: number | null;
   pinned: boolean;
+  /** The best and the next shot of its stack nearly tied: worth a look. */
+  closeCall?: boolean;
+  /** The best's lead over the next shot on the culler's 0-1 mix, in a close call or not. */
+  margin?: number | null;
   metrics: CullMetrics;
   runId?: string | null;
 }
@@ -59,6 +70,9 @@ export interface RunCounts {
   excluded: number;
   /** Of the excluded: shots whose stack the user took apart in Immich (a run with force includes them). */
   takenApart?: number;
+  /** Of the stacks: exposure brackets, and close calls. */
+  brackets?: number;
+  closeCalls?: number;
   changes: number;
   errors?: number;
 }
@@ -105,6 +119,10 @@ export interface RunEdits {
 export interface ReportGroup {
   id: string;
   primaryId: string | null;
+  /** 'bracket': an exposure bracket, kept whole. */
+  kind?: 'burst' | 'bracket';
+  /** The best and the next shot nearly tied. */
+  closeCall?: boolean;
   frames: ReportFrame[];
 }
 
@@ -233,15 +251,26 @@ export interface CullOptions {
   smiles: boolean;
   /** Set aside shots with closed eyes. */
   eyes: boolean;
+  /** Keep exposure brackets together in a stack of their own. */
+  brackets: boolean;
+  /** One stack per moment (a new pose after a pause), instead of one per scene. */
+  moments: boolean;
 }
 
-export const DEFAULT_CULL_OPTIONS: CullOptions = { peopleFirst: true, people: true, smiles: true, eyes: true };
+export const DEFAULT_CULL_OPTIONS: CullOptions = { peopleFirst: true, people: true, smiles: true, eyes: true, brackets: true, moments: true };
 
 /** Stored or partial options, with the defaults for anything missing or of the wrong type. */
 export function parseCullOptions(value: unknown): CullOptions {
   const o = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
   const flag = (k: keyof CullOptions) => (typeof o[k] === 'boolean' ? (o[k] as boolean) : DEFAULT_CULL_OPTIONS[k]);
-  return { peopleFirst: flag('peopleFirst'), people: flag('people'), smiles: flag('smiles'), eyes: flag('eyes') };
+  return {
+    peopleFirst: flag('peopleFirst'),
+    people: flag('people'),
+    smiles: flag('smiles'),
+    eyes: flag('eyes'),
+    brackets: flag('brackets'),
+    moments: flag('moments'),
+  };
 }
 
 const OPTIONS_KEY = 'raw-editor.cull.options';
@@ -263,26 +292,41 @@ export function saveCullOptions(o: CullOptions): void {
   }
 }
 
+/** The service's settings sections, as a run's `options` and a suggestion's carry them. */
+export type RunSettings = Record<string, Record<string, boolean | number>>;
+
 /** The service's `options` (its settings sections) for these choices. */
-export function runOptions(o: CullOptions): Record<string, Record<string, boolean>> {
-  return {
+export function runOptions(o: CullOptions): RunSettings {
+  const out: RunSettings = {
     lighting: { people_first: o.peopleFirst },
     people: { enabled: o.people },
     smiles: { enabled: o.smiles },
     eyes: { enabled: o.eyes },
+    brackets: { enabled: o.brackets },
   };
+  if (!o.moments) out.grouping = { moment_similarity: 0 }; // on: the service's own threshold
+  return out;
+}
+
+/** `extra` on top of `base`, section by section. */
+export function mergeSettings(base: RunSettings, extra: RunSettings | undefined): RunSettings {
+  const out: RunSettings = { ...base };
+  for (const [section, values] of Object.entries(extra ?? {})) out[section] = { ...(out[section] ?? {}), ...values };
+  return out;
 }
 
 export interface RunExtras {
   options?: CullOptions;
+  /** Settings on top of the options' (a suggestion to preview). */
+  settings?: RunSettings;
   /** Also stack the shots whose stack the user took apart (a preview forgets nothing). */
   force?: boolean;
   edits?: RunEdits;
 }
 
-export async function startRun(scope: RunScope, dryRun: boolean, { options, force, edits }: RunExtras = {}): Promise<string> {
+export async function startRun(scope: RunScope, dryRun: boolean, { options, settings, force, edits }: RunExtras = {}): Promise<string> {
   const body: Record<string, unknown> = { scope, dryRun };
-  if (options) body.options = runOptions(options);
+  if (options || settings) body.options = mergeSettings(options ? runOptions(options) : {}, settings);
   if (force) body.force = true;
   if (edits && (edits.remove.length || Object.keys(edits.join).length)) body.edits = edits;
   return runId(await call('POST', '/runs', body));
@@ -293,6 +337,34 @@ export const makeBest = async (groupId: string, assetId: string): Promise<string
   runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/best`, { assetId }));
 /** Sorts the group again, e.g. after photos of it were trashed (a group of one is taken apart). */
 export const recullGroup = async (groupId: string): Promise<string> => runId(await call('POST', `/groups/${encodeURIComponent(groupId)}/recull`));
+
+/** A setting change that would have agreed with the user's picks (services/culler/src/culler/suggest.py). */
+export interface PickSuggestion {
+  section: string;
+  changes: { key: string; from: number; to: number }[];
+  /** How many of the user's picks it would have followed, of how many of that kind. */
+  fixes: number;
+  of: number;
+  why: string;
+  /** The run options to preview it with. */
+  options: RunSettings;
+  /** The culler.toml lines to keep it. */
+  toml: string;
+}
+
+/** How often the user chose another best than the culler, and why. */
+export interface PicksSummary {
+  stacks: number;
+  overruled: number;
+  bySource: { you: number; favourite: number };
+  byReason: { lighting: number; blur: number; eyes: number; 'runner-up': number };
+  minPicks: number;
+  suggestions: PickSuggestion[];
+}
+
+export async function getPicks(): Promise<PicksSummary | null> {
+  return call<PicksSummary>('GET', '/picks');
+}
 
 export async function getRun(id: string): Promise<CullRun | null> {
   return call<CullRun>('GET', `/runs/${encodeURIComponent(id)}`);

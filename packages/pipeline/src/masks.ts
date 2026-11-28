@@ -3,13 +3,14 @@ import { MAX_COMPONENTS, MAX_MASKS, isMaskActive, type Mask, type MaskComponent,
 import { gradeTint } from './color/look.ts';
 import { OKLAB_M2 } from './color/matrices.ts';
 import { PROPHOTO_TO_LMS } from './color/spaces.ts';
+import { pointInPolygon } from './polygon.ts';
 
 /** Colour samples across all colour range components (shader array size). */
 export const MAX_COLOR_SAMPLES_TOTAL = 16;
 
 /** What the shader needs besides the recipe: brush maps and sampled colours (renderer.ts). */
 export interface MaskResources {
-  /** Brush component id -> its place in the brush atlas [u0, v0, su, sv]. */
+  /** Brush or polygon component id -> its place in the brush atlas [u0, v0, su, sv]. */
   brushCells: Map<string, [number, number, number, number]>;
   /** Half a texel of the atlas, in uv. */
   brushHalfTexel: [number, number];
@@ -42,7 +43,8 @@ export function colorFeature(lin: readonly number[]): [number, number, number] {
 /** Refine (0..100) -> feature distance at which a colour range has faded out. */
 export const colorRangeReach = (refine: number) => 0.015 + Math.pow(refine / 100, 1.5) * 0.2;
 
-const KIND = { linear: 1, radial: 2, luminance: 3, brush: 4, color: 5, ai: 6 } as const;
+// A polygon is filled into the brush atlas and read like a brush.
+const KIND = { linear: 1, radial: 2, luminance: 3, brush: 4, polygon: 4, color: 5, ai: 6 } as const;
 /** A part read from its refined map (the shader's componentWeight kind 7). */
 export const KIND_PART_REFINED = 7;
 /** A whole mask read from its refined map (kind 8). */
@@ -93,7 +95,8 @@ function encodeComponent(c: MaskComponent, res: MaskResources | undefined, color
     }
     case 'luminance':
       return { a: [c.lo / 100, c.hi / 100, Math.max(0.002, c.smooth / 100 * 0.5), 0], b: [0, 0, 0, 0] };
-    case 'brush': {
+    case 'brush':
+    case 'polygon': {
       const cell = res?.brushCells.get(c.id);
       // No map (nothing painted yet): an empty cell selects nothing.
       if (!cell) return { a: [0, 0, 0, 0], b: [1, 1, 0, 0] };
@@ -233,6 +236,8 @@ export function componentWeight(c: MaskComponent, m: [number, number], lum = 0.5
     const hi = c.hi / 100;
     const s = Math.max(0.002, (c.smooth / 100) * 0.5);
     w = (lo < 0.001 ? 1 : smoothstep(lo - s, lo, lum)) * (hi > 0.999 ? 1 : 1 - smoothstep(hi, hi + s, lum));
+  } else if (c.kind === 'polygon') {
+    w = pointInPolygon(c.points, m) ? 1 : 0;
   }
   return c.invert ? 1 - w : w;
 }

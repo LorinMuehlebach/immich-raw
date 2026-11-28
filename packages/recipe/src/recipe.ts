@@ -120,7 +120,24 @@ export interface LensParams {
   defringeGreenHi: number;
 }
 
-/** Lightroom's Transform panel (manual perspective). */
+/** Guides of Guided Upright (Lightroom's), at most this many. */
+export const MAX_UPRIGHT_GUIDES = 4;
+
+/**
+ * Lightroom's Guided Upright: lines drawn along edges that should be vertical or horizontal.
+ * The correction is worked out from them on every render (pipeline/upright.ts).
+ */
+export interface UprightParams {
+  /**
+   * Each guide as [x0, y0, x1, y1] in the mask frame (the lens-corrected image in sensor
+   * orientation, longer side 1), so it stays on the content when the photo is turned or cropped.
+   */
+  guides: [number, number, number, number][];
+  /** 35 mm-equivalent focal length the correction assumes (from the photo when the first guide is drawn). */
+  focal35: number;
+}
+
+/** Lightroom's Transform panel (manual perspective, and Guided Upright). */
 export interface TransformParams {
   /** -100..100: keystone around the horizontal axis (negative widens the top). */
   vertical: number;
@@ -137,6 +154,8 @@ export interface TransformParams {
   offsetY: number;
   /** Keep the crop inside the transformed image (no blank areas). */
   constrain: boolean;
+  /** Guided Upright; absent = none. The sliders apply on top of it. */
+  upright?: UprightParams;
 }
 
 export interface DetailParams {
@@ -262,6 +281,25 @@ export function defaultRecipe(): Recipe {
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/** Guided Upright from stored JSON; undefined when there are no usable guides. */
+export function normalizeUpright(input: unknown): UprightParams | undefined {
+  if (!isObject(input) || !Array.isArray(input.guides)) return undefined;
+  const q = (v: number) => Math.round(Math.min(3, Math.max(-2, v)) * 1e5) / 1e5;
+  const guides: [number, number, number, number][] = [];
+  for (const g of input.guides) {
+    if (guides.length >= MAX_UPRIGHT_GUIDES) break;
+    if (!Array.isArray(g) || g.length !== 4 || !g.every((v) => typeof v === 'number' && Number.isFinite(v))) continue;
+    const [x0, y0, x1, y1] = (g as number[]).map(q) as [number, number, number, number];
+    // A guide needs a direction.
+    if (Math.hypot(x1 - x0, y1 - y0) < 1e-3) continue;
+    guides.push([x0, y0, x1, y1]);
+  }
+  if (!guides.length) return undefined;
+  const f = input.focal35;
+  const focal35 = typeof f === 'number' && Number.isFinite(f) ? Math.round(Math.min(800, Math.max(8, f)) * 10) / 10 : 35;
+  return { guides, focal35 };
+}
+
 /**
  * Turns anything (stored JSON, an older schema, a hand-edited value) into a valid Recipe:
  * unknown fields are dropped, missing ones get defaults, numbers are clamped.
@@ -294,6 +332,8 @@ export function normalizeRecipe(input: unknown): Recipe {
   if (VIGNETTE_STYLES.some((s) => s.id === effects.vignetteStyle)) r.effects.vignetteStyle = effects.vignetteStyle as VignetteStyle;
 
   r.transform.constrain = isObject(src.transform) && src.transform.constrain === true;
+  const upright = normalizeUpright(isObject(src.transform) ? src.transform.upright : undefined);
+  if (upright) r.transform.upright = upright;
   r.masks = normalizeMasks(src.masks);
 
   const crop = isObject(src.crop) ? src.crop : {};

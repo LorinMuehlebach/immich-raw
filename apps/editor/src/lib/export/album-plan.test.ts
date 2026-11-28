@@ -39,6 +39,25 @@ describe('planItems', () => {
     expect(renders).toBe(2);
   });
 
+  it("exports a virtual copy besides the original, each once", () => {
+    const { items, renders } = planItems(
+      [
+        a('e1', 'DSC001.edit.jpg', { sourceId: 'r1' }),
+        a('c1', 'DSC001.copy-1.edit.jpg', { sourceId: 'r1', copyId: 'k1' }),
+        a('u1', 'DSC001.upscaled-2x.edit.jpg', { sourceId: 'r1', copyId: 'k1' }),
+        a('c2', 'DSC001.copy-2.edit.jpg', { sourceId: 'r1', copyId: 'k2' }),
+        a('r1', 'DSC001.ARW'),
+      ],
+      true,
+    );
+    expect(items).toEqual([
+      { kind: 'raw', id: 'r1', name: 'DSC001.ARW' },
+      { kind: 'raw', id: 'r1', name: 'DSC001.copy-1.edit.jpg', copyId: 'k1' },
+      { kind: 'raw', id: 'r1', name: 'DSC001.copy-2.edit.jpg', copyId: 'k2' },
+    ]);
+    expect(renders).toBe(4);
+  });
+
   it('skips the camera JPEG of a RAW in the album when asked', () => {
     const assets = [a('r1', 'DSC001.ARW'), a('j1', 'DSC001.JPG', { fileCreatedAt: '2024-05-01T10:00:01.000Z' }), a('j2', 'DSC001.JPG', { fileCreatedAt: '2024-06-01T10:00:00.000Z' })];
     const skip = planItems(assets, true);

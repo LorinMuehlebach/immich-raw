@@ -7,7 +7,7 @@
 // Every change ends in host.changed(commit, label): live while dragging (commit = false), one
 // history step when the gesture ends. Refusals (read-only photo, a limit reached) tell the user
 // through host.notify and change nothing. Nothing throws; unknown ids are ignored.
-import { brushRadius } from '@immich-raw/pipeline';
+import { brushRadius, simplifyPolygon } from '@immich-raw/pipeline';
 import {
   BRUSH_DENSITY,
   BRUSH_FEATHER,
@@ -22,11 +22,13 @@ import {
   MAX_COMPONENTS,
   MAX_MASKS,
   MAX_OBJECT_POINTS,
+  MAX_POLYGON_POINTS,
   aiCount,
   aiLabel,
   brushCount,
   clampParam,
   componentCount,
+  componentLabel,
   defaultEdge,
   formatParam,
   getPath,
@@ -46,6 +48,7 @@ import {
   type MaskMode,
   type ParamSpec,
   type PersonPart,
+  type PolygonComponent,
 } from '@immich-raw/recipe';
 
 type P = [number, number];
@@ -54,11 +57,16 @@ export const READ_ONLY_NOTICE = 'This photo belongs to someone else, so it can o
 
 /** A gradient waiting to be drawn on the photo: a new mask, or a component of an existing one. */
 export interface MaskDraft {
-  /** object: Lightroom's Objects (drag a box around it, or click it). */
-  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object';
+  /**
+   * object: Lightroom's Objects (drag a box around it, or click it). polygon: click the
+   * corners; lasso: drag around the area.
+   */
+  kind: 'linear' | 'radial' | 'brush' | 'color' | 'object' | 'polygon' | 'lasso';
   mode: MaskMode;
   /** Mask to add it to; null = create a new mask. */
   maskId: string | null;
+  /** Polygon: the corners clicked so far, flat [x, y, ...] in the mask frame. */
+  points?: number[];
 }
 
 /** The People or Landscape choices before the AI mask is made. */
@@ -166,7 +174,7 @@ const q5 = (v: number) => Math.round(v * 1e5) / 1e5;
 const MODE_VERB: Record<MaskMode, string> = { add: 'Add', subtract: 'Subtract', intersect: 'Intersect' };
 
 /** History name of a mask part. */
-const partLabel = (c: MaskComponent) => (c.kind === 'ai' ? aiLabel(c) : COMPONENT_LABELS[c.kind]);
+const partLabel = componentLabel;
 
 /** A drag shorter than this (CSS pixels) is a click. */
 const CLICK_PX = 6;
@@ -283,6 +291,16 @@ export class MaskEditor {
     } else this.setOverlay(!this.ui.overlay);
   }
 
+  /** Another photo or copy is in the editor: nothing selected or armed. */
+  reset(): void {
+    this.ui.sel = { mask: null, comp: null };
+    this.ui.draft = null;
+    this.ui.picker = null;
+    this.ui.editing = 'shape';
+    this.drawLabel = null;
+    this.stroking = false;
+  }
+
   /** The editor switched tools: leaving Masking disarms; entering it selects the last mask. */
   toolChanged(entering: boolean): void {
     if (!entering) {
@@ -334,7 +352,7 @@ export class MaskEditor {
    * Arms a gradient to be drawn on the photo (Lightroom's M / Shift+M); luminance ranges are
    * added right away. mode/maskId: add to, subtract from or intersect with an existing mask.
    */
-  start(kind: ComponentKind, mode: MaskMode = 'add', maskId: string | null = null): void {
+  start(kind: ComponentKind | 'lasso', mode: MaskMode = 'add', maskId: string | null = null): void {
     if (kind === 'ai') return this.startAi('subject', mode, maskId);
     if (this.guard() || !this.room(!maskId)) return;
     if (!this.host.toolActive()) this.host.openTool();
@@ -345,11 +363,11 @@ export class MaskEditor {
       this.host.changed(true, `${maskId ? 'Add' : 'New Mask:'} ${COMPONENT_LABELS.luminance}`);
       return;
     }
-    if (kind === 'brush' && brushCount(this.masks) >= MAX_BRUSHES) {
-      this.host.notify(`Up to ${MAX_BRUSHES} brush parts are supported in total.`);
+    if ((kind === 'brush' || kind === 'polygon' || kind === 'lasso') && brushCount(this.masks) >= MAX_BRUSHES) {
+      this.host.notify(`Up to ${MAX_BRUSHES} brush, polygon and lasso parts are supported in total.`);
       return;
     }
-    this.ui.draft = { kind, mode: maskId ? mode : 'add', maskId };
+    this.ui.draft = { kind, mode: maskId ? mode : 'add', maskId, ...(kind === 'polygon' ? { points: [] } : {}) };
   }
 
   /**
@@ -414,6 +432,79 @@ export class MaskEditor {
     }
   }
 
+  // ---------------------------------------------------------------- polygon and lasso
+
+  /** Polygon being drawn: a corner at mask-frame point p. */
+  addPolygonPoint(p: P): void {
+    const d = this.ui.draft;
+    if (d?.kind !== 'polygon' || this.guard()) return;
+    const points = d.points ?? [];
+    if (points.length >= MAX_POLYGON_POINTS * 2) {
+      this.host.notify(`Up to ${MAX_POLYGON_POINTS} corners per polygon.`);
+      return;
+    }
+    this.ui.draft = { ...d, points: [...points, q5(p[0]), q5(p[1])] };
+  }
+
+  /** Polygon being drawn: takes back the last corner (Backspace). */
+  removePolygonPoint(): void {
+    const d = this.ui.draft;
+    if (d?.kind !== 'polygon' || !d.points?.length) return;
+    this.ui.draft = { ...d, points: d.points.slice(0, -2) };
+  }
+
+  /** Polygon being drawn: closes it and adds it (needs three corners). */
+  closePolygon(): boolean {
+    const d = this.ui.draft;
+    if (d?.kind !== 'polygon' || (d.points?.length ?? 0) < 6) return false;
+    return this.addPolygon(d.points!, false);
+  }
+
+  /** Lasso: the outline dragged on the photo (mask frame), closed and simplified. */
+  drawLasso(points: number[]): boolean {
+    if (this.ui.draft?.kind !== 'lasso') return false;
+    // Corners closer than half a brush-map texel to the outline add nothing.
+    return this.addPolygon(simplifyPolygon(points, 0.5 / 2048, MAX_POLYGON_POINTS), true);
+  }
+
+  private addPolygon(points: number[], freehand: boolean): boolean {
+    const d = this.ui.draft;
+    if (!d || this.guard() || points.length < 6 || !this.room(!d.maskId)) return false;
+    this.ui.draft = null;
+    const c = newComponent('polygon', d.mode) as PolygonComponent;
+    c.points = points.map(q5);
+    if (freehand) c.freehand = true;
+    this.addComponent(c, d.maskId);
+    this.host.changed(true, `${d.maskId ? MODE_VERB[d.mode] : 'New Mask:'} ${partLabel(c)}`);
+    return true;
+  }
+
+  /**
+   * A press on the edge after corner `after` of a polygon: a new corner at p, returned as a
+   * drag of that corner (its index is after + 1).
+   */
+  addCorner(maskId: string, compId: string, after: number, p: P): ShapeGesture | null {
+    const c = this.part(maskId, compId)?.c;
+    if (c?.kind !== 'polygon' || this.guard()) return null;
+    if (c.points.length >= MAX_POLYGON_POINTS * 2) {
+      this.host.notify(`Up to ${MAX_POLYGON_POINTS} corners per polygon.`);
+      return null;
+    }
+    const points = [...c.points];
+    points.splice((after + 1) * 2, 0, q5(p[0]), q5(p[1]));
+    this.updateComponent(maskId, compId, { points });
+    return this.grab(maskId, compId);
+  }
+
+  /** Alt+click on corner `index` of a polygon: removes it (a polygon keeps three corners). */
+  removeCorner(maskId: string, compId: string, index: number): void {
+    const found = this.part(maskId, compId);
+    const c = found?.c;
+    if (c?.kind !== 'polygon' || c.points.length <= 6 || index < 0 || index * 2 >= c.points.length) return;
+    const points = c.points.filter((_, k) => k !== index * 2 && k !== index * 2 + 1);
+    this.updateComponent(maskId, compId, { points }, true, `${found!.m.name}: Remove Corner`);
+  }
+
   // ---------------------------------------------------------------- gestures on the photo
 
   /**
@@ -462,7 +553,8 @@ export class MaskEditor {
   /** Starts drawing the armed gradient (or colour range) at p. */
   private beginDraw(p: P): ShapeGesture | null {
     const d = this.ui.draft;
-    if (!d || d.kind === 'object' || this.guard()) return null;
+    // Objects, polygons and lassos are drawn with their own calls.
+    if (!d || d.kind === 'object' || d.kind === 'polygon' || d.kind === 'lasso' || this.guard()) return null;
     const c = newComponent(d.kind, d.mode);
     if (c.kind === 'linear') Object.assign(c, { x0: p[0], y0: p[1], x1: p[0], y1: p[1] + 1e-3 });
     else if (c.kind === 'radial') Object.assign(c, { cx: p[0], cy: p[1], rx: 1e-3, ry: 1e-3 });

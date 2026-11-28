@@ -4,6 +4,7 @@
 // is the JPEG itself exported. Other images are exported as they are, at the preset's size and
 // type.
 import { RENDER_KEY } from '@immich-raw/inject/raw';
+import type { Pixels } from '@immich-raw/pipeline';
 import { RECIPE_KEY } from '@immich-raw/recipe';
 import {
   AssetOrder,
@@ -15,12 +16,14 @@ import {
   type AlbumResponseDto,
   type AssetResponseDto,
 } from '@immich/sdk';
+import { copyExportName, copyKey, parseCopy } from '../immich/copies.ts';
 import { downloadUncached } from '../immich/download.ts';
 import { loadRecipe, readMetadata } from '../immich/save.ts';
 import { exportFilename, type ExportPreset, type ExportPresetId } from '../state/export-settings.ts';
+import { loadLogoBitmap } from '../state/logos.ts';
 import { mapLimit, planItems, type AlbumItem, type PlanAsset } from './album-plan.ts';
 import { captureDate } from './metadata.ts';
-import { finishExport, type OutputStep } from './output.ts';
+import { finishExport, outputColor, type OutputStep } from './output.ts';
 import type { Destination } from './destination.ts';
 import { RawRenderer, type RawStep } from './raw-render.ts';
 
@@ -111,13 +114,15 @@ async function planFromAssets(assets: AssetResponseDto[], name: string, skipJpeg
   const planned: PlanAsset[] = await mapLimit(assets, LOOKUPS, async (a) => {
     const p: PlanAsset = { id: a.id, originalFileName: a.originalFileName, type: a.type, fileCreatedAt: a.fileCreatedAt };
     if (a.originalFileName.toLowerCase().endsWith('.edit.jpg')) {
-      const source = (await readMetadata(a.id, RENDER_KEY).catch(() => null))?.sourceAssetId;
+      const meta = await readMetadata(a.id, RENDER_KEY).catch(() => null);
+      const source = meta?.sourceAssetId;
       p.sourceId = typeof source === 'string' && source && (await rawAvailable(source, listed)) ? source : null;
+      if (typeof meta?.copyId === 'string' && meta.copyId) p.copyId = meta.copyId;
     }
     return p;
   });
   const { items, renders, skipped } = planItems(planned, skipJpegTwins);
-  const hasEdit = await mapLimit(items, LOOKUPS, async (it) => it.kind === 'raw' && !!(await readMetadata(it.id, RECIPE_KEY).catch(() => null)));
+  const hasEdit = await mapLimit(items, LOOKUPS, async (it) => it.kind === 'raw' && !!(await readMetadata(it.id, it.copyId ? copyKey(it.copyId) : RECIPE_KEY).catch(() => null)));
   return { source: { name }, items, edited: hasEdit.filter(Boolean).length, renders, skipped };
 }
 
@@ -145,6 +150,8 @@ export interface AlbumResult {
   copied: string[];
   failed: { name: string; error: string }[];
   cancelled: boolean;
+  /** What every file lacks that the preset asked for (e.g. a missing logo), each said once. */
+  notes: string[];
 }
 
 export interface AlbumRunOptions {
@@ -181,7 +188,11 @@ async function decodeImage(blob: Blob): Promise<ImageData | null> {
  * the plan. Errors skip the photo.
  */
 export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promise<AlbumResult> {
-  const result: AlbumResult = { written: [], copied: [], failed: [], cancelled: false };
+  const result: AlbumResult = { written: [], copied: [], failed: [], cancelled: false, notes: [] };
+  const color = outputColor(o.preset);
+  const wm = o.preset.watermark;
+  // Decoded once for the whole run; every photo draws the same logo.
+  const logo = wm.enabled && wm.kind === 'image' ? await loadLogoBitmap(wm.imageId) : null;
   const raws = new RawRenderer();
   const total = plan.items.length;
   const seqDigits = String(total).length;
@@ -198,10 +209,14 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
     };
     const asset = await getAssetInfo({ id: item.id });
     const owner = asset.owner?.name ?? o.fallbackOwner;
-    const names = { originalFileName: asset.originalFileName, preset: o.presetId, date: captureDate(asset), seq: i + 1, seqDigits, album: plan.source.name, owner };
-    let image: ImageData | null;
+    // A virtual copy: its own settings, and its own name next to the original's.
+    const copy = item.copyId ? parseCopy(copyKey(item.copyId), await readMetadata(asset.id, copyKey(item.copyId)).catch(() => null)) : null;
+    const originalFileName = copy ? copyExportName(asset.originalFileName, copy.index) : asset.originalFileName;
+    const names = { originalFileName, preset: o.presetId, date: captureDate(asset), seq: i + 1, seqDigits, album: plan.source.name, owner };
+    let image: Pixels | ImageData | null;
     if (item.kind === 'raw') {
-      image = await raws.render(asset, await loadRecipe(asset.id), (s, f) => report(s, f));
+      // Rendered straight into the export's colour space and bit depth.
+      image = await raws.render(asset, copy ? copy.recipe : await loadRecipe(asset.id), (s, f) => report(s, f), color);
     } else {
       report('download');
       const bytes = await downloadUncached(asset.id, (f) => report('download', f));
@@ -212,8 +227,9 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
         return;
       }
     }
-    const file = await finishExport(image, asset, o.preset, { copyright: o.copyright, owner, onStep: (s) => report(s) });
+    const file = await finishExport(image, asset, o.preset, { copyright: o.copyright, owner, logo, onStep: (s) => report(s) });
     image = null;
+    for (const note of file.notes) if (!result.notes.includes(note)) result.notes.push(note);
     report('write');
     result.written.push(await o.destination.write(exportFilename(o.preset, names), file.bytes));
   };
@@ -240,9 +256,12 @@ export async function runAlbumExport(plan: AlbumPlan, o: AlbumRunOptions): Promi
   };
 
   try {
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(o.parallel, total)) }, worker));
+    // A 16-bit photo takes twice the memory of an 8-bit one: at most two at once.
+    const parallel = color.bits === 16 ? Math.min(2, o.parallel) : o.parallel;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(parallel, total)) }, worker));
   } finally {
     raws.dispose();
+    logo?.close();
   }
   return result;
 }

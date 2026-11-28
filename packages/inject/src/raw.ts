@@ -16,7 +16,10 @@ export function isRawFilename(name: string | null | undefined): boolean {
 
 export const RENDER_KEY = 'raw-editor.render';
 
-/** 'DSC01234.ARW', 'DSC01234.JPG' and the editor's 'DSC01234.edit.jpg' -> 'dsc01234'. */
+/**
+ * 'DSC01234.ARW', 'DSC01234.JPG' and the editor's 'DSC01234.edit.jpg' -> 'dsc01234' (a virtual
+ * copy's 'DSC01234.copy-2.edit.jpg' too).
+ */
 export function captureBaseName(name: string | null | undefined): string {
   let lower = (name ?? '').toLowerCase();
   if (lower.endsWith('.edit.jpg')) lower = lower.slice(0, -'.edit.jpg'.length);
@@ -45,27 +48,35 @@ async function getJson<T>(fetchImpl: FetchLike, url: string): Promise<T | null> 
   }
 }
 
+/** What the Edit RAW button opens: the RAW, and the virtual copy a render was made from (null: the original edit). */
+export interface EditTarget {
+  rawId: string;
+  copyId: string | null;
+}
+
 /**
- * Returns the RAW asset id to edit, or null when the button should not show:
+ * Returns what to edit, or null when the button should not show:
  * - a RAW opens itself;
- * - a render made by the editor opens the RAW it came from;
+ * - a render made by the editor opens the RAW it came from, and the virtual copy if it is one's;
  * - a camera JPEG stacked with a RAW opens that RAW (in a burst stack: the RAW of its capture).
  */
-export async function findEditTarget(assetId: string, fetchImpl: FetchLike = fetch, api = '/api'): Promise<string | null> {
+export async function findEditTarget(assetId: string, fetchImpl: FetchLike = fetch, api = '/api'): Promise<EditTarget | null> {
   const asset = await getJson<AssetLike>(fetchImpl, `${api}/assets/${assetId}`);
   if (!asset) return null;
-  if (isRawFilename(asset.originalFileName)) return asset.id;
+  if (isRawFilename(asset.originalFileName)) return { rawId: asset.id, copyId: null };
 
-  const render = await getJson<{ value?: { sourceAssetId?: unknown } }>(
+  const render = await getJson<{ value?: { sourceAssetId?: unknown; copyId?: unknown } }>(
     fetchImpl,
     `${api}/assets/${assetId}/metadata/${encodeURIComponent(RENDER_KEY)}`,
   );
   const source = render?.value?.sourceAssetId;
-  if (typeof source === 'string' && source) return source;
+  const copyId = render?.value?.copyId;
+  if (typeof source === 'string' && source) return { rawId: source, copyId: typeof copyId === 'string' && copyId ? copyId : null };
 
   if (asset.stack?.id) {
     const stack = await getJson<{ assets?: AssetLike[] }>(fetchImpl, `${api}/stacks/${asset.stack.id}`);
-    return rawOfCapture(asset, stack?.assets ?? []);
+    const rawId = rawOfCapture(asset, stack?.assets ?? []);
+    return rawId ? { rawId, copyId: null } : null;
   }
   return null;
 }
@@ -87,8 +98,8 @@ export function rawOfCapture(asset: AssetLike, members: AssetLike[]): string | n
 
 /** findEditTarget with a per-asset cache (one lookup per asset per page load). */
 export function createEditTargetResolver(fetchImpl: FetchLike = fetch, api = '/api') {
-  const cache = new Map<string, Promise<string | null>>();
-  return (assetId: string): Promise<string | null> => {
+  const cache = new Map<string, Promise<EditTarget | null>>();
+  return (assetId: string): Promise<EditTarget | null> => {
     let hit = cache.get(assetId);
     if (!hit) {
       hit = findEditTarget(assetId, fetchImpl, api);

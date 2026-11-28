@@ -4,14 +4,14 @@
 // the culler, the stack window and the album export all treat it as made from that RAW.
 import { createStack, getAssetInfo, restoreAssets, updateAsset, type AssetResponseDto } from '@immich/sdk';
 import { APP_ID, RENDER_KEY } from '@immich-raw/recipe';
-import { copyAlbums, copyCullTags, errorMessage, renderUpdate } from './save.ts';
+import { copyAlbums, copyTags, errorMessage, renderUpdate } from './save.ts';
 import { sha1Base64, uploadAsset } from './upload.ts';
 
 export type UpscaleSaveStep = 'upload' | 'metadata' | 'stack';
 
 const STEP_LABELS: Record<UpscaleSaveStep, string> = {
   upload: 'uploading the upscaled JPEG',
-  metadata: 'copying date, location and albums',
+  metadata: 'copying date, location, albums and tags',
   stack: 'stacking it with the RAW',
 };
 
@@ -21,6 +21,8 @@ export interface UpscaledInfo {
   style: string;
   /** Hash of the edit it was rendered from. */
   recipeHash: string;
+  /** The virtual copy it was rendered from (copies.ts); null or absent for the original. */
+  copyId?: string | null;
 }
 
 export interface SaveUpscaledOptions {
@@ -63,7 +65,12 @@ export async function saveUpscaled({ raw, jpeg, info, onProgress }: SaveUpscaled
         fileCreatedAt: raw.fileCreatedAt,
         fileModifiedAt: new Date().toISOString(),
         isFavorite: raw.isFavorite,
-        metadata: [{ key: RENDER_KEY, value: { sourceAssetId: raw.id, recipeHash: info.recipeHash, app: APP_ID, upscale: { scale: info.scale, style: info.style } } }],
+        metadata: [
+          {
+            key: RENDER_KEY,
+            value: { sourceAssetId: raw.id, recipeHash: info.recipeHash, app: APP_ID, upscale: { scale: info.scale, style: info.style }, ...(info.copyId ? { copyId: info.copyId } : {}) },
+          },
+        ],
         checksum: await sha1Base64(jpeg),
       },
       (f) => progress('upload', f),
@@ -74,7 +81,7 @@ export async function saveUpscaled({ raw, jpeg, info, onProgress }: SaveUpscaled
     const dto = renderUpdate(raw);
     if (Object.keys(dto).length) await updateAsset({ id, updateAssetDto: dto });
     await copyAlbums(raw.id, id);
-    await copyCullTags(raw, id);
+    await copyTags(raw, id);
     progress('metadata', 1);
 
     progress('stack', 0);

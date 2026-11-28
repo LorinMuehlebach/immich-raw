@@ -3,10 +3,11 @@
 // memory of the browser (Windows, every 250 ms, Edge processes started by this script) and stops a
 // run when Windows has less than MIN_FREE_GB (default 2) of commit left, before other programs fail.
 //
-// Usage: node e2e/bench-export.mjs <out-dir> [set] [levels] [preset]
+// Usage: node e2e/bench-export.mjs <out-dir> [set] [levels] [preset] [format]
 //   set:    mixed (default: the 8 sample RAWs, 40-61 MP from 5 cameras) or xt30 (16 X-T30 RAFs, 26 MP)
 //   levels: photos at once, e.g. 1,2,4,8,16 (the default)
 //   preset: low, medium or high (default: high, full-size JPEG)
+//   format: the preset's file type instead of its default (jpeg, png, tiff, webp, avif, jxl)
 // INSECURE=1 runs it over plain HTTP from a non-secure page (no RAW cache, no memory figure).
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
@@ -15,9 +16,9 @@ import { cpus, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { API_BASE, INSECURE, PAGE_BASE, browserArgs, loginOnPageOrigin } from './insecure.mjs';
 
-const [outDir, set = 'mixed', levelArg = '1,2,4,8,16', preset = 'high'] = process.argv.slice(2);
+const [outDir, set = 'mixed', levelArg = '1,2,4,8,16', preset = 'high', format] = process.argv.slice(2);
 if (!outDir) {
-  console.error('Usage: node e2e/bench-export.mjs <out-dir> [mixed|xt30] [levels] [preset]');
+  console.error('Usage: node e2e/bench-export.mjs <out-dir> [mixed|xt30] [levels] [preset] [format]');
   process.exit(1);
 }
 mkdirSync(outDir, { recursive: true });
@@ -85,12 +86,17 @@ const browser = await chromium.launch({
   args: ['--enable-gpu', '--use-angle=d3d11', '--ignore-gpu-blocklist', ...browserArgs],
 });
 const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, acceptDownloads: true });
-// The folder picker can't be scripted: export into a ZIP.
-await context.addInitScript(() => {
-  delete window.showDirectoryPicker;
-  window.showDirectoryPicker = undefined;
-});
-const results = { set, preset, insecure: INSECURE, machine: { cpu: cpus()[0]?.model.trim(), threads: cpus().length, ramGb: Math.round(totalmem() / 2 ** 30) }, runs: [] };
+// The folder picker can't be scripted: export into a ZIP. The other export settings stay at their
+// defaults; a format argument changes only the benchmarked preset's file type.
+await context.addInitScript(
+  ([p, f]) => {
+    delete window.showDirectoryPicker;
+    window.showDirectoryPicker = undefined;
+    localStorage.setItem('raw-editor.export', JSON.stringify(f ? { presets: { [p]: { format: f } } } : {}));
+  },
+  [preset, format ?? null],
+);
+const results = { set, preset, format: format ?? 'default', insecure: INSECURE, machine: { cpu: cpus()[0]?.model.trim(), threads: cpus().length, ramGb: Math.round(totalmem() / 2 ** 30) }, runs: [] };
 
 /** Opens the export page for `ids`, exports with `level` at once, returns seconds and the page's summary. */
 async function exportOnce(ids, level, presetId) {
@@ -168,6 +174,6 @@ try {
 } finally {
   sampler?.kill();
   await browser.close();
-  writeFileSync(join(outDir, `bench-export-${set}-${preset}${INSECURE ? '-http' : ''}.json`), JSON.stringify(results, null, 2));
+  writeFileSync(join(outDir, `bench-export-${set}-${preset}${format ? `-${format}` : ''}${INSECURE ? '-http' : ''}.json`), JSON.stringify(results, null, 2));
   console.table(results.runs.map(({ level, seconds, perPhoto, speedup, peakMb, lowestFreeGb, lowestRamGb, stopped }) => ({ level, seconds: Math.round(seconds * 10) / 10, perPhoto: Math.round(perPhoto * 10) / 10, speedup, peakMb, lowestFreeGb, lowestRamGb, stopped: !!stopped })));
 }

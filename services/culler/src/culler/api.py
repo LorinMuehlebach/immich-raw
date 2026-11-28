@@ -89,6 +89,10 @@ def create_app(service: Service, auth: Authenticator | None = None) -> FastAPI:
             raise ValueError(f"ids: expected up to {MAX_LOOKUP} asset ids")
         return {"items": service.lookup(ids)}
 
+    @api.get("/picks", dependencies=[Depends(reader)])
+    def picks() -> dict:
+        return service.picks()
+
     @api.post("/groups/{group_id}/best", status_code=202, dependencies=[Depends(writer)])
     def make_best(group_id: str, payload: Any = Body(...)) -> dict:
         asset_id = body_dict(payload).get("assetId")

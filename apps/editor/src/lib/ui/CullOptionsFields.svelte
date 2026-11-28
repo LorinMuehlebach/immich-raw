@@ -17,6 +17,8 @@
     { key: 'people', label: 'Find people without a visible face', title: 'Also people seen from the side, from behind or far away' },
     { key: 'smiles', label: 'Prefer the most smiles', title: 'Among the good shots, the one with the most smiling faces is the best' },
     { key: 'eyes', label: 'Set aside closed eyes', title: 'Shots with more closed eyes than the best one, or clearly less open eyes (a half-blink), are rejected' },
+    { key: 'brackets', label: 'Keep exposure brackets together', title: 'Shots seconds apart whose exposure steps (for example −2, 0, +2 EV) get a stack of their own, none of them set aside' },
+    { key: 'moments', label: 'One stack per moment', title: 'A new pose after a pause gets a stack of its own instead of joining the scene; a re-take of the same pose stays' },
   ];
   const unavailable = (key: keyof CullOptions) =>
     (key === 'people' && status?.people === false) || ((key === 'eyes' || key === 'smiles') && status?.eyes === false);

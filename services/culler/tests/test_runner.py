@@ -113,7 +113,9 @@ def test_apply_stacks_tags_flags_and_stores_details(env):
     assert set(immich.stacks[sid]["assetIds"]) == {"a0", "a1", "a2", "a3", "a4"}
     assert culler_tags(immich, "a1") == {"Culling/Rejected/Lighting"}
     assert culler_tags(immich, "a2") == {"Culling/Rejected/Blur"}
-    assert culler_tags(immich, best_a) == {"Culling/Best"}
+    # a0 and a3 (shifted) are as sharp and as well exposed: a close call, marked on the best.
+    assert culler_tags(immich, best_a) == {"Culling/Best", "Culling/Close call"}
+    assert next(g for g in report["groups"] if g["frames"][0]["frameId"] == best_a)["closeCall"]
     assert immich.rating("a1") == -1 and immich.rating("a2") == -1
     assert immich.rating("a0") is None and immich.rating("a3") is None
     assert immich.stack_id_of("c0") is None and not culler_tags(immich, "c0")
@@ -315,7 +317,7 @@ def test_tags_lost_by_immich_are_set_again(env, monkeypatch):
     undo = runner.undo(second)
     assert lost
     assert culler_tags(immich, runner_up) == {"Culling/Runner-up"}
-    assert culler_tags(immich, old_best) == {"Culling/Best"}
+    assert culler_tags(immich, old_best) == {"Culling/Best", "Culling/Close call"}  # as before the pick
     assert undo["errors"] == [] and undo["notes"] == []
 
 

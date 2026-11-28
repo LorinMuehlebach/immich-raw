@@ -94,6 +94,41 @@ const META: RgbTiffMetadata = {
 };
 
 describe('encodeRgbTiff', () => {
+  it('writes 16-bit samples with the 16-bit predictor, an ICC profile and ColorSpace uncalibrated', async () => {
+    const width = 19;
+    const height = 7;
+    const data = new Uint16Array(width * height * 4);
+    for (let i = 0; i < data.length; i++) data[i] = (i * 40503) % 65536; // jumps, so differences wrap
+    const icc = Uint8Array.from({ length: 101 }, (_, i) => 255 - i);
+    const tiff = readDng(await encodeRgbTiff({ data, width, height }, { icc, colorSpace: 'uncalibrated' }, { stripBytes: width * 6 * 3 }));
+    checkStructure(tiff);
+    expect(tagValues(tiff.ifd0, TAG.BitsPerSample)).toEqual([16, 16, 16]);
+    expect(type(tiff.ifd0, TAG.ICCProfile)).toBe(UNDEFINED);
+    expect([...tagBytes(tiff.ifd0, TAG.ICCProfile)!]).toEqual([...icc]);
+    expect(tagValue(tiff.exif, EXIF_TAG.ColorSpace)).toBe(0xffff);
+
+    const rowsPerStrip = tagValue(tiff.ifd0, TAG.RowsPerStrip)!;
+    const rowBytes = width * 6;
+    const samples: number[] = [];
+    for (const [s, seg] of imageSegments(tiff, tiff.ifd0).entries()) {
+      const raw = await inflate(seg);
+      const rows = Math.min(rowsPerStrip, height - s * rowsPerStrip);
+      expect(raw.length).toBe(rows * rowBytes);
+      const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      for (let r = 0; r < rows; r++) {
+        const prev = [0, 0, 0];
+        for (let x = 0; x < width; x++) {
+          for (let c = 0; c < 3; c++) {
+            prev[c] = (prev[c]! + dv.getUint16(r * rowBytes + (x * 3 + c) * 2, true)) & 0xffff;
+            samples.push(prev[c]!);
+          }
+        }
+      }
+    }
+    const expected = Array.from({ length: width * height * 3 }, (_, i) => data[Math.floor(i / 3) * 4 + (i % 3)]!);
+    expect(samples).toEqual(expected);
+  });
+
   it('round-trips pixels through several deflate strips (odd size, last strip shorter)', async () => {
     const img = gradient(37, 23);
     const bytes = await encodeRgbTiff(img, META, { stripBytes: 37 * 3 * 5 });

@@ -1,6 +1,7 @@
 // What an exported file says about the photo, for each metadata choice. The copy Save puts in
-// Immich keeps its own, smaller set (see immichCopyExif): Immich would turn keywords into tags.
-import { exifFromImmich, type ExifFields, type ImmichExifLike, type XmpFields } from '@immich-raw/pipeline';
+// Immich keeps its own, smaller set (immichCopyExif, immichCopyXmp): Immich turns what a file
+// lists as keywords into tags, so that copy lists exactly the RAW's tags and no other keywords.
+import { buildXmp, exifFromImmich, type ExifFields, type ImmichExifLike, type XmpFields } from '@immich-raw/pipeline';
 import { fillText, type MetadataMode } from '../state/export-settings.ts';
 
 /** Tags the culler adds (Culling/Best, Culling/Rejected/Blur, ...): bookkeeping, not keywords. */
@@ -82,4 +83,14 @@ export function exportMetadata(asset: MetadataAsset, mode: MetadataMode, o: Meta
 /** EXIF for the copy Save uploads to Immich: what the RAW has, nothing Immich would turn into tags. */
 export function immichCopyExif(asset: MetadataAsset, software: string, width: number, height: number): ExifFields {
   return { ...exifFromImmich(asset.exifInfo), software, colorSpace: 'sRGB', pixelWidth: width, pixelHeight: height };
+}
+
+/**
+ * XMP for the copy Save uploads to Immich: every tag of the RAW, the culler's too, as
+ * digiKam:TagsList. Save also tags the copy through the API; Immich's metadata job may run after
+ * that and set the tags from the file, and this list makes it set the same ones. '' without tags.
+ */
+export function immichCopyXmp(asset: Pick<MetadataAsset, 'tags'>): string {
+  const tags = (asset.tags ?? []).map((t) => t.value?.trim()).filter((v): v is string => !!v);
+  return tags.length ? buildXmp({ tagsList: tags }) : '';
 }

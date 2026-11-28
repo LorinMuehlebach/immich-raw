@@ -1,9 +1,15 @@
 <script lang="ts">
+  import type { AssetResponseDto } from '@immich/sdk';
   import { DEFAULT_GROUPS, type GroupId, type Recipe } from '@immich-raw/recipe';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { shotSettings } from './lib/immich/context.ts';
   import { badgeFor } from './lib/immich/cull-view.ts';
+  import { looks } from './lib/immich/looks.ts';
+  import { factsOf, flag, flagStatus } from './lib/immich/photo-facts.svelte.ts';
+  import type { FlagAction } from './lib/immich/shot-flags.ts';
+  import { compareCandidate, factsText, type Neighbours } from './lib/immich/strip-view.ts';
+  import { draftPhotos } from './lib/drafts/drafts.svelte.ts';
   import type { CullInfo } from './lib/immich/culler.ts';
   import type { StackFrame } from './lib/immich/stack-view.ts';
   import { PresetStore } from './lib/state/presets.ts';
@@ -22,17 +28,21 @@
   import ColorMixerPanel from './lib/ui/ColorMixerPanel.svelte';
   import ConvertDngDialog from './lib/ui/ConvertDngDialog.svelte';
   import CopySettingsDialog from './lib/ui/CopySettingsDialog.svelte';
+  import CompareView from './lib/ui/CompareView.svelte';
+  import LeaveDialog from './lib/ui/LeaveDialog.svelte';
   import CropOverlay from './lib/ui/CropOverlay.svelte';
   import CropPanel from './lib/ui/CropPanel.svelte';
   import DetailPanel from './lib/ui/DetailPanel.svelte';
   import DngPanel from './lib/ui/DngPanel.svelte';
   import Filmstrip from './lib/ui/Filmstrip.svelte';
-  import Histogram from './lib/ui/Histogram.svelte';
+  import OpenProgress from './lib/ui/OpenProgress.svelte';
+  import Scopes from './lib/ui/Scopes.svelte';
   import HistoryPanel from './lib/ui/HistoryPanel.svelte';
   import LensPanel from './lib/ui/LensPanel.svelte';
   import TransformPanel from './lib/ui/TransformPanel.svelte';
-  import UnsavedDialog from './lib/ui/UnsavedDialog.svelte';
+  import CopyMenu from './lib/ui/CopyMenu.svelte';
   import UpscaleOverlay from './lib/ui/UpscaleOverlay.svelte';
+  import UprightOverlay from './lib/ui/UprightOverlay.svelte';
   import UpscalePanel from './lib/ui/UpscalePanel.svelte';
   import MaskOverlay from './lib/ui/MaskOverlay.svelte';
   import MaskPanel from './lib/ui/MaskPanel.svelte';
@@ -46,7 +56,19 @@
   let stageH = $state(600);
   let apiKey = $state('');
   let copyOpen = $state(false);
-  let neighbours = $state<{ prev: string | null; next: string | null }>({ prev: null, next: null });
+  let neighbours = $state<Neighbours>({ prev: null, next: null, prevStack: null, nextStack: null, nearby: [], order: [], stack: [] });
+  // Compare (C): the photo shown next to the one being edited (not on narrow screens).
+  let compareWith = $state<string | null>(null);
+  $effect(() => {
+    if (compareWith && (compareWith === editor.asset?.id || layout === 'stacked')) compareWith = null;
+  });
+  // Photos picked in the filmstrip (Ctrl/Cmd-click, Shift-click, long press): stars, flags and
+  // Sync Settings act on them.
+  let selection = $state<string[]>([]);
+  // Sync Settings is choosing what to sync onto these photos.
+  let syncFor = $state<string[] | null>(null);
+  // Stars, pick and reject of the open photo (shown in the title line).
+  const flagsText = $derived(editor.asset ? factsText(factsOf(editor.asset.id)) : '');
   // What the culler decided for this photo (shown in the title line).
   let cullInfo = $state<CullInfo | null>(null);
   // The stack window is open on the stack of this photo.
@@ -54,10 +76,29 @@
   const cullText = $derived.by(() => {
     const badge = badgeFor(cullInfo);
     if (!cullInfo || !badge) return '';
-    if (cullInfo.role === 'best') return `${badge.icon} best of ${cullInfo.groupSize}${cullInfo.pinned ? ' (your pick)' : ''}`;
+    if (cullInfo.role === 'best') return `${badge.icon} best of ${cullInfo.groupSize}${cullInfo.pinned ? ' (your pick)' : cullInfo.closeCall ? ' · close call' : ''}`;
+    if (cullInfo.role === 'bracket') return `${badge.icon} exposure bracket (${cullInfo.rank} of ${cullInfo.groupSize})`;
     if (cullInfo.role === 'runner-up') return `${badge.icon} runner-up (${cullInfo.rank} of ${cullInfo.groupSize})`;
     return `${badge.icon} ${badge.label.toLowerCase()}`;
   });
+
+  // The photos around this one get ready to open: their originals download once it shows, and
+  // they are decoded once its full-resolution decode is done.
+  $effect(() => {
+    const ids = neighbours.nearby;
+    const decode = editor.fullStatus === 'ready' || editor.fullStatus === 'error';
+    if (editor.status === 'ready') untrack(() => editor.prefetch(ids, decode));
+  });
+
+  // The title line counts down to the full-resolution image.
+  let fullNow = $state(0);
+  $effect(() => {
+    if (!editor.fullEta) return;
+    fullNow = performance.now();
+    const timer = setInterval(() => (fullNow = performance.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  const fullLeft = $derived(editor.fullEta ? editor.fullEta.estimateMs - (fullNow - editor.fullEta.startedAt) : 0);
   const presetStore = new PresetStore();
   // Built by apps/editor/vite.config.ts: our licence, the third-party notices and the source link.
   const LICENSES_URL = `${import.meta.env.BASE_URL}licenses.txt`;
@@ -92,7 +133,7 @@
     presetsTab = t === 'presets';
     const tool = t === 'crop' ? 'crop' : t === 'mask' ? 'mask' : 'edit';
     // The white balance picker and the targeted adjustment are part of Edit.
-    if (tool === 'edit' ? editor.tool === 'crop' || editor.tool === 'mask' : editor.tool !== tool) editor.setTool(tool);
+    if (tool === 'edit' ? editor.tool === 'crop' || editor.tool === 'mask' || editor.tool === 'upright' : editor.tool !== tool) editor.setTool(tool);
   }
 
   function fromMenu(action: () => void) {
@@ -101,10 +142,9 @@
   }
 
   const PAD = VIEW_PAD;
-  const zoomed = $derived(editor.zoom.on && editor.tool !== 'crop');
-  const display = $derived.by(() => {
-    if (zoomed) return { w: Math.round(stageW), h: Math.round(stageH) };
-    const aspect = editor.frame.width / editor.frame.height;
+  const zoomed = $derived(editor.zoom.on && !editor.wholeView);
+  /** The photo's size on screen at this aspect: as big as fits the stage, with a margin. */
+  function fit(aspect: number): { w: number; h: number } {
     const maxW = Math.max(50, stageW - PAD * 2);
     const maxH = Math.max(50, stageH - PAD * 2);
     let w = maxW;
@@ -114,7 +154,18 @@
       w = h * aspect;
     }
     return { w: Math.round(w), h: Math.round(h) };
+  }
+  const display = $derived(zoomed ? { w: Math.round(stageW), h: Math.round(stageH) } : fit(editor.frame.width / editor.frame.height));
+
+  // While a photo loads, Immich's preview of it takes the photo's place at the same size, so
+  // nothing moves when the photo is ready (unless the edit crops it). Its aspect is known once
+  // it has loaded.
+  let previewAspect = $state<number | null>(null);
+  $effect(() => {
+    void editor.previewUrl;
+    previewAspect = null;
   });
+  const previewBox = $derived(previewAspect ? fit(previewAspect) : null);
 
   const info = $derived(shotSettings(editor.asset?.exifInfo).join('   '));
 
@@ -130,71 +181,111 @@
     // Not passive: Ctrl + wheel must not also zoom the browser page.
     stage.addEventListener('wheel', onWheel, { passive: false });
     editor.load(canvas);
+    // Drafts (drafts/) live only while the page is open: closing or reloading it with drafts, or
+    // while a save runs, makes the browser ask. Going back to Immich asks with LeaveDialog.
     const beforeUnload = (e: BeforeUnloadEvent) => {
-      if (!discarding && (editor.dirty || editor.saving)) e.preventDefault();
+      if (unloading) return;
+      void editor.keepDraft();
+      if (editor.saving || editor.dirty || draftPhotos.size > 0) e.preventDefault();
+    };
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') void editor.keepDraft();
     };
     addEventListener('beforeunload', beforeUnload);
+    addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onHide);
+    addEventListener('popstate', onPopState);
     return () => {
       ro.disconnect();
       stage.removeEventListener('wheel', onWheel);
       removeEventListener('beforeunload', beforeUnload);
+      removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onHide);
+      removeEventListener('popstate', onPopState);
     };
   });
 
-  // Leaving with unsaved changes asks first: Yes saves, No discards, Cancel stays.
-  // The target is a function: after saving, "back" points at the new render.
-  // back: returning to Immich, which should show the saved render (see editor.waitForRender).
-  let leaving = $state<{ target: () => string; back: boolean } | null>(null);
-  let leaveSaving = $state(false);
-  let discarding = false;
+  /** The page is being left on purpose (after LeaveDialog): the browser mustn't ask. */
+  let unloading = false;
+  /** Leaving for Immich while photos have drafts: where to, and which photos (LeaveDialog). */
+  let leaving = $state<{ target: () => string; ids: Set<string> } | null>(null);
 
-  async function go(target: () => string, back: boolean) {
-    if (back) await editor.waitForRender();
+  /** Back to Immich. The target is a function: after saving, it points at the new render. */
+  async function toImmich(target: () => string) {
+    await editor.waitForRender();
+    unloading = true;
     location.href = target();
   }
 
-  function leave(target: () => string, back = false) {
-    if (!editor.dirty) void go(target, back);
-    else leaving = { target, back };
+  /** The original edit (null) or a virtual copy of this RAW; the edit left keeps its draft. */
+  function switchEdit(copyId: string | null) {
+    void editor.openEdit(copyId);
   }
 
-  async function leaveSave() {
-    const l = leaving;
-    if (!l) return;
-    leaveSaving = true;
-    const ok = await editor.save();
-    leaveSaving = false;
-    leaving = null;
-    // A failed save keeps the editor open; the error is shown.
-    if (ok) await go(l.target, l.back);
-  }
-
-  function leaveDiscard() {
-    const l = leaving;
-    leaving = null;
-    if (!l) return;
-    discarding = true;
-    void go(l.target, l.back);
+  /** Leaves the editor for Immich; with drafts, asks first whether to save them (they'd be lost). */
+  async function leave(target: () => string) {
+    await editor.keepDraft();
+    if (draftPhotos.size) leaving = { target, ids: new Set(draftPhotos) };
+    else await toImmich(target);
   }
 
   function goBack() {
-    leave(() => editor.backUrl(), true);
+    void leave(() => editor.backUrl());
   }
 
-  function openAsset(id: string) {
-    if (id !== editor.asset?.id) leave(() => editor.urlFor(id));
+  async function leaveSaving() {
+    const l = leaving;
+    leaving = null;
+    // A save that fails or is cancelled keeps the editor open; the notice says what happened.
+    if (l && (await editor.saveDrafts(l.ids))) await toImmich(l.target);
   }
 
-  /** "Delete others" in the stack window trashed this photo: go on with the shot that was kept. */
+  function leaveDiscarding() {
+    const l = leaving;
+    leaving = null;
+    if (l) void toImmich(l.target);
+  }
+
+  /**
+   * Another photo (the filmstrip, the arrow keys): it opens in this page, without loading it again.
+   * The photo left keeps its unsaved changes as a draft.
+   */
+  function openAsset(id: string, asset?: AssetResponseDto) {
+    if (id === editor.asset?.id) return;
+    stackFor = null;
+    // The filmstrip's look of it shows at once (looks.ts).
+    void editor.switchPhoto(id, 'push', looks.hint(id, asset));
+  }
+
+  /** Back and Forward between photos opened in this page. */
+  function onPopState() {
+    const id = new URLSearchParams(location.search).get('asset');
+    const open = editor.asset?.id;
+    if (!id || id === open) return;
+    if (editor.saving) {
+      // Not while saving: the open photo's address goes back.
+      if (open) history.pushState(null, '', editor.urlFor(open));
+      return;
+    }
+    stackFor = null;
+    void editor.switchPhoto(id, 'none', looks.hint(id));
+  }
+
+  /**
+   * "Delete others" in the stack window trashed this photo: go on with the shot that was kept, in
+   * this page (the other photos' drafts stay), or back to Immich when it has no RAW.
+   */
   function afterCurrentDeleted(kept: StackFrame) {
-    discarding = true;
+    editor.discardDraft();
     if (kept.raw) {
-      location.href = editor.urlFor(kept.raw.id);
+      // In place of the trashed photo in the browser's history.
+      history.replaceState(null, '', editor.urlFor(kept.raw.id));
+      void editor.switchPhoto(kept.raw.id, 'none');
       return;
     }
     const gone = editor.asset?.id;
     const back = editor.returnPath;
-    location.href = back && gone && back.includes(gone) ? back.replaceAll(gone, kept.face.id) : `/photos/${kept.face.id}`;
+    void leave(() => (back && gone && back.includes(gone) ? back.replaceAll(gone, kept.face.id) : `/photos/${kept.face.id}`));
   }
 
   function isTyping(target: EventTarget | null): boolean {
@@ -209,11 +300,21 @@
       menuOpen = false;
       return;
     }
-    if (isTyping(e.target) || copyOpen || editor.dngDialog || editor.exportDialog || leaving || stackFor) return;
-    if (editor.status !== 'ready' || editor.saving) return;
+    if (isTyping(e.target) || copyOpen || syncFor || leaving || editor.dngDialog || editor.exportDialog || stackFor) return;
+    if (e.key === 'Escape' && selection.length) {
+      selection = [];
+      return;
+    }
+    if (editor.saving) return;
+    if (editor.status !== 'ready') {
+      if (editor.status === 'loading' || editor.status === 'error') onKeyWhileOpening(e);
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     const onRange = (e.target as HTMLElement | null)?.tagName === 'INPUT';
+    if (flagKey(e)) return;
+    if (!mod && !e.altKey && compareKey(e, key, onRange)) return;
     if (mod && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) editor.redo();
@@ -242,12 +343,27 @@
     } else if (mod && e.key === ']') {
       e.preventDefault();
       editor.rotate90(1);
+    } else if (mod && !e.shiftKey && !e.altKey && (e.key === "'" || e.code === 'Quote')) {
+      // Lightroom's Create Virtual Copy.
+      e.preventDefault();
+      void editor.newVirtualCopy();
     } else if (mod || e.altKey) {
       return;
+    } else if (key === 't' && e.shiftKey) {
+      editor.setTool(editor.tool === 'upright' ? 'edit' : 'upright');
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.tool === 'upright' && !onRange) {
+      if (editor.uprightSel !== null) {
+        e.preventDefault();
+        editor.removeUprightGuide(editor.uprightSel);
+      }
+    } else if (e.key === 'Enter' && editor.tool === 'upright') {
+      editor.setTool('edit');
     } else if (key === 'w' && e.shiftKey) {
       editor.setTool(editor.tool === 'mask' ? 'edit' : 'mask');
     } else if (key === 'm') {
       editor.masking.start(e.shiftKey ? 'radial' : 'linear');
+    } else if (key === 'k' && e.shiftKey) {
+      editor.masking.start('polygon');
     } else if (key === 'k') {
       editor.masking.start('brush');
     } else if ((e.key === '[' || e.key === ']') && editor.masking.painting) {
@@ -256,6 +372,12 @@
       editor.masking.setBrush({ size: e.key === ']' ? Math.min(100, s + Math.max(1, Math.round(s * 0.12))) : Math.max(1, s - Math.max(1, Math.round(s * 0.12))) });
     } else if (key === 'o' && editor.tool === 'mask') {
       editor.masking.toggleOverlay();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.masking.ui.draft?.kind === 'polygon' && !onRange) {
+      // Takes back the last corner of the polygon being drawn.
+      e.preventDefault();
+      editor.masking.removePolygonPoint();
+    } else if (e.key === 'Enter' && editor.masking.ui.draft?.kind === 'polygon') {
+      editor.masking.closePolygon();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && editor.tool === 'mask' && !onRange) {
       const m = editor.masking.selectedMask;
       const c = editor.masking.selectedComponent;
@@ -272,7 +394,7 @@
       editor.setTool(editor.tool === 'crop' ? 'edit' : 'crop');
     } else if (key === 'w') {
       editor.setTool(editor.tool === 'wb' ? 'edit' : 'wb');
-    } else if (key === 'z' && editor.tool !== 'crop') {
+    } else if (key === 'z' && !editor.wholeView) {
       editor.toggleZoom();
     } else if (key === 'x' && editor.tool === 'crop') {
       editor.togglePortrait();
@@ -281,12 +403,78 @@
     } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onRange) {
       const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
       if (id) openAsset(id);
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !onRange) {
+      e.preventDefault();
+      const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
+      if (id) openAsset(id);
     } else if (e.key === 'Escape') {
       if (editor.masking.ui.draft) editor.masking.cancelDraft();
       else if (editor.tool !== 'edit') editor.setTool('edit');
       else if (editor.zoom.on) editor.setZoom(false);
       else goBack();
     }
+  }
+
+  /** While a photo opens (or failed to): moving on to another photo, its flags, and back to Immich. */
+  function onKeyWhileOpening(e: KeyboardEvent) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (flagKey(e)) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const id = e.key === 'ArrowLeft' ? neighbours.prev : neighbours.next;
+      if (id) openAsset(id);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const id = e.key === 'ArrowUp' ? neighbours.prevStack : neighbours.nextStack;
+      if (id) openAsset(id);
+    } else if (e.key === 'Escape') {
+      goBack();
+    }
+  }
+
+  /**
+   * C opens and closes Compare; while it is open, ← → show another photo and Enter opens it.
+   * True when the key was used.
+   */
+  function compareKey(e: KeyboardEvent, key: string, onRange: boolean): boolean {
+    const open = editor.asset?.id;
+    if (!open || layout === 'stacked' || editor.tool !== 'edit') return false;
+    if (!compareWith) {
+      if (key !== 'c') return false;
+      compareWith = compareCandidate(neighbours, open, null, 1);
+      return true;
+    }
+    if (key === 'c' || e.key === 'Escape') {
+      compareWith = null;
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onRange) {
+      compareWith = compareCandidate(neighbours, open, compareWith, e.key === 'ArrowLeft' ? -1 : 1);
+    } else if (e.key === 'Enter') {
+      const id = compareWith;
+      compareWith = null;
+      openAsset(id);
+    } else {
+      return false;
+    }
+    e.preventDefault();
+    return true;
+  }
+
+  /**
+   * 0-5 (stars), P (pick), X (reject; in the crop tool it turns the crop), U (neither) on the
+   * selected photos' shots, else the open photo's. True when the key was one of them.
+   */
+  function flagKey(e: KeyboardEvent): boolean {
+    const id = editor.asset?.id;
+    if (!id || editor.readOnly || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const k = e.key.toLowerCase();
+    let action: FlagAction | null = null;
+    if (/^[0-5]$/.test(e.key)) action = { kind: 'rate', rating: Number(e.key) };
+    else if (k === 'p') action = { kind: 'pick' };
+    else if (k === 'x' && editor.tool !== 'crop') action = { kind: 'reject' };
+    else if (k === 'u') action = { kind: 'clear' };
+    if (!action) return false;
+    e.preventDefault();
+    void flag(selection.length ? [...selection] : [id], action);
+    return true;
   }
 
   // ------------------------------------------------------- view: tap / double-tap / pan
@@ -317,7 +505,7 @@
   }
 
   function onViewDown(e: PointerEvent) {
-    if (editor.tool === 'crop' || editor.status !== 'ready' || e.button > 0) return;
+    if (editor.wholeView || editor.status !== 'ready' || e.button > 0) return;
     if (e.pointerType === 'touch' && editor.tool !== 'tat') {
       touches.set(e.pointerId, [e.clientX, e.clientY]);
       if (touches.size > 2) return;
@@ -405,7 +593,7 @@
 
   /** Ctrl + mouse wheel (and trackpad pinch, which arrives as one) zooms around the cursor. */
   function onWheel(e: WheelEvent) {
-    if (!e.ctrlKey || editor.status !== 'ready' || editor.tool === 'crop') return;
+    if (!e.ctrlKey || editor.status !== 'ready' || editor.wholeView) return;
     e.preventDefault();
     const [x, y] = viewPoint(e);
     const s = stage.getBoundingClientRect();
@@ -430,10 +618,15 @@
       <div class="sub">
         {camera}
         {#if editor.status === 'ready'}
-          {#if editor.fullStatus === 'decoding'}· decoding full resolution…{/if}
+          {#if editor.fullStatus === 'decoding'}· decoding full resolution{fullLeft >= 1500 ? ` (about ${Math.round(fullLeft / 1000)} s)` : ''}…{/if}
           {#if editor.readOnly}· view only{/if}
           {#if editor.recipe.render && !editor.dirty}· saved{/if}
-          {#if editor.dirty}· unsaved changes{/if}
+          {#if editor.dirty}
+            · unsaved changes
+            {#if !editor.readOnly}<button class="discard" onclick={() => editor.discardDraft()} title="Back to the saved edit; the draft kept in this browser goes">Discard</button>{/if}
+          {/if}
+          {#if flagsText}<span class="flags" class:rejected={flagsText.startsWith('rejected')}>· {flagsText}</span>{/if}
+          {#if flagStatus.error}<span class="cull rejected" title={flagStatus.error}>· {flagStatus.error}</span>{/if}
           {#if cullText}
             {#if (cullInfo?.groupSize ?? 0) > 1}
               <button class="cull" class:rejected={cullInfo?.role === 'rejected'} onclick={() => (stackFor = editor.asset?.id ?? null)} title="Compare the photos of this stack">· {cullText}</button>
@@ -444,6 +637,7 @@
         {/if}
       </div>
     </div>
+    <CopyMenu onSwitch={switchEdit} />
     <div class="spacer"></div>
     <button class="icon" onclick={() => editor.undo()} disabled={!editor.canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.98 7.98 0 0 1 20.48 16l2.37-.78A10.5 10.5 0 0 0 12.5 8z" /></svg>
@@ -464,7 +658,7 @@
         {#if menuOpen}
           <div class="menu-shade" role="presentation" onpointerdown={() => (menuOpen = false)}></div>
           <div class="menu" role="menu">
-            <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.tool === 'crop'}>
+            <button role="menuitem" onclick={() => fromMenu(() => (zoomed ? editor.setZoom(false) : editor.toggleZoom()))} disabled={editor.status !== 'ready' || editor.wholeView}>
               {zoomed ? 'Fit to screen' : 'Zoom to 100 %'}
             </button>
             <button role="menuitem" onclick={() => fromMenu(() => editor.openDngDialog())} disabled={editor.status !== 'ready' || editor.readOnly || !!editor.saving}>Convert to DNG…</button>
@@ -473,7 +667,7 @@
         {/if}
       </div>
     {:else}
-      <button class:active={zoomed} onclick={() => (zoomed ? editor.setZoom(false) : editor.toggleZoom())} disabled={editor.status !== 'ready' || editor.tool === 'crop'} title="Zoom 100 % (Z, or double-click the photo; Ctrl + mouse wheel zooms freely)">
+      <button class:active={zoomed} onclick={() => (zoomed ? editor.setZoom(false) : editor.toggleZoom())} disabled={editor.status !== 'ready' || editor.wholeView} title="Zoom 100 % (Z, or double-click the photo; Ctrl + mouse wheel zooms freely)">
         {zoomed ? 'Fit' : '1:1'}
       </button>
       <button class:active={editor.before} onclick={() => editor.toggleBefore()} disabled={editor.status !== 'ready'} title="Before / after (\)">Before</button>
@@ -526,6 +720,7 @@
   {/if}
 
   <section class="center">
+    <div class="views">
     <main class="stage" bind:this={stage}>
       <div
         class="frame"
@@ -557,6 +752,14 @@
         {#if editor.tool === 'upscale' && editor.status === 'ready' && !editor.before}
           <UpscaleOverlay width={display.w} height={display.h} />
         {/if}
+        {#if editor.tool === 'upright' && editor.status === 'ready'}
+          <UprightOverlay width={display.w} height={display.h} />
+          <div class="badge bottom">
+            {editor.uprightFailed
+              ? 'These guides would turn the photo too far: move or remove one'
+              : 'Guided Upright: drag along edges that should be vertical or horizontal · Enter when done'}
+          </div>
+        {/if}
         {#if editor.before}<div class="badge">Before</div>{/if}
         {#if editor.tool === 'tat'}
           <div class="badge bottom">
@@ -568,12 +771,22 @@
 
       {#if editor.status === 'loading'}
         <div class="center-msg">
-          {#if editor.previewUrl}<img class="preview" src={editor.previewUrl} alt="" />{/if}
-          <div class="loading">
-            <div>{editor.loadingText}</div>
-            {#if editor.loadingProgress !== null}
-              <div class="bar"><i style:width="{Math.round(editor.loadingProgress * 100)}%"></i></div>
-            {/if}
+          {#if editor.previewUrl}
+            <img
+              class="preview"
+              class:sized={previewBox}
+              src={editor.previewUrl}
+              alt=""
+              style:width={previewBox ? `${previewBox.w}px` : null}
+              style:height={previewBox ? `${previewBox.h}px` : null}
+              onload={(e) => {
+                const img = e.currentTarget as HTMLImageElement;
+                if (img.naturalWidth && img.naturalHeight) previewAspect = img.naturalWidth / img.naturalHeight;
+              }}
+            />
+          {/if}
+          <div class="progress-over">
+            <OpenProgress steps={editor.openSteps} fallback={editor.loadingText} />
           </div>
         </div>
       {:else if editor.status === 'auth'}
@@ -590,11 +803,20 @@
         <div class="center-msg card">
           <h2>Can't open this photo</h2>
           <p>{editor.error}</p>
-          <button onclick={() => (location.href = editor.backUrl())}>Back to Immich</button>
+          <button onclick={goBack}>Back to Immich</button>
         </div>
       {/if}
 
-      {#if editor.sidecarOffer}
+      {#if editor.draftConflict}
+        <div class="banner">
+          <div>
+            <strong>This draft is older than the saved edit.</strong>
+            Your unsaved changes from {new Date(editor.draftConflict.at).toLocaleString()} were kept in this browser; the edit was saved again since (in another tab or browser).
+          </div>
+          <button class="primary" onclick={() => editor.keepOlderDraft()}>Keep draft</button>
+          <button onclick={() => editor.discardDraft()}>Use saved</button>
+        </div>
+      {:else if editor.sidecarOffer}
         <div class="banner">
           <div>
             <strong>Lightroom settings found.</strong>
@@ -636,23 +858,32 @@
         <div class="toast" class:err={!!editor.error}>
           <span>{editor.error ?? editor.notice ?? editor.warning}</span>
           {#if editor.notice && editor.recipe.render && !editor.error && !editor.dirty}
-            <button onclick={() => go(() => editor.backUrl(), true)}>Back to Immich</button>
+            <button onclick={goBack}>Back to Immich</button>
           {/if}
           <button class="icon" aria-label="Dismiss" onclick={() => ((editor.notice = null), (editor.error = null), (editor.warning = null))}>✕</button>
         </div>
       {/if}
     </main>
-    {#if editor.status === 'ready' && editor.asset}
+    {#if compareWith && editor.status === 'ready'}
+      <CompareView candidateId={compareWith} name={looks.hint(compareWith).asset?.originalFileName ?? ''} zoom={editor.zoom} frame={editor.frame} />
+    {/if}
+    </div>
+    <!-- Stays while the next photo loads, so it keeps its place and its list. -->
+    {#if editor.asset && editor.status !== 'auth'}
       <Filmstrip
         ctx={editor.ctx}
         current={editor.asset}
         onSelect={openAsset}
-        onNeighbours={(prev, next) => (neighbours = { prev, next })}
+        onNeighbours={(n) => (neighbours = n)}
         canCull={!editor.readOnly}
         onCurrentCull={(info) => (cullInfo = info)}
         bind:stackFor
         unsaved={editor.dirty}
         onCurrentDeleted={afterCurrentDeleted}
+        onSaveDrafts={editor.readOnly ? undefined : (ids) => void editor.saveDrafts(ids)}
+        currentRenderId={editor.recipe.render?.assetId ?? null}
+        bind:selected={selection}
+        onSync={editor.readOnly ? undefined : (ids) => (syncFor = ids)}
         startCollapsed={layout === 'stacked' || shortQuery.current}
       />
     {/if}
@@ -677,7 +908,15 @@
       {#if compact && tab === 'presets'}
         {#if editor.status === 'ready'}{@render library()}{/if}
       {:else}
-        <Histogram histogram={editor.histogram} clipping={editor.clipping} onToggleClipping={() => editor.toggleClipping()} {info} />
+        <Scopes
+          kind={editor.scope}
+          histogram={editor.histogram}
+          data={editor.scopeData}
+          clipping={editor.clipping}
+          onToggleClipping={() => editor.toggleClipping()}
+          onKind={(k) => editor.setScope(k)}
+          {info}
+        />
         {#if editor.status === 'ready'}
           {#if editor.tool === 'crop'}
             <CropPanel />
@@ -698,18 +937,25 @@
             <div><kbd>\</kbd> before/after</div>
             <div><kbd>J</kbd> clipping</div>
             <div><kbd>R</kbd> crop</div>
+            <div><kbd>⇧</kbd>+<kbd>T</kbd> guided upright</div>
             <div><kbd>W</kbd> WB picker</div>
             <div><kbd>Z</kbd> / double-click: 1:1</div>
             <div><kbd>Ctrl</kbd>+wheel: zoom</div>
-            <div><kbd>←</kbd><kbd>→</kbd> filmstrip</div>
+            <div><kbd>←</kbd><kbd>→</kbd> filmstrip, <kbd>↑</kbd><kbd>↓</kbd> stacks</div>
+            <div><kbd>0</kbd>–<kbd>5</kbd> stars</div>
+            <div><kbd>P</kbd> pick, <kbd>X</kbd> reject, <kbd>U</kbd> neither</div>
+            <div><kbd>Ctrl</kbd>/<kbd>⇧</kbd>+click: select in filmstrip</div>
+            <div><kbd>C</kbd> compare</div>
             <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
             <div><kbd>Ctrl</kbd>+<kbd>S</kbd> save</div>
+            <div><kbd>Ctrl</kbd>+<kbd>'</kbd> virtual copy</div>
             <div><kbd>Ctrl</kbd>+<kbd>⇧</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste</div>
             <div><kbd>Alt</kbd>-drag: clipping</div>
             <div><kbd>Ctrl</kbd>+<kbd>U</kbd> auto tone</div>
             <div><kbd>⇧</kbd>+<kbd>W</kbd> masking</div>
             <div><kbd>M</kbd> / <kbd>⇧</kbd>+<kbd>M</kbd> gradients</div>
             <div><kbd>K</kbd> brush, <kbd>[</kbd> <kbd>]</kbd> size</div>
+            <div><kbd>⇧</kbd>+<kbd>K</kbd> polygon</div>
           </div>
         {/if}
       {/if}
@@ -728,7 +974,27 @@
 {/if}
 
 {#if leaving}
-  <UnsavedDialog fileName={editor.asset?.originalFileName ?? 'This photo'} busy={leaveSaving} onSave={leaveSave} onDiscard={leaveDiscard} onCancel={() => (leaving = null)} />
+  <LeaveDialog
+    count={leaving.ids.size}
+    fileName={leaving.ids.size === 1 && editor.asset && leaving.ids.has(editor.asset.id) ? editor.asset.originalFileName : null}
+    onSave={leaveSaving}
+    onDiscard={leaveDiscarding}
+    onCancel={() => (leaving = null)}
+  />
+{/if}
+
+{#if syncFor}
+  <CopySettingsDialog
+    title="Sync Settings"
+    confirmLabel="Sync"
+    initial={DEFAULT_GROUPS}
+    onConfirm={(groups) => {
+      const ids = syncFor;
+      syncFor = null;
+      if (ids) void editor.syncSettings(ids, groups);
+    }}
+    onCancel={() => (syncFor = null)}
+  />
 {/if}
 
 {#if copyOpen}
@@ -785,6 +1051,24 @@
   .cull.rejected,
   button.cull.rejected:hover {
     color: var(--danger);
+  }
+  .flags {
+    color: #ffd54a;
+  }
+  .flags.rejected {
+    color: var(--danger);
+  }
+  button.discard {
+    background: none;
+    border: none;
+    padding: 0 0 0 4px;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  button.discard:hover {
+    color: var(--text-bright);
   }
   .sub {
     color: var(--text-dim);
@@ -922,9 +1206,16 @@
     min-width: 0;
     min-height: 0;
   }
+  /* The photo, and Compare's photo next to it. */
+  .views {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   .stage {
     position: relative;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     background: var(--bg-view);
     display: flex;
@@ -988,16 +1279,24 @@
     justify-content: center;
     gap: 12px;
   }
+  /* Where the photo will be drawn, like .frame; hidden until its size is known. */
   .preview {
-    max-width: calc(100% - 48px);
-    max-height: calc(100% - 120px);
-    opacity: 0.55;
-    filter: blur(0.5px);
+    visibility: hidden;
+    box-shadow: 0 2px 18px rgba(0, 0, 0, 0.6);
   }
-  .loading {
-    color: var(--text);
-    text-align: center;
-    min-width: 260px;
+  .preview.sized {
+    visibility: visible;
+  }
+  .progress-over {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .progress-over > :global(*) {
+    pointer-events: auto;
   }
   .bar {
     height: 4px;
@@ -1131,10 +1430,6 @@
     .saving .card {
       min-width: 0;
       width: calc(100% - 48px);
-    }
-    .loading {
-      min-width: 0;
-      width: 80%;
     }
   }
 </style>

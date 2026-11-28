@@ -18,29 +18,47 @@ phones and tablets.
 Each feature has a guide with screenshots.
 
 - **[Edit from Immich and save back](docs/getting-started.md):** the Edit RAW button, a JPEG of
-  your edit stacked on the RAW with its date, location, albums and rating, and the edit kept for
-  later.
+  your edit stacked with the RAW (in front of it, or behind it) with its date, location, albums,
+  tags and rating, and the edit kept for later.
 - **[Lightroom-style editing](docs/editing.md):** white balance, tone, Auto tone, profiles
   (including Fujifilm film looks), curves, Color Mixer, Color Grading, sharpening and noise
-  reduction, lens corrections (Lensfun), transform, vignette and grain, crop.
-- **[Masks](docs/masks.md):** linear and radial gradients, brush, colour and luminance ranges, and
-  AI masks: subject, sky, background, people and their parts, landscape, objects. Edges can be
-  grown, feathered and smoothed.
-- **[Workflow](docs/workflow.md):** histogram and clipping, before/after, zoom to 800 %, history,
-  snapshots, presets, copy and paste, a filmstrip, keyboard shortcuts, and
-  [Lightroom import](docs/workflow.md#lightroom-import) of XMP sidecars and presets.
-- **[Export](docs/export.md):** JPEG, PNG or TIFF at a size of your choice, with sharpening,
-  watermark, metadata and file name settings; one photo, a whole album, or the photos selected in
-  Immich.
+  reduction, lens corrections (Lensfun), transform and Guided Upright, vignette and grain, crop.
+- **[Masks](docs/masks.md):** linear and radial gradients, brush, polygon and lasso, colour and
+  luminance ranges, and AI masks: subject, sky, background, people and their parts, landscape,
+  objects. Edges can be grown, feathered and smoothed.
+- **[Workflow](docs/workflow.md):** histogram, waveform and vectorscope, clipping, before/after,
+  zoom to 800 %, history, snapshots, virtual copies, presets, copy and paste, a filmstrip, keyboard
+  shortcuts, and [Lightroom import](docs/lightroom.md) of XMP sidecars and presets.
+- **[Export](docs/export.md):** JPEG, PNG, TIFF, WebP, AVIF or JPEG XL in sRGB, Display P3,
+  Adobe RGB or ProPhoto RGB, 8 or 16 bits, at a size of your choice, with sharpening, a text or
+  logo watermark, metadata and file name settings; one photo, a whole album, or the photos selected
+  in Immich.
 - **[AI Upscale](docs/upscale.md):** 2× or 4× larger, in the browser, with a preview of a detail.
 - **[Stacking and best pick](docs/stacking.md)** (optional culler): bursts and re-takes stacked
-  with the best shot in front, the others tagged with why they lost; from the editor or from
-  Immich's selection.
+  with the best shot in front, the others tagged with why they lost, exposure brackets kept whole
+  and close calls marked; from the editor or from Immich's selection.
 - **[Convert to DNG](docs/dng.md):** replace a RAW with a lossless or a much smaller lossy DNG.
 - **[Phones and tablets](docs/mobile.md):** a touch layout.
 
 Your photos stay with you: decoding, editing, AI masks and AI Upscale run in your browser, and only
 the optional culler looks at photos on your own server ([Under the hood](docs/under-the-hood.md)).
+
+## Lightroom import
+
+Your Lightroom edits come along. When you open a RAW you haven't edited yet and Immich has its
+Lightroom XMP sidecar, the editor offers to apply the settings, including:
+- white balance, tone, the profile, curves, Color Mixer and B&W, and Color Grading;
+- Calibration, Detail, Lens Corrections, Transform, Effects and the crop;
+- masks, with AI masks found again in the photo.
+
+Lightroom `.xmp` presets can be imported too.
+
+The sidecar has to reach Immich together with the RAW:
+- **Bring it along:** the Immich CLI, immich-go and external libraries.
+- **Leave it behind:** Immich's web upload, its phone app and the Lightroom plugins for Immich.
+
+[Lightroom import](docs/lightroom.md) explains what comes across, and gives the steps for each way of
+getting your photos and sidecars into Immich.
 
 ## Try it
 

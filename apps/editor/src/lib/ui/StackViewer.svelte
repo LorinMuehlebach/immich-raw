@@ -6,7 +6,7 @@
   import { captureTime, shotSettings } from '../immich/context.ts';
   import { badgeFor, metricRows } from '../immich/cull-view.ts';
   import { makeBest, waitForRun } from '../immich/culler.ts';
-  import { deleteOthers, frameIndexOf, loadStackView, planDeleteOthers, preferredFrame, step, type StackFrame, type StackView } from '../immich/stack-view.ts';
+  import { deleteOthers, frameIndexOf, isBracketView, loadStackView, planDeleteOthers, preferredFrame, step, type StackFrame, type StackView } from '../immich/stack-view.ts';
   import { imageLoader, previewUrl, thumbUrl } from './images.ts';
 
   interface Props {
@@ -41,7 +41,10 @@
   const badge = $derived(badgeFor(cur?.info ?? null));
   const rows = $derived(cur ? metricRows(cur.info) : []);
   const settings = $derived(cur ? shotSettings((cur.raw ?? cur.face).exifInfo).join(' · ') : '');
-  const isBest = $derived(cur?.info.role === 'best');
+  // The shot in front: the best, or the front of an exposure bracket (kept whole: nothing to delete).
+  const isFront = (f: StackFrame | null | undefined) => f?.info.role === 'best' || (f?.info.role === 'bracket' && f.info.rank === 1);
+  const isBest = $derived(isFront(cur));
+  const isBracket = $derived(!!view && isBracketView(view));
   const keep = $derived(view ? preferredFrame(view) : null);
   const plan = $derived(view && keep ? planDeleteOthers(view, keep.frameId) : null);
   const deletesEditing = $derived(!!editing && !!plan?.trashIds.includes(editing.id));
@@ -79,7 +82,7 @@
 
   async function makePreferred() {
     const f = cur;
-    if (!view || !f || !canCull || busy || f.info.role === 'best') return;
+    if (!view || !f || !canCull || busy || isFront(f)) return;
     busy = 'pick';
     actionError = null;
     try {
@@ -244,7 +247,7 @@
             </button>
           {/each}
         </div>
-        {#if canCull}
+        {#if canCull && !isBracket}
           <button class="danger" onclick={() => (confirming = true)} disabled={!!busy} title="Keep the preferred shot and move the others to Immich's trash">Delete others…</button>
         {/if}
       </footer>
@@ -434,6 +437,9 @@
   }
   .badge.runner-up {
     color: #cfd8e3;
+  }
+  .badge.bracket {
+    color: #9fd3ff;
   }
   .badge.rejected {
     color: #fff;

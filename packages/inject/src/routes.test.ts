@@ -55,6 +55,11 @@ describe('editorUrl', () => {
     const url = editorUrl('/immich-raw/', A, 'timeline', '//evil.example.com');
     expect(new URL(url, 'https://x').searchParams.has('return')).toBe(false);
   });
+
+  it('names the virtual copy to open, if any', () => {
+    expect(new URL(editorUrl('/immich-raw/', A, 'timeline', '/photos', 'k3x9'), 'https://x').searchParams.get('copy')).toBe('k3x9');
+    expect(new URL(editorUrl('/immich-raw/', A, 'timeline', '/photos'), 'https://x').searchParams.has('copy')).toBe(false);
+  });
 });
 
 describe('stackPageUrl', () => {

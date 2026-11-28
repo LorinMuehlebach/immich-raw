@@ -32,7 +32,7 @@ function fakeFetch(routes: Routes) {
 describe('findEditTarget', () => {
   it('returns a RAW itself', async () => {
     const f = fakeFetch({ '/api/assets/raw1': { id: 'raw1', originalFileName: 'IMG_1.CR3' } });
-    expect(await findEditTarget('raw1', f)).toBe('raw1');
+    expect(await findEditTarget('raw1', f)).toEqual({ rawId: 'raw1', copyId: null });
     expect(f).toHaveBeenCalledTimes(1);
   });
 
@@ -41,7 +41,15 @@ describe('findEditTarget', () => {
       '/api/assets/render1': { id: 'render1', originalFileName: 'IMG_1.edit.jpg' },
       '/api/assets/render1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1' } },
     });
-    expect(await findEditTarget('render1', f)).toBe('raw1');
+    expect(await findEditTarget('render1', f)).toEqual({ rawId: 'raw1', copyId: null });
+  });
+
+  it("a virtual copy's render opens that copy", async () => {
+    const f = fakeFetch({
+      '/api/assets/c1': { id: 'c1', originalFileName: 'IMG_1.copy-2.edit.jpg' },
+      '/api/assets/c1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1', copyId: 'k3x9' } },
+    });
+    expect(await findEditTarget('c1', f)).toEqual({ rawId: 'raw1', copyId: 'k3x9' });
   });
 
   it('follows an AI-upscaled copy back to its RAW', async () => {
@@ -49,7 +57,7 @@ describe('findEditTarget', () => {
       '/api/assets/up1': { id: 'up1', originalFileName: 'IMG_1.upscaled-2x.edit.jpg', stack: { id: 's1', primaryAssetId: 'render1', assetCount: 3 } },
       '/api/assets/up1/metadata/raw-editor.render': { key: 'raw-editor.render', value: { sourceAssetId: 'raw1', upscale: { scale: 2, style: 'sharp' } } },
     });
-    expect(await findEditTarget('up1', f)).toBe('raw1');
+    expect(await findEditTarget('up1', f)).toEqual({ rawId: 'raw1', copyId: null });
   });
 
   it('finds the RAW in a camera RAW+JPEG stack', async () => {
@@ -64,7 +72,7 @@ describe('findEditTarget', () => {
         ],
       },
     });
-    expect(await findEditTarget('jpg1', f)).toBe('raw1');
+    expect(await findEditTarget('jpg1', f)).toEqual({ rawId: 'raw1', copyId: null });
   });
 
   it('returns null for a plain JPEG and for unknown assets', async () => {
@@ -131,6 +139,6 @@ describe('rawOfCapture (stacks holding several captures)', () => {
       '/api/assets/j2': { id: 'j2', originalFileName: 'DSC2.JPG', fileCreatedAt: t('01'), stack: { id: 's' } },
       '/api/stacks/s': { assets: burst },
     });
-    expect(await findEditTarget('j2', f)).toBe('r2');
+    expect(await findEditTarget('j2', f)).toEqual({ rawId: 'r2', copyId: null });
   });
 });

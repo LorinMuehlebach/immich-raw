@@ -1,8 +1,8 @@
 <script lang="ts">
-  // RGB histogram of the rendered preview, with Lightroom's clipping triangles.
+  // RGB histogram of the rendered preview, with Lightroom's clipping triangles (inside Scopes).
   import type { Histogram } from '@immich-raw/pipeline';
 
-  let { histogram, clipping, onToggleClipping, info }: { histogram: Histogram | null; clipping: boolean; onToggleClipping: () => void; info: string } = $props();
+  let { histogram, clipping, onToggleClipping }: { histogram: Histogram | null; clipping: boolean; onToggleClipping: () => void } = $props();
 
   let canvas: HTMLCanvasElement | undefined = $state();
   const W = 256;
@@ -47,18 +47,14 @@
 </script>
 
 <div class="hist">
-  <canvas bind:this={canvas} width={W} height={H}></canvas>
+  <canvas bind:this={canvas} width={W} height={H} aria-label="Histogram"></canvas>
   <button class="tri lo" class:lit={clip.lo} class:on={clipping} title="Show shadow clipping (J)" aria-label="Show shadow clipping" onclick={onToggleClipping}></button>
   <button class="tri hi" class:lit={clip.hi} class:on={clipping} title="Show highlight clipping (J)" aria-label="Show highlight clipping" onclick={onToggleClipping}></button>
-  <div class="info">{info}</div>
 </div>
 
 <style>
   .hist {
     position: relative;
-    background: #161616;
-    padding: 6px 8px 4px;
-    border-bottom: 1px solid #111;
   }
   canvas {
     width: 100%;
@@ -67,7 +63,7 @@
   }
   .tri {
     position: absolute;
-    top: 6px;
+    top: 0;
     width: 0;
     height: 0;
     padding: 0;
@@ -76,12 +72,12 @@
     border-radius: 0;
   }
   .tri.lo {
-    left: 8px;
+    left: 0;
     border-left-color: #555;
     border-top-color: #555;
   }
   .tri.hi {
-    right: 8px;
+    right: 0;
     border-right-color: #555;
     border-top-color: #555;
   }
@@ -100,14 +96,5 @@
   .tri.on.hi {
     border-right-color: #fff;
     border-top-color: #fff;
-  }
-  .info {
-    color: var(--text-dim);
-    font-size: 11px;
-    text-align: center;
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 </style>

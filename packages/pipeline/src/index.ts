@@ -11,7 +11,6 @@ export {
   sampleSource,
   type AiMaskMap,
   type ExportProgress,
-  type Histogram,
   type MaskView,
   type Rect,
   type RenderOptions,
@@ -23,8 +22,29 @@ export { encodeJpeg } from './export/encode.ts';
 export { fitLongEdge, resizeImage } from './export/resize.ts';
 export { crc32 } from './export/crc32.ts';
 export { buildXmp, insertXmp, MAX_XMP_PACKET, type XmpFields } from './export/xmp-packet.ts';
-export { addPngMetadata, type PngMetadata } from './export/png.ts';
+export { addPngMetadata, zlib, type PngMetadata } from './export/png.ts';
+export { encodePng16 } from './export/png16.ts';
+export { resample16, resampleWeights, type Rgba16 } from './export/resample.ts';
+export { asImageData, convertPixels, pixelsOf, resizePixels, type Pixels } from './export/pixels.ts';
+export { addWebpMetadata, WEBP_MAX_SIDE, type WebpMetadata } from './export/webp.ts';
+export { jxlContainer, type JxlMetadata } from './export/jxl.ts';
+export { avifCicp, setAvifCicp, type Cicp } from './export/avif.ts';
 export { outputSharpen, sharpenParams, type RgbaImage, type SharpenLevel, type SharpenMedia } from './export/sharpen.ts';
-export { drawWatermark, watermarkLayout, type WatermarkOptions, type WatermarkPosition } from './export/watermark.ts';
-export { buildTiff as buildExifTiff, exifFromImmich, insertExif, zoneOffsetMinutes, type ExifFields, type ImmichExifLike } from './export/jpeg-segments.ts';
+export {
+  compositeOverlay,
+  drawLogoWatermark,
+  drawWatermark,
+  logoLayout,
+  watermarkLayout,
+  watermarkMargin,
+  type LogoWatermarkOptions,
+  type OverlayConvert,
+  type OverlayTarget,
+  type WatermarkTarget,
+  type WatermarkOptions,
+  type WatermarkPosition,
+} from './export/watermark.ts';
+export { buildTiff as buildExifTiff, exifFromImmich, insertExif, insertIcc, zoneOffsetMinutes, type ExifFields, type ImmichExifLike } from './export/jpeg-segments.ts';
 export * from './brush.ts';
+export * from './scopes.ts';
+export { pointInPolygon, rasterizePolygon, simplifyPolygon } from './polygon.ts';

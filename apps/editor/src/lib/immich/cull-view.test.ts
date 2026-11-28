@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   arrangeGroups,
   badgeFor,
+  closeCallRows,
   describeMetrics,
   describeRun,
   layoutRows,
@@ -245,5 +246,78 @@ describe('the auto-stack page rows', () => {
     expect(sameEdits({ remove: ['b', 'a'], join: { x: ['y'] } }, { remove: ['a', 'b'], join: { x: ['y'] } })).toBe(true);
     expect(sameEdits(NO_EDITS, null)).toBe(true);
     expect(sameEdits(NO_EDITS, out)).toBe(false);
+  });
+});
+
+describe('brackets, close calls and where sharpness was measured', () => {
+  const row = (rows: MetricRow[], label: string) => rows.find((r) => r.label === label)?.value;
+
+  it('a bracket is kept whole: its own badge, its exposure step, no verdict in red', () => {
+    const front = { ...info('D', 1, 'bracket', null, { evVsBest: 0, bracketEv: 0, clipHiPct: 0.2, clipLoPct: 1 }) };
+    const dark = info('D', 2, 'bracket', null, { evVsBest: -1.8, bracketEv: -2, clipHiPct: 0, clipLoPct: 12 });
+    expect(badgeFor(dark)).toEqual({ icon: '±', label: 'Bracket', tone: 'bracket' });
+    expect(describeMetrics(dark)).toEqual(['bracket −2.0 EV', '12 % crushed shadows']);
+    expect(describeMetrics(front)).toEqual([]);
+    expect(metricRows(front).map((r) => [r.label, r.value])).toEqual([
+      ['Verdict', '± Exposure bracket · 1 of 3 (in front)'],
+      ['Exposure step', 'reference'],
+      ['Exposure', 'reference'],
+      ['Blown highlights', '0.2 %'],
+      ['Crushed shadows', '1 %'],
+    ]);
+    expect(row(metricRows(dark), 'Exposure step')).toBe('−2.0 EV (camera settings)');
+    expect(metricRows(dark).some((r) => r.bad)).toBe(false);
+  });
+
+  it('a close call is marked on the best and the next shot', () => {
+    const best = { ...info('A', 1, 'best', null, { sharpPct: 100 }), closeCall: true, margin: 0.012 };
+    const next = { ...info('A', 2, 'runner-up', null, { sharpPct: 97 }), closeCall: true, margin: 0.012 };
+    const third = { ...info('A', 3, 'runner-up'), closeCall: true, margin: 0.012 };
+    expect(badgeFor(best)).toEqual({ icon: '★≈', label: 'Best (close call)', tone: 'best' });
+    expect(badgeFor({ ...best, pinned: true })?.label).toBe('Best (your pick)');
+    expect(describeMetrics(best)).toEqual(['close call: the next shot is nearly as good']);
+    expect(row(metricRows(best), 'Close call')).toBe('the next shot is nearly as good (1.2 points apart)');
+    expect(row(metricRows(next), 'Close call')).toBe('nearly as good as the best (1.2 points apart)');
+    expect(row(metricRows(third), 'Close call')).toBeUndefined();
+  });
+
+  it('says where sharpness was measured', () => {
+    const bird = info('A', 2, 'rejected', 'blur', { sharpPct: 50, sharpOn: 'subject', subjectLabel: 'bird' });
+    expect(row(metricRows(bird), 'Sharpness')).toBe('50 % of best (bird)');
+    expect(describeMetrics(bird)).toEqual(['sharpness 50 % of best (the bird)']);
+    expect(row(metricRows(info('A', 1, 'best', null, { sharpPct: 100, sharpOn: 'faces' })), 'Sharpness')).toBe('reference (eyes)');
+    expect(row(metricRows(info('A', 2, 'runner-up', null, { sharpPct: 95, sharpOn: 'photo' })), 'Sharpness')).toBe('95 % of best (sharpest areas)');
+  });
+
+  it('counts close calls and brackets in a run', () => {
+    expect(describeRun({ groups: 4, photos: 20, runnerUps: 2, closeCalls: 1, brackets: 2 })).toBe(
+      '4 stacks from 20 photos · 2 runner-ups · 1 close call · 2 exposure brackets (kept whole)',
+    );
+  });
+
+  it('lists the close calls of a run first, and marks brackets', () => {
+    const f = (id: string, min: number, rank: number, role: ReportFrame['role']): ReportFrame => ({
+      frameId: id,
+      name: id,
+      assetIds: [id],
+      faceId: id,
+      taken: `2026-10-03T11:${String(min).padStart(2, '0')}:00Z`,
+      role,
+      reason: null,
+      rank,
+      pinned: false,
+      metrics: {},
+    });
+    const rows = layoutRows({
+      groups: [
+        { id: 'close', primaryId: null, closeCall: true, frames: [f('c1', 20, 1, 'best'), f('c2', 21, 2, 'runner-up')] },
+        { id: 'plain', primaryId: null, frames: [f('p1', 10, 1, 'best'), f('p2', 11, 2, 'runner-up')] },
+        { id: 'aeb', primaryId: null, kind: 'bracket', frames: [f('e1', 30, 1, 'bracket'), f('e2', 30, 2, 'bracket'), f('e3', 30, 3, 'bracket')] },
+      ],
+    });
+    expect(rows.map((r) => (r.kind === 'stack' ? r.groupId : ''))).toEqual(['plain', 'close', 'aeb']); // still in the order taken
+    expect(closeCallRows(rows).map((r) => r.groupId)).toEqual(['close']);
+    const aeb = rows[2]!;
+    expect(aeb.kind === 'stack' && [aeb.bracket, aeb.best.frameId, aeb.runnerUps]).toEqual([true, 'e1', 0]);
   });
 });

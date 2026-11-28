@@ -22,12 +22,23 @@ class Basis:
     """What every shot of a group is compared on, so that all are measured alike."""
 
     exposure: str = "photo"  # 'faces', 'people' or 'photo'
-    sharpness: str = "photo"  # 'faces' (the eye band) or 'photo' (the sharpest tiles)
+    # 'faces' (the eye band), 'subject' (the largest animal) or 'photo' (the sharpest tiles)
+    sharpness: str = "photo"
 
     @classmethod
     def of(cls, feats: list[Features], cfg: Config) -> Basis:
-        faces = bool(feats) and all(f.face_sharpness or f.photo_sharpness is None for f in feats)
-        return cls(exposure_basis(feats, cfg), "faces" if faces else "photo")
+        return cls(exposure_basis(feats, cfg), sharpness_basis(feats, cfg))
+
+
+def sharpness_basis(feats: list[Features], cfg: Config) -> str:
+    """Faces when every shot has one, else the animal when every shot shows one, else the photo."""
+    if not feats:
+        return "photo"
+    if all(f.face_sharpness or f.photo_sharpness is None for f in feats):
+        return "faces"
+    if cfg.subjects.enabled and all(f.subject_sharpness is not None for f in feats):
+        return "subject"
+    return "photo"
 
 
 @dataclass
@@ -65,6 +76,8 @@ class Candidate:
         sharp = features.sharpness
         if basis.sharpness == "photo" and features.photo_sharpness is not None:
             sharp = features.photo_sharpness
+        elif basis.sharpness == "subject" and features.subject_sharpness is not None:
+            sharp = features.subject_sharpness
         return cls(frame, features, badness, exposure, sharp, basis)
 
 

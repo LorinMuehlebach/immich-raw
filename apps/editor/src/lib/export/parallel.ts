@@ -64,3 +64,29 @@ export function oneAtATime(): <T>(task: () => Promise<T>) => Promise<T> {
     return run;
   };
 }
+
+/** A queue that runs at most `limit` of the tasks given to it at once, starting them in call order. */
+export function atMost(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  const next = () => {
+    if (running >= limit) return;
+    const start = waiting.shift();
+    if (!start) return;
+    running++;
+    start();
+  };
+  return <T>(task: () => Promise<T>) =>
+    new Promise<T>((resolve, reject) => {
+      waiting.push(() => {
+        Promise.resolve()
+          .then(task)
+          .then(resolve, reject)
+          .finally(() => {
+            running--;
+            next();
+          });
+      });
+      next();
+    });
+}

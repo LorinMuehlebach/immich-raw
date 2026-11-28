@@ -73,12 +73,17 @@ export function arrangeGroups<T extends { id: string }>(
 export interface Badge {
   icon: string;
   label: string;
-  tone: 'best' | 'runner-up' | 'rejected';
+  tone: 'best' | 'runner-up' | 'rejected' | 'bracket';
 }
 
 export function badgeFor(info: CullInfo | null): Badge | null {
   if (!info?.role) return null;
-  if (info.role === 'best') return { icon: '★', label: info.pinned ? 'Best (your pick)' : 'Best', tone: 'best' };
+  if (info.role === 'best') {
+    if (info.pinned) return { icon: '★', label: 'Best (your pick)', tone: 'best' };
+    if (info.closeCall) return { icon: '★≈', label: 'Best (close call)', tone: 'best' };
+    return { icon: '★', label: 'Best', tone: 'best' };
+  }
+  if (info.role === 'bracket') return { icon: '±', label: 'Bracket', tone: 'bracket' };
   if (info.role === 'runner-up') return { icon: '◐', label: 'Runner-up', tone: 'runner-up' };
   switch (info.reason) {
     case 'lighting':
@@ -96,12 +101,20 @@ export function badgeFor(info: CullInfo | null): Badge | null {
 export function describeMetrics(info: CullInfo): string[] {
   const m: CullMetrics = info.metrics ?? {};
   const lines: string[] = [];
-  if (info.role === 'best') return lines;
+  if (info.role === 'bracket') {
+    if (m.bracketEv) lines.push(`bracket ${signed(m.bracketEv, 1)} EV`);
+    if ((m.clipHiPct ?? 0) >= 1) lines.push(`${Math.round(m.clipHiPct!)} % blown highlights`);
+    if ((m.clipLoPct ?? 0) >= 5) lines.push(`${Math.round(m.clipLoPct!)} % crushed shadows`);
+    return lines;
+  }
+  if (info.role === 'best') return info.closeCall ? ['close call: the next shot is nearly as good'] : lines;
   const ev = m.evVsBest ?? 0;
   if (info.reason === 'lighting' || Math.abs(ev) >= 0.3) lines.push(`${ev > 0 ? '+' : ev < 0 ? '−' : '±'}${Math.abs(ev).toFixed(1)} EV vs best`);
   if ((m.clipHiPct ?? 0) >= 1) lines.push(`${Math.round(m.clipHiPct!)} % blown highlights`);
   if ((m.clipLoPct ?? 0) >= 5) lines.push(`${Math.round(m.clipLoPct!)} % crushed shadows`);
-  if (m.sharpPct != null && (info.reason === 'blur' || m.sharpPct < 90)) lines.push(`sharpness ${m.sharpPct} % of best`);
+  if (m.sharpPct != null && (info.reason === 'blur' || m.sharpPct < 90)) {
+    lines.push(`sharpness ${m.sharpPct} % of best${m.sharpOn === 'subject' ? ` (the ${m.subjectLabel ?? 'animal'})` : ''}`);
+  }
   if (info.reason === 'lighting' && m.subjectEv != null && (m.judgedOn === 'faces' || m.judgedOn === 'people')) {
     lines.push(`${m.judgedOn} ${signed(m.subjectEv, 1)} EV vs ideal`);
   }
@@ -145,19 +158,48 @@ const signed = (n: number, digits: number) => {
   return `${r > 0 ? '+' : r < 0 ? '−' : '±'}${Math.abs(r).toFixed(digits)}`;
 };
 
+/** Where sharpness was measured: " (eyes)", " (bird)", " (sharpest areas)", or nothing when unknown. */
+function sharpWhere(m: CullMetrics): string {
+  if (m.sharpOn === 'faces') return ' (eyes)';
+  if (m.sharpOn === 'subject') return ` (${m.subjectLabel ?? 'animal'})`;
+  if (m.sharpOn === 'photo') return ' (sharpest areas)';
+  return '';
+}
+
+/** The shots of an exposure bracket: the settings' step and what it gave. */
+function bracketRows(info: CullInfo, badge: Badge): MetricRow[] {
+  const m: CullMetrics = info.metrics ?? {};
+  const front = info.rank === 1;
+  const place = info.rank && info.groupSize ? ` · ${info.rank} of ${info.groupSize}` : '';
+  const where = front ? (info.pinned ? ' (your pick)' : ' (in front)') : '';
+  const rows: MetricRow[] = [{ label: 'Verdict', value: `${badge.icon} Exposure bracket${place}${where}` }];
+  if (m.bracketEv != null) rows.push({ label: 'Exposure step', value: front ? 'reference' : `${signed(m.bracketEv, 1)} EV (camera settings)` });
+  if (m.evVsBest != null) rows.push({ label: 'Exposure', value: front ? 'reference' : `${signed(m.evVsBest, 1)} EV measured` });
+  if (m.clipHiPct != null) rows.push({ label: 'Blown highlights', value: `${m.clipHiPct} %` });
+  if (m.clipLoPct != null) rows.push({ label: 'Crushed shadows', value: `${m.clipLoPct} %` });
+  return rows;
+}
+
 /** Everything the culler measured for a photo, for the stack window (also what didn't decide). */
 export function metricRows(info: CullInfo): MetricRow[] {
   const m: CullMetrics = info.metrics ?? {};
   const best = info.role === 'best';
   const rows: MetricRow[] = [];
   const badge = badgeFor(info);
+  if (badge && info.role === 'bracket') return bracketRows(info, badge);
   if (badge && best) {
     rows.push({ label: 'Verdict', value: `${badge.icon} Best${info.groupSize ? ` of ${info.groupSize}` : ''}${info.pinned ? ' (your pick)' : ''}` });
   } else if (badge) {
     const place = info.rank && info.groupSize ? ` · ${info.rank} of ${info.groupSize}` : '';
     rows.push({ label: 'Verdict', value: `${badge.icon} ${badge.label}${place}`, bad: badge.tone === 'rejected' });
   }
-  if (m.sharpPct != null) rows.push({ label: 'Sharpness', value: best ? 'reference' : `${m.sharpPct} % of best`, bad: info.reason === 'blur' });
+  if (info.closeCall && (best || info.rank === 2)) {
+    const points = info.margin != null ? ` (${(100 * info.margin).toFixed(1)} points apart)` : '';
+    rows.push({ label: 'Close call', value: `${best ? 'the next shot is nearly as good' : 'nearly as good as the best'}${points}` });
+  }
+  if (m.sharpPct != null) {
+    rows.push({ label: 'Sharpness', value: `${best ? 'reference' : `${m.sharpPct} % of best`}${sharpWhere(m)}`, bad: info.reason === 'blur' });
+  }
   if (m.evVsBest != null) rows.push({ label: 'Exposure', value: best ? 'reference' : `${signed(m.evVsBest, 1)} EV vs best`, bad: info.reason === 'lighting' });
   if (m.subjectEv != null && (m.judgedOn === 'faces' || m.judgedOn === 'people')) {
     rows.push({
@@ -193,6 +235,8 @@ export function describeRun(c: Partial<RunCounts> | null | undefined): string {
     const why = [r.lighting && `${r.lighting} lighting`, r.blur && `${r.blur} not sharp`, r.eyes && `${r.eyes} eyes closed`].filter(Boolean);
     parts.push(`${rejected} set aside (${why.join(', ')})`);
   }
+  if (c.closeCalls) parts.push(`${c.closeCalls} ${c.closeCalls === 1 ? 'close call' : 'close calls'}`);
+  if (c.brackets) parts.push(`${c.brackets} exposure ${c.brackets === 1 ? 'bracket' : 'brackets'} (kept whole)`);
   if (c.pending) parts.push(`${c.pending} still waiting for Immich's preview`);
   if (c.takenApart) parts.push(`${c.takenApart} left alone (taken out of stacks in Immich before)`);
   return parts.join(' · ');
@@ -213,6 +257,10 @@ export interface StackRow {
   shots: ReportFrame[];
   runnerUps: number;
   rejected: Record<CullReason, number>;
+  /** An exposure bracket, kept whole. */
+  bracket: boolean;
+  /** The best and the next shot nearly tied. */
+  closeCall: boolean;
   /** When its first shot was taken. */
   taken: string;
   frameIds: string[];
@@ -242,6 +290,8 @@ function stackRow(g: ReportGroup): StackRow {
     shots,
     runnerUps: shots.filter((f) => f.role === 'runner-up').length,
     rejected,
+    bracket: g.kind === 'bracket',
+    closeCall: !!g.closeCall,
     taken: shots[0]?.taken ?? '',
     frameIds: shots.map((f) => f.frameId),
     assetIds: shots.flatMap((f) => f.assetIds),
@@ -264,6 +314,11 @@ export function layoutRows(report: RunReport | null | undefined): ResultRow[] {
     else rows.push({ kind: 'singles', singles: [x], taken: x.taken ?? '' });
   }
   return rows;
+}
+
+/** The close calls among the rows, in the order taken: listed first on the auto-stack page. */
+export function closeCallRows(rows: ResultRow[]): StackRow[] {
+  return rows.filter((r): r is StackRow => r.kind === 'stack' && r.closeCall);
 }
 
 /** The stacks right before and right after a single shot, to add it to. */

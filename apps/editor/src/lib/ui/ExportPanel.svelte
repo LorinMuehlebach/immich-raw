@@ -2,7 +2,7 @@
   // Export: downloads the edit at Low (web), Medium (screen) or High (print), exports a whole
   // album, and chooses which preset Save uses for the copy in Immich. Settings stay in this browser.
   import { editor } from '../state/editor.svelte.ts';
-  import { EXPORT_PRESET_IDS, FORMAT_LABELS, PRESET_LABELS, presetSummary, sizeShort, type ExportPresetId } from '../state/export-settings.ts';
+  import { EXPORT_PRESET_IDS, PRESET_LABELS, formatShort, presetSummary, sizeShort, type ExportPresetId } from '../state/export-settings.ts';
   import Section from './Section.svelte';
 
   const settings = $derived(editor.exportSettings);
@@ -22,7 +22,7 @@
       <button class="preset" onclick={() => editor.exportPhoto(id)} disabled={busy} title="Download {PRESET_LABELS[id].purpose}: {presetSummary(p)}" aria-label={PRESET_LABELS[id].name}>
         <span class="name">{PRESET_LABELS[id].name}</span>
         <span class="meta">{sizeShort(p)}</span>
-        <span class="meta">{p.format === 'jpeg' ? `quality ${p.quality}` : FORMAT_LABELS[p.format]}</span>
+        <span class="meta">{formatShort(p)}</span>
       </button>
     {/each}
   </div>

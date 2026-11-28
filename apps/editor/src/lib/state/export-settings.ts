@@ -1,10 +1,13 @@
 // Export presets: Low (web), Medium (screen) and High (print), each with Lightroom's export
-// options (file type, size, quality, output sharpening, watermark, metadata, file name), and
-// which of them Save uses for the copy in Immich. Kept in this browser.
+// options (file type, colour space, size, quality, output sharpening, watermark, metadata, file
+// name), and which of them Save uses for the copy in Immich. Kept in this browser.
+import type { OutputColor, OutputSpace } from '@immich-raw/pipeline';
 import { clampParam, type ParamSpec } from '@immich-raw/recipe';
 
 export type ExportPresetId = 'low' | 'medium' | 'high';
-export type ExportFormat = 'jpeg' | 'png' | 'tiff';
+export type ExportFormat = 'jpeg' | 'png' | 'tiff' | 'webp' | 'avif' | 'jxl';
+/** The formats with a quality setting. */
+export type LossyFormat = 'jpeg' | 'webp' | 'avif' | 'jxl';
 /** Full size, or which side (or the pixel count) the value sets. */
 export type SizeMode = 'full' | 'longEdge' | 'shortEdge' | 'width' | 'height' | 'megapixels';
 export type SizeUnit = 'px' | 'in' | 'cm';
@@ -21,8 +24,12 @@ export interface ExportSize {
   unit: SizeUnit;
 }
 
+export type WatermarkKind = 'text' | 'image';
+
 export interface ExportWatermark {
   enabled: boolean;
+  /** A line of text, or a logo (a PNG kept in this browser, see logos.ts). */
+  kind: WatermarkKind;
   /** Text with {year} and {owner}, like the copyright. */
   text: string;
   position: WatermarkPosition;
@@ -31,20 +38,39 @@ export interface ExportWatermark {
   /** 0-100. */
   opacity: number;
   color: 'white' | 'black';
+  /** The logo's id in this browser's logo store, or null. */
+  imageId: string | null;
+  /** The logo's long side in % of the short edge. */
+  imageSize: number;
 }
 
 export interface ExportPreset {
   format: ExportFormat;
+  /** Colour space and bits per sample; what the file type allows (validColor). */
+  color: OutputColor;
   size: ExportSize;
   /** Print resolution: converts in/cm to pixels and is written into the file. */
   ppi: number;
-  /** JPEG quality, 50-100. */
-  quality: number;
+  /** Quality of each lossy format (QUALITY_SPECS); each format keeps its own. */
+  quality: Record<LossyFormat, number>;
+  /** WebP and JPEG XL: lossless instead of the quality setting. */
+  lossless: boolean;
   sharpen: { for: SharpenFor; amount: SharpenAmount };
   watermark: ExportWatermark;
   metadata: MetadataMode;
   /** File name template; see TEMPLATE_TOKENS. */
   naming: string;
+}
+
+/** Which photo Save puts in front of the RAW's stack. */
+export type StackFront = 'edit' | 'raw';
+/** copy: the edit is a favourite when the RAW is; always: every saved edit is a favourite. */
+export type SaveFavorite = 'copy' | 'always';
+
+/** How Save puts the edit into Immich. Tags, albums, date, location, rating and description always come from the RAW. */
+export interface SaveSettings {
+  front: StackFront;
+  favorite: SaveFavorite;
 }
 
 export interface ExportSettings {
@@ -53,6 +79,7 @@ export interface ExportSettings {
   immichPreset: ExportPresetId;
   /** Copyright line written into exports (and the watermark's default text), with {year} and {owner}. */
   copyright: string;
+  save: SaveSettings;
 }
 
 export const EXPORT_PRESET_IDS: readonly ExportPresetId[] = ['low', 'medium', 'high'];
@@ -63,8 +90,52 @@ export const PRESET_LABELS: Record<ExportPresetId, { name: string; purpose: stri
   high: { name: 'High', purpose: 'for printing' },
 };
 
-export const FORMAT_LABELS: Record<ExportFormat, string> = { jpeg: 'JPEG', png: 'PNG', tiff: 'TIFF' };
-export const FORMAT_EXTENSION: Record<ExportFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tif' };
+export const FORMAT_LABELS: Record<ExportFormat, string> = { jpeg: 'JPEG', png: 'PNG', tiff: 'TIFF', webp: 'WebP', avif: 'AVIF', jxl: 'JPEG XL' };
+export const FORMAT_EXTENSION: Record<ExportFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tif', webp: 'webp', avif: 'avif', jxl: 'jxl' };
+export const EXPORT_FORMATS = Object.keys(FORMAT_LABELS) as ExportFormat[];
+export const SPACE_LABELS: Record<OutputSpace, string> = { srgb: 'sRGB', 'display-p3': 'Display P3', 'adobe-rgb': 'Adobe RGB (1998)', prophoto: 'ProPhoto RGB' };
+
+/**
+ * The colour spaces and bit depths a file type can hold: JPEG, WebP and AVIF are 8-bit, AVIF
+ * says its space with a code (sRGB and Display P3 only), JPEG XL as encoded here is sRGB only.
+ * ProPhoto needs 16 bits (in 8 its steps show as banding).
+ */
+export function colorChoices(format: ExportFormat): { spaces: OutputSpace[]; bits: (8 | 16)[] } {
+  switch (format) {
+    case 'png':
+    case 'tiff':
+      return { spaces: ['srgb', 'display-p3', 'adobe-rgb', 'prophoto'], bits: [8, 16] };
+    case 'jpeg':
+    case 'webp':
+      return { spaces: ['srgb', 'display-p3', 'adobe-rgb'], bits: [8] };
+    case 'avif':
+      return { spaces: ['srgb', 'display-p3'], bits: [8] };
+    case 'jxl':
+      return { spaces: ['srgb'], bits: [8] };
+  }
+}
+
+/** `color` as the file type allows it: ProPhoto moves to 16 bits, anything else not possible to sRGB / 8 bits. */
+export function validColor(format: ExportFormat, color: OutputColor): OutputColor {
+  const c = colorChoices(format);
+  let bits = c.bits.includes(color.bits) ? color.bits : 8;
+  let space = c.spaces.includes(color.space) ? color.space : 'srgb';
+  if (space === 'prophoto' && bits !== 16) {
+    if (c.bits.includes(16)) bits = 16;
+    else space = 'srgb';
+  }
+  return { space, bits };
+}
+export const LOSSY_FORMATS: readonly LossyFormat[] = ['jpeg', 'webp', 'avif', 'jxl'];
+
+export function isLossy(format: ExportFormat): format is LossyFormat {
+  return (LOSSY_FORMATS as readonly string[]).includes(format);
+}
+
+/** Formats with a lossless choice besides their quality setting (PNG and TIFF are always lossless). */
+export function hasLosslessOption(format: ExportFormat): boolean {
+  return format === 'webp' || format === 'jxl';
+}
 export const SIZE_MODE_LABELS: Record<SizeMode, string> = {
   full: 'Full size',
   longEdge: 'Long edge',
@@ -81,6 +152,8 @@ export const METADATA_LABELS: Record<MetadataMode, string> = {
   noLocation: 'All except location',
   copyright: 'Copyright only',
 };
+export const FRONT_LABELS: Record<StackFront, string> = { edit: 'The edited JPEG', raw: 'The RAW' };
+export const FAVORITE_LABELS: Record<SaveFavorite, string> = { copy: 'When the RAW is one', always: 'Always' };
 export const POSITION_LABELS: Record<WatermarkPosition, string> = {
   'top-left': 'Top left',
   top: 'Top',
@@ -104,15 +177,29 @@ export const TEMPLATE_TOKENS = ['{name}', '{preset}', '{date}', '{seq}', '{album
 
 export const DEFAULT_COPYRIGHT = '© {year} {owner}';
 
-const watermarkDefaults = (): ExportWatermark => ({ enabled: false, text: DEFAULT_COPYRIGHT, position: 'bottom-right', size: 3, opacity: 70, color: 'white' });
+const watermarkDefaults = (): ExportWatermark => ({
+  enabled: false,
+  kind: 'text',
+  text: DEFAULT_COPYRIGHT,
+  position: 'bottom-right',
+  size: 3,
+  opacity: 70,
+  color: 'white',
+  imageId: null,
+  imageSize: 15,
+});
+
+export const WATERMARK_KIND_LABELS: Record<WatermarkKind, string> = { text: 'Text', image: 'Logo (PNG)' };
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   presets: {
     low: {
       format: 'jpeg',
+      color: { space: 'srgb', bits: 8 },
       size: { mode: 'longEdge', value: 2048, unit: 'px' },
       ppi: 72,
-      quality: 80,
+      quality: { jpeg: 80, webp: 75, avif: 50, jxl: 75 },
+      lossless: false,
       sharpen: { for: 'screen', amount: 'standard' },
       watermark: watermarkDefaults(),
       metadata: 'noLocation',
@@ -120,9 +207,11 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
     },
     medium: {
       format: 'jpeg',
+      color: { space: 'srgb', bits: 8 },
       size: { mode: 'longEdge', value: 3840, unit: 'px' },
       ppi: 72,
-      quality: 90,
+      quality: { jpeg: 90, webp: 85, avif: 63, jxl: 88 },
+      lossless: false,
       sharpen: { for: 'none', amount: 'standard' },
       watermark: watermarkDefaults(),
       metadata: 'all',
@@ -130,9 +219,11 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
     },
     high: {
       format: 'jpeg',
+      color: { space: 'srgb', bits: 8 },
       size: { mode: 'full', value: 30, unit: 'cm' },
       ppi: 300,
-      quality: 95,
+      quality: { jpeg: 95, webp: 92, avif: 75, jxl: 94 },
+      lossless: false,
       sharpen: { for: 'none', amount: 'standard' },
       watermark: watermarkDefaults(),
       metadata: 'all',
@@ -141,27 +232,41 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   },
   immichPreset: 'medium',
   copyright: DEFAULT_COPYRIGHT,
+  save: { front: 'edit', favorite: 'copy' },
 };
 
-const qualitySpec = (id: ExportPresetId): ParamSpec => ({
-  path: `export.${id}.quality`,
+// AVIF's scale runs lower: quality 63 looks about like JPEG 90.
+const QUALITY_MIN: Record<LossyFormat, number> = { jpeg: 50, webp: 50, avif: 30, jxl: 50 };
+
+const qualitySpec = (id: ExportPresetId, format: LossyFormat): ParamSpec => ({
+  path: `export.${id}.quality.${format}`,
   label: 'Quality',
-  min: 50,
+  min: QUALITY_MIN[format],
   max: 100,
-  default: DEFAULT_EXPORT_SETTINGS.presets[id].quality,
+  default: DEFAULT_EXPORT_SETTINGS.presets[id].quality[format],
   step: 1,
   decimals: 0,
   signed: false,
 });
 
-export const QUALITY_SPECS: Record<ExportPresetId, ParamSpec> = {
-  low: qualitySpec('low'),
-  medium: qualitySpec('medium'),
-  high: qualitySpec('high'),
+const qualitySpecs = (id: ExportPresetId): Record<LossyFormat, ParamSpec> => ({
+  jpeg: qualitySpec(id, 'jpeg'),
+  webp: qualitySpec(id, 'webp'),
+  avif: qualitySpec(id, 'avif'),
+  jxl: qualitySpec(id, 'jxl'),
+});
+
+/** The quality slider of each preset and lossy format. */
+export const QUALITY_SPECS: Record<ExportPresetId, Record<LossyFormat, ParamSpec>> = {
+  low: qualitySpecs('low'),
+  medium: qualitySpecs('medium'),
+  high: qualitySpecs('high'),
 };
 
 export const WATERMARK_SIZE: ParamSpec = { path: 'watermark.size', label: 'Size', min: 1, max: 20, default: 3, step: 0.5, decimals: 1, signed: false };
 export const WATERMARK_OPACITY: ParamSpec = { path: 'watermark.opacity', label: 'Opacity', min: 5, max: 100, default: 70, step: 1, decimals: 0, signed: false };
+export const LOGO_SIZE: ParamSpec = { path: 'watermark.imageSize', label: 'Size', min: 2, max: 50, default: 15, step: 0.5, decimals: 1, signed: false };
+const LOGO_ID = /^[\w-]{1,64}$/;
 export const PPI_RANGE = { min: 50, max: 1200 } as const;
 
 /** Allowed size values per unit (megapixels for 'megapixels'). */
@@ -211,27 +316,46 @@ function normalizeSize(v: unknown, legacyLongEdge: unknown, def: ExportSize): Ex
   return { mode, value, unit };
 }
 
+function normalizeQuality(id: ExportPresetId, v: unknown): Record<LossyFormat, number> {
+  const def = DEFAULT_EXPORT_SETTINGS.presets[id].quality;
+  // Before WebP, AVIF and JPEG XL, a preset had one number: the JPEG quality.
+  const stored = typeof v === 'number' ? { jpeg: v } : obj(v);
+  const out = { ...def };
+  for (const f of LOSSY_FORMATS) {
+    const q = stored[f];
+    if (typeof q === 'number' && Number.isFinite(q)) out[f] = Math.round(clampParam(QUALITY_SPECS[id][f], q));
+  }
+  return out;
+}
+
 function normalizePreset(id: ExportPresetId, v: unknown): ExportPreset {
   const def = DEFAULT_EXPORT_SETTINGS.presets[id];
   const o = obj(v);
   const sh = obj(o.sharpen);
   const wm = obj(o.watermark);
+  const format = pick(o.format, EXPORT_FORMATS, def.format);
+  const c = obj(o.color);
   return {
-    format: pick(o.format, ['jpeg', 'png', 'tiff'] as const, def.format),
+    format,
+    color: validColor(format, { space: pick(c.space, Object.keys(SPACE_LABELS) as OutputSpace[], 'srgb'), bits: c.bits === 16 ? 16 : 8 }),
     size: normalizeSize(o.size, o.longEdge, def.size),
     ppi: num(o.ppi, PPI_RANGE.min, PPI_RANGE.max, def.ppi),
-    quality: typeof o.quality === 'number' ? Math.round(clampParam(QUALITY_SPECS[id], o.quality)) : def.quality,
+    quality: normalizeQuality(id, o.quality),
+    lossless: typeof o.lossless === 'boolean' ? o.lossless : def.lossless,
     sharpen: {
       for: pick(sh.for, ['none', 'screen', 'matte', 'glossy'] as const, def.sharpen.for),
       amount: pick(sh.amount, ['low', 'standard', 'high'] as const, def.sharpen.amount),
     },
     watermark: {
       enabled: typeof wm.enabled === 'boolean' ? wm.enabled : def.watermark.enabled,
+      kind: pick(wm.kind, ['text', 'image'] as const, def.watermark.kind),
       text: text(wm.text, def.watermark.text),
       position: pick(wm.position, Object.keys(POSITION_LABELS) as WatermarkPosition[], def.watermark.position),
       size: num(wm.size, WATERMARK_SIZE.min, WATERMARK_SIZE.max, def.watermark.size, 1),
       opacity: num(wm.opacity, WATERMARK_OPACITY.min, WATERMARK_OPACITY.max, def.watermark.opacity),
       color: pick(wm.color, ['white', 'black'] as const, def.watermark.color),
+      imageId: typeof wm.imageId === 'string' && LOGO_ID.test(wm.imageId) ? wm.imageId : null,
+      imageSize: num(wm.imageSize, LOGO_SIZE.min, LOGO_SIZE.max, def.watermark.imageSize, 1),
     },
     metadata: pick(o.metadata, ['all', 'noLocation', 'copyright'] as const, def.metadata),
     naming: typeof o.naming === 'string' && o.naming.trim() ? o.naming.slice(0, MAX_TEMPLATE) : def.naming,
@@ -242,6 +366,8 @@ function normalizePreset(id: ExportPresetId, v: unknown): ExportPreset {
 export function normalizeExportSettings(input: unknown): ExportSettings {
   const o = obj(input);
   const presets = obj(o.presets);
+  const save = obj(o.save);
+  const def = DEFAULT_EXPORT_SETTINGS.save;
   return {
     presets: {
       low: normalizePreset('low', presets.low),
@@ -250,6 +376,10 @@ export function normalizeExportSettings(input: unknown): ExportSettings {
     },
     immichPreset: isExportPresetId(o.immichPreset) ? o.immichPreset : DEFAULT_EXPORT_SETTINGS.immichPreset,
     copyright: text(o.copyright, DEFAULT_COPYRIGHT),
+    save: {
+      front: pick(save.front, ['edit', 'raw'] as const, def.front),
+      favorite: pick(save.favorite, ['copy', 'always'] as const, def.favorite),
+    },
   };
 }
 
@@ -331,12 +461,28 @@ export function sizeShort(p: Pick<ExportPreset, 'size' | 'ppi'>): string {
   return s.unit === 'px' ? `${s.value} px` : `${s.value} ${s.unit}`;
 }
 
-/** "JPEG · 2048 px · quality 80" */
+/** "quality 80", "lossless", or '' for PNG and TIFF. */
+export function qualityShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossless'>): string {
+  if (!isLossy(p.format)) return '';
+  return p.lossless && hasLosslessOption(p.format) ? 'lossless' : `quality ${p.quality[p.format]}`;
+}
+
+/** Second line of a preset button: "quality 90" for JPEG, "WebP 85", "JPEG XL lossless", "PNG", "TIFF 16-bit". */
+export function formatShort(p: Pick<ExportPreset, 'format' | 'quality' | 'lossless'> & { color?: OutputColor }): string {
+  if (p.format === 'jpeg') return qualityShort(p);
+  if (!isLossy(p.format)) return `${FORMAT_LABELS[p.format]}${p.color?.bits === 16 ? ' 16-bit' : ''}`;
+  return `${FORMAT_LABELS[p.format]} ${p.lossless && hasLosslessOption(p.format) ? 'lossless' : p.quality[p.format]}`;
+}
+
+/** "JPEG · 2048 px · quality 80", "TIFF · Full size · 16-bit · ProPhoto RGB" */
 export function presetSummary(p: ExportPreset): string {
   const parts = [FORMAT_LABELS[p.format], sizeSummary(p)];
-  if (p.format === 'jpeg') parts.push(`quality ${p.quality}`);
+  const quality = qualityShort(p);
+  if (quality) parts.push(quality);
+  if (p.color.bits === 16) parts.push('16-bit');
+  if (p.color.space !== 'srgb') parts.push(SPACE_LABELS[p.color.space]);
   if (p.sharpen.for !== 'none') parts.push(`sharpened for ${SHARPEN_LABELS[p.sharpen.for].toLowerCase()}`);
-  if (p.watermark.enabled) parts.push('watermark');
+  if (p.watermark.enabled) parts.push(p.watermark.kind === 'image' ? 'logo watermark' : 'watermark');
   return parts.join(' · ');
 }
 

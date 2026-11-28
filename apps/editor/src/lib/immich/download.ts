@@ -1,16 +1,7 @@
 // Downloads an asset's original file with progress, cached in the Origin Private File
-// System by checksum so reopening a RAW is instant. Works without OPFS (no cache).
+// System by checksum so reopening a RAW is instant (photo-cache.ts). Works without OPFS (no cache).
 import { apiUrl, authHeaders } from './api.ts';
-
-const CACHE_DIR = 'originals';
-const INDEX_FILE = 'index.json';
-const CACHE_LIMIT_BYTES = 2 * 1024 ** 3;
-
-interface CacheEntry {
-  size: number;
-  lastUsed: number;
-}
-type CacheIndex = Record<string, CacheEntry>;
+import { originalName as cacheName, photoCache as originals } from './photo-cache.ts';
 
 export interface OriginalRef {
   id: string;
@@ -18,28 +9,47 @@ export interface OriginalRef {
   checksum: string;
 }
 
-export async function downloadOriginal(asset: OriginalRef, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
+/** Where the bytes come from and how many have arrived (`total` is 0 when Immich doesn't say). */
+export interface DownloadProgress {
+  from: 'cache' | 'network';
+  received: number;
+  total: number;
+}
+
+export type OnDownloadProgress = (fraction: number, progress: DownloadProgress) => void;
+
+/** `signal` stops a download (another photo was opened). */
+export async function downloadOriginal(asset: OriginalRef, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
   const name = cacheName(asset.checksum);
-  const cached = await readCache(name);
-  if (cached) {
-    onProgress?.(1);
-    return cached;
-  }
-  const bytes = await fetchWithProgress(apiUrl(`/assets/${asset.id}/original`), onProgress);
-  void writeCache(name, bytes); // best effort, don't block the editor
+  const cached = await readCache(name, onProgress);
+  if (cached) return cached;
+  const bytes = await fetchWithProgress(apiUrl(`/assets/${asset.id}/original`), onProgress, signal);
+  void originals.write(name, [bytes as Uint8Array<ArrayBuffer>]); // best effort, don't block the editor
   return bytes;
 }
 
 /** An original without the cache (e.g. a JPEG in a batch export), with the same stall timeout. */
-export function downloadUncached(id: string, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
-  return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress);
+export function downloadUncached(id: string, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
+  return fetchWithProgress(apiUrl(`/assets/${id}/original`), onProgress, signal);
+}
+
+/** The original from this browser's cache only, or null. */
+export function readCachedOriginal(checksum: string): Promise<Uint8Array | null> {
+  return readCache(cacheName(checksum));
+}
+
+/** Whether the original is cached in this browser. `touch`: also keep it longer, as if opened. */
+export function hasOriginal(checksum: string, touch = false): Promise<boolean> {
+  return originals.has(cacheName(checksum), touch);
 }
 
 /** A download gives up when Immich sends nothing for this long (e.g. the server stopped answering). */
 const STALL_MS = 60_000;
 
-async function fetchWithProgress(url: string, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
+async function fetchWithProgress(url: string, onProgress?: OnDownloadProgress, signal?: AbortSignal): Promise<Uint8Array> {
   const abort = new AbortController();
+  signal?.throwIfAborted();
+  signal?.addEventListener('abort', () => abort.abort(signal.reason), { once: true });
   let timer = 0;
   const poke = () => {
     clearTimeout(timer);
@@ -55,13 +65,14 @@ async function fetchWithProgress(url: string, onProgress?: (fraction: number) =>
   }
 }
 
-async function readBody(res: Response, poke: () => void, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
+async function readBody(res: Response, poke: () => void, onProgress?: OnDownloadProgress): Promise<Uint8Array> {
   if (!res.ok) throw new Error(`Could not download the original (HTTP ${res.status}).`);
   poke();
   const total = Number(res.headers.get('Content-Length')) || 0;
+  onProgress?.(0, { from: 'network', received: 0, total });
   if (!res.body) {
     const buf = new Uint8Array(await res.arrayBuffer());
-    onProgress?.(1);
+    onProgress?.(1, { from: 'network', received: buf.length, total: buf.length });
     return buf;
   }
   const reader = res.body.getReader();
@@ -83,9 +94,9 @@ async function readBody(res: Response, poke: () => void, onProgress?: (fraction:
       chunks.push(value);
     }
     received += value.length;
-    if (total > 0) onProgress?.(Math.min(1, received / total));
+    if (total > 0) onProgress?.(Math.min(1, received / total), { from: 'network', received, total });
   }
-  onProgress?.(1);
+  onProgress?.(1, { from: 'network', received, total: Math.max(total, received) });
   if (out) return received === out.length ? out : out.subarray(0, received);
   const joined = new Uint8Array(received);
   let offset = 0;
@@ -98,107 +109,23 @@ async function readBody(res: Response, poke: () => void, onProgress?: (fraction:
 
 /** Puts a file into the cache (e.g. a DNG made here, so opening it needs no download). */
 export function cacheOriginal(checksum: string, bytes: Uint8Array): Promise<void> {
-  return writeCache(cacheName(checksum), bytes);
+  return originals.write(cacheName(checksum), [bytes as Uint8Array<ArrayBuffer>]);
 }
 
 /** Removes a file from the cache (its asset was deleted). */
-export async function forgetOriginal(checksum: string): Promise<void> {
-  const dir = await cacheDir();
-  if (!dir) return;
-  const name = cacheName(checksum);
-  try {
-    await dir.removeEntry(name);
-  } catch {
-    // not cached
-  }
-  try {
-    const index = await readIndex(dir);
-    delete index[name];
-    await writeFile(dir, INDEX_FILE, JSON.stringify(index));
-  } catch {
-    // best effort
-  }
+export function forgetOriginal(checksum: string): Promise<void> {
+  return originals.remove(cacheName(checksum));
 }
 
-function cacheName(checksum: string): string {
-  return checksum.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + '.raw';
-}
-
-async function cacheDir(): Promise<FileSystemDirectoryHandle | null> {
+async function readCache(name: string, onProgress?: OnDownloadProgress): Promise<Uint8Array | null> {
+  const file = await originals.read(name);
+  if (!file) return null;
+  onProgress?.(0, { from: 'cache', received: 0, total: file.size });
   try {
-    const root = await navigator.storage.getDirectory();
-    return await root.getDirectoryHandle(CACHE_DIR, { create: true });
-  } catch {
-    return null;
-  }
-}
-
-async function readIndex(dir: FileSystemDirectoryHandle): Promise<CacheIndex> {
-  try {
-    const file = await (await dir.getFileHandle(INDEX_FILE)).getFile();
-    const parsed = JSON.parse(await file.text());
-    return parsed && typeof parsed === 'object' ? (parsed as CacheIndex) : {};
-  } catch {
-    return {};
-  }
-}
-
-async function writeFile(dir: FileSystemDirectoryHandle, name: string, data: BlobPart): Promise<void> {
-  const handle = await dir.getFileHandle(name, { create: true });
-  const writable = await handle.createWritable();
-  await writable.write(data);
-  await writable.close();
-}
-
-async function readCache(name: string): Promise<Uint8Array | null> {
-  const dir = await cacheDir();
-  if (!dir) return null;
-  try {
-    const file = await (await dir.getFileHandle(name)).getFile();
-    if (file.size === 0) return null;
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const index = await readIndex(dir);
-    index[name] = { size: file.size, lastUsed: Date.now() };
-    await writeFile(dir, INDEX_FILE, JSON.stringify(index));
+    onProgress?.(1, { from: 'cache', received: bytes.length, total: bytes.length });
     return bytes;
   } catch {
-    return null;
-  }
-}
-
-async function writeCache(name: string, bytes: Uint8Array): Promise<void> {
-  const dir = await cacheDir();
-  if (!dir) return;
-  try {
-    await writeFile(dir, name, bytes as Uint8Array<ArrayBuffer>);
-    const index = await readIndex(dir);
-    index[name] = { size: bytes.length, lastUsed: Date.now() };
-    await evict(dir, index, name);
-    await writeFile(dir, INDEX_FILE, JSON.stringify(index));
-  } catch {
-    // quota exceeded or OPFS unavailable: caching is optional
-    try {
-      await dir.removeEntry(name);
-    } catch {
-      // nothing to clean up
-    }
-  }
-}
-
-/** Removes least-recently-used files until the cache fits the limit. Mutates index. */
-async function evict(dir: FileSystemDirectoryHandle, index: CacheIndex, keep: string): Promise<void> {
-  let total = Object.values(index).reduce((sum, e) => sum + e.size, 0);
-  const oldestFirst = Object.entries(index)
-    .filter(([n]) => n !== keep)
-    .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-  for (const [n, entry] of oldestFirst) {
-    if (total <= CACHE_LIMIT_BYTES) break;
-    try {
-      await dir.removeEntry(n);
-    } catch {
-      // already gone
-    }
-    delete index[n];
-    total -= entry.size;
+    return null; // removed meanwhile (another tab evicted it): download it instead
   }
 }

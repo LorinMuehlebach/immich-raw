@@ -15,6 +15,7 @@ from culler.features import Analyzer
 from culler.immich import ImmichClient
 from culler.runner import Edits, RunError, Runner, Scope, new_run_id
 from culler.store import Store, utcnow
+from culler.suggest import summarize
 from culler.watcher import Watcher
 
 log = logging.getLogger(__name__)
@@ -200,10 +201,16 @@ class Service:
                 "rank": m.get("rank"),
                 "groupSize": m.get("groupSize"),
                 "pinned": m.get("pinned", False),
+                "closeCall": m.get("closeCall", False),
+                "margin": m.get("margin"),
                 "metrics": m.get("metrics", {}),
                 "runId": m.get("runId"),
             }
         return out
+
+    def picks(self) -> dict[str, Any]:
+        """How often the user chose another best than the culler, why, and settings that would agree."""
+        return summarize(self.store.picks(), self.store.active_group_count(), self.cfg)
 
     def health(self) -> dict[str, Any]:
         return {

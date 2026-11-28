@@ -14,10 +14,10 @@ A re-run with nothing changed plans nothing.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from culler.models import APP_ID, Asset, Frame, GroupResult, Stack
+from culler.models import APP_ID, Asset, Frame, GroupResult, Stack, manual_reject_tag
 
 TAG_SUFFIX = {
     ("best", None): "Best",
@@ -25,15 +25,29 @@ TAG_SUFFIX = {
     ("rejected", "lighting"): "Rejected/Lighting",
     ("rejected", "blur"): "Rejected/Blur",
     ("rejected", "eyes"): "Rejected/Eyes closed",
+    ("bracket", None): "Bracket",
 }
+CLOSE_CALL = "Close call"  # on the best shot, next to its role's tag
 
 
 def tag_value(root: str, role: str, reason: str | None) -> str:
     return f"{root}/{TAG_SUFFIX[(role, reason)]}"
 
 
+def close_call_tag(root: str) -> str:
+    return f"{root}/{CLOSE_CALL}"
+
+
 def all_tag_values(root: str) -> list[str]:
-    return [f"{root}/{s}" for s in TAG_SUFFIX.values()]
+    return [*(f"{root}/{s}" for s in TAG_SUFFIX.values()), close_call_tag(root)]
+
+
+def wanted_tags(root: str, role: str, reason: str | None, close_call: bool) -> tuple[str, ...]:
+    """The culler tags one photo should carry: its role's, and Close call on the best of a near-tie."""
+    tags = [tag_value(root, role, reason)]
+    if close_call and role == "best":
+        tags.append(close_call_tag(root))
+    return tuple(sorted(tags))
 
 
 # --- operations ---------------------------------------------------------------------------------
@@ -115,17 +129,25 @@ class AssetState:
 
     group_id: str
     frame_id: str
-    tag: str | None
+    tags: tuple[str, ...]  # the culler tags it should carry
     rating_set: bool  # the -1 on this photo was set by this service
     rating_blocked: bool  # the user changed a -1 this service set: never set it again
     meta: dict[str, Any] | None
     capture_stacked: bool = False  # its RAW + JPEG were stacked before this service grouped them
+    reject_blocked: bool = False  # the user took a reject tag of this service off: never reject it again
 
     def to_json(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        d = dict(self.__dict__)
+        d["tags"] = list(self.tags)
+        return d
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> AssetState:
+        d = dict(d)
+        if "tag" in d:  # stored before a photo could carry more than one culler tag
+            tag = d.pop("tag")
+            d.setdefault("tags", [tag] if tag else [])
+        d["tags"] = tuple(d.get("tags") or ())
         return cls(**d)
 
 
@@ -170,8 +192,21 @@ def _comparable(meta: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def culler_tags(a: Asset, root: str) -> set[str]:
+    """The tags this service manages on a photo: those under the root, except the user's own reject."""
     prefix = root + "/"
-    return {t.value for t in a.tags if t.value.startswith(prefix)}
+    own = manual_reject_tag(root)
+    return {t.value for t in a.tags if t.value.startswith(prefix) and t.value != own}
+
+
+def reject_taken_off(p: AssetState | None, asset: Asset | None, root: str) -> bool:
+    """The user took a reject tag this service had put on the photo off (in Immich, or with U in the editor)."""
+    if p is None or asset is None:
+        return False
+    if p.reject_blocked:
+        return True
+    have = culler_tags(asset, root)
+    prefix = f"{root}/Rejected/"
+    return any(t.startswith(prefix) and t not in have for t in p.tags)
 
 
 def plan_changes(
@@ -248,7 +283,11 @@ def plan_changes(
             own = live.stack_of(f.asset_ids[0])
             was_capture = bool(own and own.id not in culler_stack_ids and set(own.asset_ids) <= set(f.asset_ids))
             r = g.result.results[f.id]
-            want = tag_value(tag_root, r.role, r.reason)
+            # A reject the user took off stays off: the shot counts as a runner-up from then on.
+            unrejected = any(reject_taken_off(prev.get(a), live.assets.get(a), tag_root) for a in f.asset_ids)
+            if unrejected and r.role == "rejected":
+                r = replace(r, role="runner-up", reason=None)
+            want = wanted_tags(tag_root, r.role, r.reason, g.result.close_call)
             meta = {
                 "v": 1,
                 "app": APP_ID,
@@ -260,16 +299,18 @@ def plan_changes(
                 "rank": r.rank,
                 "groupSize": size,
                 "pinned": r.pinned,
+                "closeCall": g.result.close_call,
+                "margin": g.result.margin,
                 "metrics": r.metrics,
                 "at": now,
             }
             for a in f.asset_ids:
                 asset = live.assets[a]
                 have = culler_tags(asset, tag_root)
-                for v in sorted(have - {want}):
+                for v in sorted(have - set(want)):
                     remove[v].append(a)
-                if want not in have:
-                    add[want].append(a)
+                for v in sorted(set(want) - have):
+                    add[v].append(a)
 
                 p = prev.get(a)
                 rating_set = bool(p and p.rating_set)
@@ -296,7 +337,7 @@ def plan_changes(
                 else:
                     stored_meta = p.meta
                 captured = p.capture_stacked if p else was_capture
-                states[a] = AssetState(g.id, f.id, want, rating_set, blocked, stored_meta, captured)
+                states[a] = AssetState(g.id, f.id, want, rating_set, blocked, stored_meta, captured, unrejected)
 
     for f in released:
         for a in f.asset_ids:

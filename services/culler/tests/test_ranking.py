@@ -80,3 +80,23 @@ def test_metrics_for_the_tooltip():
     m = rank_group(fr, ft, CFG).results["b"].metrics
     assert m["evVsBest"] == -1.5
     assert m["sharpPct"] == 50
+
+
+def test_a_shot_the_user_rejected_is_never_best():
+    from culler.models import Tag
+
+    rejected = {"tags": (Tag("t1", "Culling/Rejected"),)}
+    fr, ft = setup({"a": (GOOD, 1.0, []), "b": (GOOD, 0.9, [])}, a=rejected)
+    assert fr[0].user_rejected and not fr[1].user_rejected
+    r = rank_group(fr, ft, CFG)
+    assert r.best == "b"
+    # Nor when it is in front of the stack.
+    assert rank_group(fr, ft, CFG, pinned="a").best == "b"
+
+
+def test_when_every_shot_is_rejected_one_is_still_best():
+    from culler.models import Tag
+
+    rejected = {"tags": (Tag("t1", "Culling/Rejected"),)}
+    fr, ft = setup({"a": (GOOD, 1.0, []), "b": (GOOD, 0.9, [])}, a=rejected, b=rejected)
+    assert rank_group(fr, ft, CFG).best == "a"

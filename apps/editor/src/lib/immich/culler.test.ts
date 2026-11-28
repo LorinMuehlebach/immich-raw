@@ -3,6 +3,7 @@ import {
   CullerError,
   cullerStatus,
   DEFAULT_CULL_OPTIONS,
+  getPicks,
   loadCullOptions,
   lookupCull,
   parseCullOptions,
@@ -113,7 +114,32 @@ describe('culler client', () => {
       people: { enabled: false },
       smiles: { enabled: false },
       eyes: { enabled: true },
+      brackets: { enabled: true },
     });
+  });
+
+  it('turns moments off with a zero threshold, and previews a suggestion on top of the options', async () => {
+    const f = vi.fn(async () => json(202, { runId: 'r4' }));
+    setCullerFetch(f);
+    const scope = { kind: 'day' as const, date: '2024-05-01' };
+    await startRun(scope, true, { options: { ...DEFAULT_CULL_OPTIONS, moments: false, brackets: false } });
+    await startRun(scope, true, { options: DEFAULT_CULL_OPTIONS, settings: { blur: { min_ratio: 0.6 }, eyes: { max_open_gap: 0.4 } } });
+    await startRun(scope, true, { settings: { ranking: { eyes_weight: 0.3 } } });
+    const options = f.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)).options);
+    expect(options[0].grouping).toEqual({ moment_similarity: 0 });
+    expect(options[0].brackets).toEqual({ enabled: false });
+    expect(options[1].grouping).toBeUndefined();
+    expect(options[1].blur).toEqual({ min_ratio: 0.6 });
+    expect(options[1].eyes).toEqual({ enabled: true, max_open_gap: 0.4 });
+    expect(options[2]).toEqual({ ranking: { eyes_weight: 0.3 } });
+  });
+
+  it('reads the picks summary', async () => {
+    const summary = { stacks: 10, overruled: 2, bySource: { you: 2, favourite: 0 }, byReason: {}, minPicks: 3, suggestions: [] };
+    setCullerFetch(async () => json(200, summary));
+    expect(await getPicks()).toEqual(summary);
+    setCullerFetch(async () => html(404));
+    expect(await getPicks()).toBeNull();
   });
 
   it('reads stored options, with defaults for anything missing', () => {

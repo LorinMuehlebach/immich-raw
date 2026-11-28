@@ -23,6 +23,11 @@ export interface XmpFields {
   createDate?: string;
   /** xmp:CreatorTool */
   creatorTool?: string;
+  /**
+   * digiKam:TagsList (rdf:Seq): tag paths as Immich writes them ('Places/Europe/Paris'). Immich
+   * reads this list first when it sets an asset's tags from its file.
+   */
+  tagsList?: string[];
 }
 
 const NS = {
@@ -31,6 +36,7 @@ const NS = {
   photoshop: 'http://ns.adobe.com/photoshop/1.0/',
   xmpRights: 'http://ns.adobe.com/xap/1.0/rights/',
   lr: 'http://ns.adobe.com/lightroom/1.0/',
+  digiKam: 'http://www.digikam.org/ns/1.0/',
 } as const;
 
 // Characters XML 1.0 doesn't allow at all (C0 controls other than tab/LF/CR, lone surrogates, U+FFFE/F).
@@ -104,6 +110,8 @@ export function buildXmp(f: XmpFields): string {
     array('dc', 'subject', 'Bag', [...new Set(paths.map((p) => p[p.length - 1]!))]);
     if (paths.some((p) => p.length > 1)) array('lr', 'hierarchicalSubject', 'Bag', [...new Set(paths.map((p) => p.join('|')))]);
   }
+  const tags = [...new Set((f.tagsList ?? []).map((t) => keywordPath(t).join('/')).filter((t) => t !== ''))];
+  if (tags.length) array('digiKam', 'TagsList', 'Seq', tags);
 
   if (!attrs.length && !blocks.length) return '';
 

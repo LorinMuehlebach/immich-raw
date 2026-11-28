@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LOCAL_PARAMS, MAX_MASKS, newComponent, newMask, type BrushComponent, type ColorComponent, type Mask } from '@immich-raw/recipe';
+import { LOCAL_PARAMS, MAX_BRUSHES, MAX_MASKS, MAX_POLYGON_POINTS, newComponent, newMask, type BrushComponent, type ColorComponent, type Mask, type PolygonComponent } from '@immich-raw/recipe';
 import { initialMaskUi, MaskEditor, READ_ONLY_NOTICE, type MaskHost, type ShapeGesture, type StrokeGesture } from './mask-editor.ts';
 
 /** A host that records what the editor would do: history steps, notices, renders. */
@@ -192,5 +192,92 @@ describe('MaskEditor', () => {
     masking.setBrush({ size: 500, erase: true });
     expect(masking.ui.brush).toMatchObject({ size: 100, erase: true });
     expect(saved.at(-1)).toEqual({ size: 100, feather: 50, flow: 100, density: 100 });
+  });
+  it('draws a polygon corner by corner: Backspace takes one back, closing needs three', () => {
+    const { masking, recipe, commits } = setup();
+    masking.start('polygon');
+    expect(masking.ui.draft).toMatchObject({ kind: 'polygon', points: [] });
+    // Clicks on the photo don't go through press().
+    expect(masking.press([0.1, 0.1], NO_MODS)).toBeNull();
+    masking.addPolygonPoint([0.1, 0.1]);
+    masking.addPolygonPoint([0.9, 0.1]);
+    expect(masking.closePolygon()).toBe(false);
+    masking.addPolygonPoint([0.5, 0.123456789]);
+    masking.removePolygonPoint();
+    masking.addPolygonPoint([0.5, 0.9]);
+    expect(commits()).toEqual([]);
+    expect(masking.closePolygon()).toBe(true);
+    expect(masking.ui.draft).toBeNull();
+    const c = recipe.masks[0]!.components[0] as PolygonComponent;
+    expect(c).toMatchObject({ kind: 'polygon', points: [0.1, 0.1, 0.9, 0.1, 0.5, 0.9] });
+    expect(c.freehand).toBeUndefined();
+    expect(commits()).toEqual(['New Mask: Polygon']);
+    expect(masking.selectedComponent?.id).toBe(c.id);
+  });
+
+  it('stores polygon corners with 5 decimals and stops at the corner limit', () => {
+    const { masking, notices } = setup();
+    masking.start('polygon');
+    masking.addPolygonPoint([0.123456789, 0.5]);
+    expect(masking.ui.draft?.points).toEqual([0.12346, 0.5]);
+    for (let i = 1; i < MAX_POLYGON_POINTS + 3; i++) masking.addPolygonPoint([i / 1000, 0.5]);
+    expect(masking.ui.draft?.points).toHaveLength(MAX_POLYGON_POINTS * 2);
+    expect(notices.at(-1)).toMatch(/corners per polygon/);
+  });
+
+  it('closes and simplifies a lasso, added to an existing mask', () => {
+    const masks = [newMask('Sky', newComponent('radial', 'add'))];
+    const { masking, recipe, commits } = setup({ masks });
+    masking.start('lasso', 'subtract', masks[0]!.id);
+    // A square outline with many points along each side.
+    const pts: number[] = [];
+    for (let i = 0; i <= 20; i++) pts.push(0.2 + i * 0.03, 0.2);
+    for (let i = 1; i <= 20; i++) pts.push(0.8, 0.2 + i * 0.03);
+    for (let i = 1; i <= 20; i++) pts.push(0.8 - i * 0.03, 0.8);
+    for (let i = 1; i < 20; i++) pts.push(0.2, 0.8 - i * 0.03);
+    expect(masking.drawLasso(pts)).toBe(true);
+    const c = recipe.masks[0]!.components[1] as PolygonComponent;
+    expect(c).toMatchObject({ kind: 'polygon', mode: 'subtract', freehand: true });
+    expect(c.points.length / 2).toBe(4);
+    expect(commits()).toEqual(['Subtract Lasso']);
+    // Without a lasso armed, nothing.
+    expect(masking.drawLasso(pts)).toBe(false);
+  });
+
+  it('polygons and lassos share the brush limit', () => {
+    const masks = [newMask('Brushes', newComponent('brush', 'add'))];
+    for (let i = 1; i < MAX_BRUSHES; i++) masks[0]!.components.push(newComponent('polygon', 'add'));
+    const { masking, notices } = setup({ masks });
+    masking.start('lasso');
+    expect(masking.ui.draft).toBeNull();
+    expect(notices.at(-1)).toMatch(/brush, polygon and lasso/);
+  });
+
+  it('adds a corner on an edge as a drag, removes one but keeps three', () => {
+    const tri = newComponent('polygon', 'add') as PolygonComponent;
+    tri.points = [0, 0, 1, 0, 0, 1];
+    const masks = [newMask('Mask 1', tri)];
+    const { masking, commits } = setup({ masks });
+    const g = masking.addCorner(masks[0]!.id, tri.id, 0, [0.5, -0.1])!;
+    expect(g).toMatchObject({ kind: 'shape', compId: tri.id });
+    expect(g.comp).toMatchObject({ points: [0, 0, 0.5, -0.1, 1, 0, 0, 1] });
+    g.move({ points: [0, 0, 0.5, -0.2, 1, 0, 0, 1] });
+    g.end(20);
+    expect(commits()).toHaveLength(1);
+    masking.removeCorner(masks[0]!.id, tri.id, 1);
+    expect((masks[0]!.components[0] as PolygonComponent).points).toEqual([0, 0, 1, 0, 0, 1]);
+    expect(commits().at(-1)).toBe('Mask 1: Remove Corner');
+    masking.removeCorner(masks[0]!.id, tri.id, 0);
+    expect((masks[0]!.components[0] as PolygonComponent).points).toHaveLength(6);
+  });
+
+  it('reset clears the selection and anything armed', () => {
+    const masks = [newMask('Mask 1', newComponent('radial', 'add'))];
+    const { masking } = setup({ masks });
+    masking.select(masks[0]!.id);
+    masking.start('polygon');
+    masking.addPolygonPoint([0.1, 0.1]);
+    masking.reset();
+    expect(masking.ui).toMatchObject({ sel: { mask: null, comp: null }, draft: null, picker: null, editing: 'shape' });
   });
 });

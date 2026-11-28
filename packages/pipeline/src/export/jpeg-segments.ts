@@ -22,8 +22,8 @@ export interface ExifFields {
   copyright?: string;
   /** Print resolution in pixels per inch (X/YResolution, ResolutionUnit inches). */
   resolution?: number;
-  /** Exif ColorSpace. */
-  colorSpace?: 'sRGB';
+  /** Exif ColorSpace: sRGB (1), or uncalibrated (0xFFFF) for a space an ICC profile names. */
+  colorSpace?: 'sRGB' | 'uncalibrated';
   /** Exif PixelXDimension / PixelYDimension: the size of the encoded image. */
   pixelWidth?: number;
   pixelHeight?: number;
@@ -191,7 +191,7 @@ export function buildTiff(exif: ExifFields): Uint8Array {
   }
 
   const exifIfd: Entry[] = [bytes(TAGS.ExifVersion, T.UNDEFINED, [0x30, 0x32, 0x33, 0x32])]; // "0232"
-  if (exif.colorSpace === 'sRGB') exifIfd.push(short(TAGS.ColorSpace, 1));
+  if (exif.colorSpace) exifIfd.push(short(TAGS.ColorSpace, exif.colorSpace === 'sRGB' ? 1 : 0xffff));
   if (isDimension(exif.pixelWidth)) exifIfd.push(long(TAGS.PixelXDimension, exif.pixelWidth));
   if (isDimension(exif.pixelHeight)) exifIfd.push(long(TAGS.PixelYDimension, exif.pixelHeight));
   if (exif.exposureTime && exif.exposureTime > 0) exifIfd.push(rationals(TAGS.ExposureTime, [toRational(exif.exposureTime)]));
@@ -301,6 +301,75 @@ export function insertExif(jpeg: Uint8Array, exif: ExifFields): Uint8Array {
     out.set(jpeg.subarray(a, b), o);
     o += b - a;
   }
+  out.set(jpeg.subarray(p), o);
+  return out;
+}
+
+const ICC_ID = [0x49, 0x43, 0x43, 0x5f, 0x50, 0x52, 0x4f, 0x46, 0x49, 0x4c, 0x45, 0x00]; // "ICC_PROFILE\0"
+/** Profile bytes one APP2 segment holds: 65535 - length field - ICC_ID - sequence and count. */
+export const ICC_CHUNK = 65535 - 2 - ICC_ID.length - 2;
+
+/**
+ * Returns a new JPEG with the ICC profile in APP2 "ICC_PROFILE" segments (split into chunks
+ * with sequence numbers when it doesn't fit one), after the APP0 and APP1 segments at the
+ * start. Existing ICC segments are removed; everything else is kept byte for byte.
+ */
+export function insertIcc(jpeg: Uint8Array, icc: Uint8Array): Uint8Array {
+  if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error('Not a JPEG (missing SOI).');
+  const count = Math.ceil(icc.length / ICC_CHUNK);
+  if (count < 1 || count > 255) throw new Error('ICC profile empty or too large for APP2 segments.');
+
+  const kept: [number, number][] = [];
+  let at = 0; // index into `kept` before which the ICC segments go
+  let leading = true;
+  let p = 2;
+  while (p + 4 <= jpeg.length) {
+    if (jpeg[p] !== 0xff) throw new Error(`Corrupt JPEG: no marker at ${p}.`);
+    const marker = jpeg[p + 1]!;
+    if (marker === 0xff) {
+      p++;
+      continue;
+    }
+    if (marker === 0xda || marker === 0xd9) break;
+    const len = (jpeg[p + 2]! << 8) | jpeg[p + 3]!;
+    const end = p + 2 + len;
+    if (len < 2 || end > jpeg.length) throw new Error(`Corrupt JPEG: bad segment length at ${p}.`);
+    const isIcc = marker === 0xe2 && startsWith(jpeg, p + 4, ICC_ID);
+    if (!isIcc) {
+      kept.push([p, end]);
+      if (leading && (marker === 0xe0 || marker === 0xe1)) at = kept.length;
+      else leading = false;
+    }
+    p = end;
+  }
+
+  const segments: Uint8Array[] = [];
+  for (let i = 0; i < count; i++) {
+    const data = icc.subarray(i * ICC_CHUNK, Math.min(icc.length, (i + 1) * ICC_CHUNK));
+    const seg = new Uint8Array(4 + ICC_ID.length + 2 + data.length);
+    const len = seg.length - 2;
+    seg.set([0xff, 0xe2, len >> 8, len & 0xff], 0);
+    seg.set(ICC_ID, 4);
+    seg[4 + ICC_ID.length] = i + 1;
+    seg[5 + ICC_ID.length] = count;
+    seg.set(data, 6 + ICC_ID.length);
+    segments.push(seg);
+  }
+  const keptBytes = kept.reduce((s, [a, b]) => s + (b - a), 0);
+  const out = new Uint8Array(2 + segments.reduce((s, x) => s + x.length, 0) + keptBytes + (jpeg.length - p));
+  out[0] = 0xff;
+  out[1] = 0xd8;
+  let o = 2;
+  const copy = ([a, b]: [number, number]) => {
+    out.set(jpeg.subarray(a, b), o);
+    o += b - a;
+  };
+  kept.slice(0, at).forEach(copy);
+  for (const s of segments) {
+    out.set(s, o);
+    o += s.length;
+  }
+  kept.slice(at).forEach(copy);
   out.set(jpeg.subarray(p), o);
   return out;
 }
